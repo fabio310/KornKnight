@@ -9,9 +9,20 @@ using System.Collections.Generic;
 /// </summary>
 internal class MoveGenerator
 {
+    /// <summary>
+    /// Upper bound on legal moves in any reachable chess position (the proven maximum is 218).
+    /// Callers of the zero-allocation Move[] APIs below must supply buffers at least this long.
+    /// </summary>
+    public const int MaxMoves = 256;
+
     private readonly Board _board;
     private readonly CheckDetector _checkDetector;
     private readonly List<Move> _moves;
+
+    // Scratch buffer backing the List<Move>-based convenience API. Hot-path search code should
+    // use the Move[]+count overloads instead; this exists only for external/test callers
+    // (e.g. ChessEngine.GetLegalMoves()) that need a List<Move>.
+    private readonly Move[] _legalMovesScratch = new Move[MaxMoves];
 
     // Pre-allocated buffer for fast piece iteration — avoids IEnumerable heap allocations.
     // A side can have at most 16 pieces (1 king, 8 pawns, and up to 7 other pieces after promotion).
@@ -51,27 +62,77 @@ internal class MoveGenerator
 
     /// <summary>
     /// Generates all legal moves into a caller-supplied list (which is cleared first).
-    /// Using a pre-allocated output list avoids per-node heap allocation in the search hot-path.
+    /// Convenience wrapper over the zero-allocation Move[] API below, kept for external callers
+    /// and tests (e.g. ChessEngine.GetLegalMoves()). Search hot-path code should call
+    /// GenerateLegalMovesInto(Move[], out int) directly instead.
     /// </summary>
     public void GenerateLegalMovesInto(List<Move> output)
     {
+        GenerateLegalMovesInto(_legalMovesScratch, out int count);
+
         output.Clear();
+        for (int i = 0; i < count; i++)
+            output.Add(_legalMovesScratch[i]);
+    }
+
+    /// <summary>
+    /// Generates all legal moves into a caller-supplied fixed-size buffer (zero heap allocation).
+    /// The buffer must be at least <see cref="MaxMoves"/> long. This is the hot-path API used by
+    /// the search's root move handling, negamax, and quiescence (when in check).
+    /// </summary>
+    public void GenerateLegalMovesInto(Move[] buffer, out int count)
+    {
+        GeneratePseudoLegalMoves(tacticalOnly: false);
+        count = FilterLegalMovesInto(buffer);
+    }
+
+    /// <summary>
+    /// Generates only tactical legal moves — captures, en passant, promotions, and
+    /// promotion-captures — into a caller-supplied fixed-size buffer (zero heap allocation).
+    /// Quiet moves, including castling, are never produced. Intended for quiescence search when
+    /// not in check, where quiet moves would otherwise be generated, legality-checked, and
+    /// ordered only to be discarded immediately since they can never raise alpha above stand-pat.
+    /// </summary>
+    public void GenerateLegalTacticalMovesInto(Move[] buffer, out int count)
+    {
+        GeneratePseudoLegalMoves(tacticalOnly: true);
+        count = FilterLegalMovesInto(buffer);
+    }
+
+    /// <summary>
+    /// Populates the shared pseudo-legal move buffer (<see cref="_moves"/>) for the active color.
+    /// When <paramref name="tacticalOnly"/> is true, quiet moves (including castling) are skipped;
+    /// captures, en passant, and promotions (with or without a capture) are always generated.
+    /// </summary>
+    private void GeneratePseudoLegalMoves(bool tacticalOnly)
+    {
         _moves.Clear();
         Color activeColor = _board.ActiveColor;
 
-        GeneratePawnMoves(activeColor);
-        GenerateKnightMoves(activeColor);
-        GenerateBishopMoves(activeColor);
-        GenerateRookMoves(activeColor);
-        GenerateQueenMoves(activeColor);
-        GenerateKingMoves(activeColor);
-        GenerateCastlingMoves(activeColor);
+        GeneratePawnMoves(activeColor, tacticalOnly);
+        GenerateKnightMoves(activeColor, tacticalOnly);
+        GenerateBishopMoves(activeColor, tacticalOnly);
+        GenerateRookMoves(activeColor, tacticalOnly);
+        GenerateQueenMoves(activeColor, tacticalOnly);
+        GenerateKingMoves(activeColor, tacticalOnly);
 
+        if (!tacticalOnly)
+            GenerateCastlingMoves(activeColor);
+    }
+
+    /// <summary>
+    /// Filters the shared pseudo-legal move buffer (<see cref="_moves"/>) for legality (king
+    /// safety), writing surviving moves into the caller-supplied buffer. Returns the count.
+    /// </summary>
+    private int FilterLegalMovesInto(Move[] buffer)
+    {
+        int count = 0;
         foreach (var move in _moves)
         {
             if (IsMoveLegal(move))
-                output.Add(move);
+                buffer[count++] = move;
         }
+        return count;
     }
 
     /// <summary>
@@ -114,7 +175,7 @@ internal class MoveGenerator
     /// <summary>
     /// Generates all pawn moves (quiet moves, double pushes, captures, promotions, en passant).
     /// </summary>
-    private void GeneratePawnMoves(Color color)
+    private void GeneratePawnMoves(Color color, bool tacticalOnly = false)
     {
         int pawnDirection = color.PawnDirection();
         int startingRank = color == Color.White ? 1 : 6;
@@ -126,7 +187,7 @@ internal class MoveGenerator
             var (square, piece) = _pieceBuffer[pi];
             if (piece.Type != PieceType.Pawn) continue;
 
-            // Single push forward
+            // Single push forward (always tactical when it promotes; otherwise quiet)
             int targetRank = square.Rank + pawnDirection;
             if (targetRank >= 0 && targetRank <= 7)
             {
@@ -135,19 +196,19 @@ internal class MoveGenerator
                 {
                     if (targetRank == promotionRank)
                     {
-                        // Promotion moves
+                        // Promotion moves (tactical — always generated)
                         _moves.Add(new Move(square, targetSquare, MoveType.Promotion, PieceType.Queen));
                         _moves.Add(new Move(square, targetSquare, MoveType.Promotion, PieceType.Rook));
                         _moves.Add(new Move(square, targetSquare, MoveType.Promotion, PieceType.Bishop));
                         _moves.Add(new Move(square, targetSquare, MoveType.Promotion, PieceType.Knight));
                     }
-                    else
+                    else if (!tacticalOnly)
                     {
                         _moves.Add(new Move(square, targetSquare, MoveType.Quiet));
                     }
 
-                    // Double push from starting position
-                    if (square.Rank == startingRank)
+                    // Double push from starting position (always quiet)
+                    if (!tacticalOnly && square.Rank == startingRank)
                     {
                         int doubleTargetRank = square.Rank + 2 * pawnDirection;
                         Square doubleTargetSquare = new Square(square.File, doubleTargetRank);
@@ -200,7 +261,7 @@ internal class MoveGenerator
     /// <summary>
     /// Generates all knight moves.
     /// </summary>
-    private void GenerateKnightMoves(Color color)
+    private void GenerateKnightMoves(Color color, bool tacticalOnly = false)
     {
         int pieceCount = _board.GetPiecesOf(color, _pieceBuffer);
         for (int pi = 0; pi < pieceCount; pi++)
@@ -219,7 +280,10 @@ internal class MoveGenerator
                     Piece targetPiece = _board.GetPiece(targetSquare);
 
                     if (targetPiece.IsEmpty)
-                        _moves.Add(new Move(square, targetSquare, MoveType.Quiet));
+                    {
+                        if (!tacticalOnly)
+                            _moves.Add(new Move(square, targetSquare, MoveType.Quiet));
+                    }
                     else if (targetPiece.Color != color)
                         _moves.Add(new Move(square, targetSquare, MoveType.Capture));
                 }
@@ -230,7 +294,7 @@ internal class MoveGenerator
     /// <summary>
     /// Generates all bishop moves (diagonals).
     /// </summary>
-    private void GenerateBishopMoves(Color color)
+    private void GenerateBishopMoves(Color color, bool tacticalOnly = false)
     {
         int pieceCount = _board.GetPiecesOf(color, _pieceBuffer);
         for (int pi = 0; pi < pieceCount; pi++)
@@ -240,7 +304,7 @@ internal class MoveGenerator
 
             for (int dir = 0; dir < 4; dir++)
             {
-                GenerateSlidingMoves(square, BishopFileOffsets[dir], BishopRankOffsets[dir], color);
+                GenerateSlidingMoves(square, BishopFileOffsets[dir], BishopRankOffsets[dir], color, tacticalOnly);
             }
         }
     }
@@ -248,7 +312,7 @@ internal class MoveGenerator
     /// <summary>
     /// Generates all rook moves (orthogonal).
     /// </summary>
-    private void GenerateRookMoves(Color color)
+    private void GenerateRookMoves(Color color, bool tacticalOnly = false)
     {
         int pieceCount = _board.GetPiecesOf(color, _pieceBuffer);
         for (int pi = 0; pi < pieceCount; pi++)
@@ -258,7 +322,7 @@ internal class MoveGenerator
 
             for (int dir = 0; dir < 4; dir++)
             {
-                GenerateSlidingMoves(square, RookFileOffsets[dir], RookRankOffsets[dir], color);
+                GenerateSlidingMoves(square, RookFileOffsets[dir], RookRankOffsets[dir], color, tacticalOnly);
             }
         }
     }
@@ -266,7 +330,7 @@ internal class MoveGenerator
     /// <summary>
     /// Generates all queen moves (both diagonals and orthogonal).
     /// </summary>
-    private void GenerateQueenMoves(Color color)
+    private void GenerateQueenMoves(Color color, bool tacticalOnly = false)
     {
         int pieceCount = _board.GetPiecesOf(color, _pieceBuffer);
         for (int pi = 0; pi < pieceCount; pi++)
@@ -276,7 +340,7 @@ internal class MoveGenerator
 
             for (int dir = 0; dir < 8; dir++)
             {
-                GenerateSlidingMoves(square, QueenFileOffsets[dir], QueenRankOffsets[dir], color);
+                GenerateSlidingMoves(square, QueenFileOffsets[dir], QueenRankOffsets[dir], color, tacticalOnly);
             }
         }
     }
@@ -284,7 +348,7 @@ internal class MoveGenerator
     /// <summary>
     /// Generates moves for a sliding piece (bishop, rook, queen) in a specific direction.
     /// </summary>
-    private void GenerateSlidingMoves(Square square, int fileDir, int rankDir, Color color)
+    private void GenerateSlidingMoves(Square square, int fileDir, int rankDir, Color color, bool tacticalOnly = false)
     {
         int file = square.File + fileDir;
         int rank = square.Rank + rankDir;
@@ -296,7 +360,8 @@ internal class MoveGenerator
 
             if (targetPiece.IsEmpty)
             {
-                _moves.Add(new Move(square, targetSquare, MoveType.Quiet));
+                if (!tacticalOnly)
+                    _moves.Add(new Move(square, targetSquare, MoveType.Quiet));
             }
             else
             {
@@ -313,7 +378,7 @@ internal class MoveGenerator
     /// <summary>
     /// Generates all king moves (adjacent squares).
     /// </summary>
-    private void GenerateKingMoves(Color color)
+    private void GenerateKingMoves(Color color, bool tacticalOnly = false)
     {
         int pieceCount = _board.GetPiecesOf(color, _pieceBuffer);
         for (int pi = 0; pi < pieceCount; pi++)
@@ -332,7 +397,10 @@ internal class MoveGenerator
                     Piece targetPiece = _board.GetPiece(targetSquare);
 
                     if (targetPiece.IsEmpty)
-                        _moves.Add(new Move(square, targetSquare, MoveType.Quiet));
+                    {
+                        if (!tacticalOnly)
+                            _moves.Add(new Move(square, targetSquare, MoveType.Quiet));
+                    }
                     else if (targetPiece.Color != color)
                         _moves.Add(new Move(square, targetSquare, MoveType.Capture));
                 }

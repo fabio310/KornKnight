@@ -58,14 +58,14 @@ internal class MoveOrdering
     }
 
     /// <summary>
-    /// Sorts moves in-place using a pre-allocated score buffer and insertion sort.
-    /// Returns the same (now sorted) list – zero heap allocations.
-    /// Best for the typical node move count of 20–35 where insertion sort beats List.Sort overhead.
+    /// Sorts the first <paramref name="count"/> entries of a caller-supplied array in-place using
+    /// a pre-allocated score buffer and insertion sort – zero heap allocations. This is the
+    /// hot-path overload: root move handling, negamax, and quiescence all pass fixed-size Move[]
+    /// buffers (paired with a count) rather than List&lt;Move&gt;.
+    /// Best for the typical node move count of 20–35 where insertion sort beats Array.Sort overhead.
     /// </summary>
-    public List<Move> OrderMoves(List<Move> moves, Move ttMove, Move lastOpponentMove, int depth)
+    public void OrderMoves(Move[] moves, int count, Move ttMove, Move lastOpponentMove, int depth)
     {
-        int count = moves.Count;
-
         // Score every move into the pre-allocated buffer (avoids List<(Move,int)> allocation)
         for (int i = 0; i < count; i++)
             _moveScores[i] = CalculateMoveScore(moves[i], ttMove, lastOpponentMove, depth);
@@ -85,16 +85,14 @@ internal class MoveOrdering
             moves[j + 1] = m;
             _moveScores[j + 1] = s;
         }
-
-        return moves; // same list, sorted in-place
     }
 
     /// <summary>
     /// Overload for backward compatibility (used in quiescence search).
     /// </summary>
-    public List<Move> OrderMoves(List<Move> moves, Move pvMove, int depth)
+    public void OrderMoves(Move[] moves, int count, Move pvMove, int depth)
     {
-        return OrderMoves(moves, pvMove, default, depth);
+        OrderMoves(moves, count, pvMove, default, depth);
     }
 
     /// <summary>

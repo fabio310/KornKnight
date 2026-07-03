@@ -45,9 +45,10 @@ internal class Searcher
     private readonly MoveGenerator        _moveGen;
     private readonly CheckDetector        _checkDetector;
 
-    // Per-ply pre-allocated move lists: _moveLists[ply] is cleared and reused at that ply.
-    // Safe because the search is single-threaded and each ply level uses its own slot.
-    private readonly List<Move>[]         _moveLists;
+    // Per-ply pre-allocated move buffers: _moveBuffers[ply] is a fixed-size array reused at that
+    // ply. Move generation writes into it and returns a count; recursive calls at ply+1 use a
+    // different slot, so the buffer's contents remain stable for the whole loop at this ply.
+    private readonly Move[][]             _moveBuffers;
 
     // Tracks the move played at each ply so the counter-move heuristic can be populated.
     private readonly Move[]               _lastMoveAtPly;
@@ -90,9 +91,9 @@ internal class Searcher
         _lastMoveAtPly  = new Move[MAX_PLY];
         _nullMoveAtPly  = new bool[MAX_PLY];
 
-        _moveLists = new List<Move>[MAX_PLY];
+        _moveBuffers = new Move[MAX_PLY][];
         for (int i = 0; i < MAX_PLY; i++)
-            _moveLists[i] = new List<Move>(64);
+            _moveBuffers[i] = new Move[MoveGenerator.MaxMoves];
     }
 
     // ── Public search entry point ─────────────────────────────────────────────
@@ -123,10 +124,10 @@ internal class Searcher
         // every depth re-deriving the same fixed mate/draw score while leaving
         // BestMove/IsCheckmate/IsStalemate unset (all false/default) — silently
         // wrong output for a terminal position.
-        var rootMoves = _moveLists[0];
-        _moveGen.GenerateLegalMovesInto(rootMoves);
+        var rootMoves = _moveBuffers[0];
+        _moveGen.GenerateLegalMovesInto(rootMoves, out int rootMoveCount);
 
-        if (rootMoves.Count == 0)
+        if (rootMoveCount == 0)
         {
             bool rootInCheck = _checkDetector.IsInCheck(_board.State.ActiveColor);
             _searchTimer.Stop();
@@ -330,23 +331,24 @@ internal class Searcher
         }
 
         // ── Generate and order moves (zero allocation) ────────────────────
-        var moves = _moveLists[ply];
-        _moveGen.GenerateLegalMovesInto(moves);
+        var moves = _moveBuffers[ply];
+        _moveGen.GenerateLegalMovesInto(moves, out int legalCount);
 
-        if (moves.Count == 0)
+        if (legalCount == 0)
             return inCheck ? -MATE_SCORE + ply : 0; // Checkmate or stalemate
 
         // Counter-move heuristic: pass the move made by the opponent at the previous ply
         Move lastOpponentMove = ply > 0 ? _lastMoveAtPly[ply - 1] : default;
-        _moveOrdering.OrderMoves(moves, ttMove, lastOpponentMove, ply);
+        _moveOrdering.OrderMoves(moves, legalCount, ttMove, lastOpponentMove, ply);
 
         int bestScore = -INFINITY;
         var bestMove  = moves[0];
         var ttFlag2   = TranspositionTable.ScoreFlag.UpperBound;
         int moveCount = 0;
 
-        foreach (var move in moves)
+        for (int moveIndex = 0; moveIndex < legalCount; moveIndex++)
         {
+            var move = moves[moveIndex];
             moveCount++;
 
             bool isCapture   = (move.MoveType & MoveType.Capture)   != 0;
@@ -466,35 +468,38 @@ internal class Searcher
 
         if (ply >= MAX_PLY - 1) return standPat;
 
-        // Generate all legal moves into the pre-allocated per-ply buffer (no allocation)
-        var allMoves = _moveLists[ply];
-        _moveGen.GenerateLegalMovesInto(allMoves);
+        // Generate moves into the pre-allocated per-ply buffer (no allocation). When not in check,
+        // only tactical moves (captures/en passant/promotions) are generated: quiet moves can never
+        // raise alpha above stand-pat here, so skipping their generation, legality-check, and
+        // ordering entirely avoids the wasted work of the old "generate all, order all, scan for
+        // tactical, skip quiet" approach. When in check, stand-pat is invalid and every legal
+        // evasion (quiet or not) must still be considered.
+        var moves = _moveBuffers[ply];
+        int count;
 
-        if (allMoves.Count == 0)
-            return inCheck ? -MATE_SCORE + ply : 0;
-
-        // Order moves in-place (no allocation) so captures/promotions sort first
-        _moveOrdering.OrderMoves(allMoves, default, ply);
-
-        // Quick early-exit when not in check and no tactical moves exist
-        if (!inCheck)
+        if (inCheck)
         {
-            bool hasTactical = false;
-            foreach (var m in allMoves)
-                if ((m.MoveType & MoveType.Capture) != 0 || (m.MoveType & MoveType.Promotion) != 0)
-                { hasTactical = true; break; }
-            if (!hasTactical) return standPat;
+            _moveGen.GenerateLegalMovesInto(moves, out count);
+
+            if (count == 0)
+                return -MATE_SCORE + ply; // Checkmated — no legal evasions
+        }
+        else
+        {
+            _moveGen.GenerateLegalTacticalMovesInto(moves, out count);
+
+            if (count == 0)
+                return standPat; // No captures/promotions left to consider
         }
 
-        foreach (var move in allMoves)
+        // Order moves in-place (no allocation) so the best captures/promotions are tried first
+        _moveOrdering.OrderMoves(moves, count, default, ply);
+
+        for (int mi = 0; mi < count; mi++)
         {
-            bool isTactical = (move.MoveType & MoveType.Capture)   != 0
-                           || (move.MoveType & MoveType.Promotion) != 0;
+            var move = moves[mi];
 
-            // When not in check only search tactical moves; skip quiet moves without allocation
-            if (!inCheck && !isTactical) continue;
-
-            // Delta pruning
+            // Delta pruning (captures only — a hopeless capture can't raise alpha)
             if (!inCheck && (move.MoveType & MoveType.Capture) != 0)
             {
                 Piece victim = _board.GetPiece(move.To);
