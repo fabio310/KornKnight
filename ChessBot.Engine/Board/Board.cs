@@ -92,6 +92,30 @@ public class Board
     }
 
     /// <summary>
+    /// Sets a piece on a specific square WITHOUT updating the Zobrist hash or king positions.
+    /// Intended only for the cheap, throwaway make/restore probe used by
+    /// <see cref="MoveGenerator"/>'s legality check: that probe always reverts the board to its
+    /// exact prior state before returning, so paying the incremental-hash XOR cost (which exists
+    /// to keep the hash valid across real, persisted moves) is pure waste. Callers are responsible
+    /// for restoring the exact previous piece via a matching SetPieceRaw call.
+    /// </summary>
+    internal void SetPieceRaw(Square square, Piece piece)
+    {
+        _pieces[square.Index] = piece;
+    }
+
+    /// <summary>
+    /// Directly overwrites the tracked king position for a color WITHOUT touching the board or
+    /// hash. Paired with <see cref="SetPieceRaw"/> so the temporary legality probe can move a king
+    /// and have <see cref="GetKingPosition"/>/<see cref="CheckDetector"/> see the probed square,
+    /// then restore the original position afterward.
+    /// </summary>
+    internal void SetKingPositionRaw(Color color, Square square)
+    {
+        _kingPositions[(int)color] = square;
+    }
+
+    /// <summary>
     /// Gets the current game state (active color, castling rights, etc.).
     /// </summary>
     public GameState State => _gameState;

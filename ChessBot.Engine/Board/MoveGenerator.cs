@@ -15,9 +15,19 @@ internal class MoveGenerator
     /// </summary>
     public const int MaxMoves = 256;
 
+    // Upper bound on PSEUDO-legal moves considered before filtering — always >= MaxMoves since
+    // pseudo-legal generation can (in pinned/in-check positions) produce moves that are later
+    // discarded as illegal. Comfortably above any reachable pseudo-legal count.
+    private const int MaxPseudoMoves = 512;
+
     private readonly Board _board;
     private readonly CheckDetector _checkDetector;
-    private readonly List<Move> _moves;
+
+    // Fixed-size scratch buffer for pseudo-legal moves (replaces the former List<Move> _moves).
+    // GeneratePseudoLegalMoves() writes into this via AddPseudoMove(); _pseudoMoveCount tracks
+    // how many entries are valid. Zero heap allocation on the hot path.
+    private readonly Move[] _pseudoMoveBuffer = new Move[MaxPseudoMoves];
+    private int _pseudoMoveCount;
 
     // Scratch buffer backing the List<Move>-based convenience API. Hot-path search code should
     // use the Move[]+count overloads instead; this exists only for external/test callers
@@ -47,7 +57,6 @@ internal class MoveGenerator
     {
         _board = board;
         _checkDetector = new CheckDetector(board);
-        _moves = new List<Move>();
     }
 
     /// <summary>
@@ -100,35 +109,67 @@ internal class MoveGenerator
     }
 
     /// <summary>
-    /// Populates the shared pseudo-legal move buffer (<see cref="_moves"/>) for the active color.
-    /// When <paramref name="tacticalOnly"/> is true, quiet moves (including castling) are skipped;
+    /// Appends a pseudo-legal move to the scratch buffer (<see cref="_pseudoMoveBuffer"/>).
+    /// </summary>
+    private void AddPseudoMove(Move move)
+    {
+        _pseudoMoveBuffer[_pseudoMoveCount++] = move;
+    }
+
+    /// <summary>
+    /// Populates the shared pseudo-legal move buffer (<see cref="_pseudoMoveBuffer"/>) for the
+    /// active color. Scans the active color's pieces exactly once via <see cref="Board.GetPiecesOf"/>
+    /// and dispatches each piece to its type-specific generator, instead of the previous approach
+    /// of scanning all 64 squares once per piece type (six full-board scans per call). When
+    /// <paramref name="tacticalOnly"/> is true, quiet moves (including castling) are skipped;
     /// captures, en passant, and promotions (with or without a capture) are always generated.
     /// </summary>
     private void GeneratePseudoLegalMoves(bool tacticalOnly)
     {
-        _moves.Clear();
+        _pseudoMoveCount = 0;
         Color activeColor = _board.ActiveColor;
 
-        GeneratePawnMoves(activeColor, tacticalOnly);
-        GenerateKnightMoves(activeColor, tacticalOnly);
-        GenerateBishopMoves(activeColor, tacticalOnly);
-        GenerateRookMoves(activeColor, tacticalOnly);
-        GenerateQueenMoves(activeColor, tacticalOnly);
-        GenerateKingMoves(activeColor, tacticalOnly);
+        int pieceCount = _board.GetPiecesOf(activeColor, _pieceBuffer);
+        for (int pi = 0; pi < pieceCount; pi++)
+        {
+            var (square, piece) = _pieceBuffer[pi];
+            switch (piece.Type)
+            {
+                case PieceType.Pawn:
+                    GeneratePawnMoves(square, activeColor, tacticalOnly);
+                    break;
+                case PieceType.Knight:
+                    GenerateKnightMoves(square, activeColor, tacticalOnly);
+                    break;
+                case PieceType.Bishop:
+                    GenerateBishopMoves(square, activeColor, tacticalOnly);
+                    break;
+                case PieceType.Rook:
+                    GenerateRookMoves(square, activeColor, tacticalOnly);
+                    break;
+                case PieceType.Queen:
+                    GenerateQueenMoves(square, activeColor, tacticalOnly);
+                    break;
+                case PieceType.King:
+                    GenerateKingMoves(square, activeColor, tacticalOnly);
+                    break;
+            }
+        }
 
         if (!tacticalOnly)
             GenerateCastlingMoves(activeColor);
     }
 
     /// <summary>
-    /// Filters the shared pseudo-legal move buffer (<see cref="_moves"/>) for legality (king
-    /// safety), writing surviving moves into the caller-supplied buffer. Returns the count.
+    /// Filters the shared pseudo-legal move buffer (<see cref="_pseudoMoveBuffer"/>) for legality
+    /// (king safety), writing surviving moves into the caller-supplied buffer. Returns the count.
     /// </summary>
     private int FilterLegalMovesInto(Move[] buffer)
     {
         int count = 0;
-        foreach (var move in _moves)
+        for (int i = 0; i < _pseudoMoveCount; i++)
         {
+            var move = _pseudoMoveBuffer[i];
             if (IsMoveLegal(move))
                 buffer[count++] = move;
         }
@@ -137,36 +178,46 @@ internal class MoveGenerator
 
     /// <summary>
     /// Checks if a move is legal (doesn't leave/place the king in check).
+    /// Uses a cheap raw make/restore probe (<see cref="Board.SetPieceRaw"/> /
+    /// <see cref="Board.SetKingPositionRaw"/>) instead of the authoritative
+    /// <see cref="Board.SetPiece"/> path used for real, persisted moves: since this mutation is
+    /// always reverted before returning, paying the incremental Zobrist hash update cost that
+    /// SetPiece performs (needed only so the hash stays valid across real moves) is pure waste.
     /// </summary>
     private bool IsMoveLegal(Move move)
     {
-        // Make the move temporarily
         Piece captured = _board.GetPiece(move.To);
         Piece moving = _board.GetPiece(move.From);
+        bool movingIsKing = moving.Type == PieceType.King;
+        bool isEnPassant = (move.MoveType & MoveType.EnPassant) != 0;
 
-        _board.SetPiece(move.From, Piece.Empty);
-        _board.SetPiece(move.To, moving);
+        // Make the move temporarily (raw — no hash update)
+        _board.SetPieceRaw(move.From, Piece.Empty);
+        _board.SetPieceRaw(move.To, moving);
+        if (movingIsKing)
+            _board.SetKingPositionRaw(moving.Color, move.To);
 
         // Handle en passant capture (remove the captured pawn)
-        if ((move.MoveType & MoveType.EnPassant) != 0)
+        Square epCaptureSquare = default;
+        if (isEnPassant)
         {
             int captureRankOffset = _board.ActiveColor == Color.White ? -1 : 1;
-            Square captureSquare = new Square(move.To.File, move.To.Rank + captureRankOffset);
-            _board.SetPiece(captureSquare, Piece.Empty);
+            epCaptureSquare = new Square(move.To.File, move.To.Rank + captureRankOffset);
+            _board.SetPieceRaw(epCaptureSquare, Piece.Empty);
         }
 
         // Check if the king is still in check
         bool kingInCheck = _checkDetector.IsInCheck(_board.ActiveColor);
 
-        // Undo the move
-        _board.SetPiece(move.From, moving);
-        _board.SetPiece(move.To, captured);
-        if ((move.MoveType & MoveType.EnPassant) != 0)
+        // Undo the move (raw — no hash update)
+        _board.SetPieceRaw(move.From, moving);
+        if (movingIsKing)
+            _board.SetKingPositionRaw(moving.Color, move.From);
+        _board.SetPieceRaw(move.To, captured);
+        if (isEnPassant)
         {
-            int captureRankOffset = _board.ActiveColor == Color.White ? -1 : 1;
-            Square captureSquare = new Square(move.To.File, move.To.Rank + captureRankOffset);
             Color oppositeColor = _board.ActiveColor.Opposite();
-            _board.SetPiece(captureSquare, new Piece(oppositeColor, PieceType.Pawn));
+            _board.SetPieceRaw(epCaptureSquare, new Piece(oppositeColor, PieceType.Pawn));
         }
 
         return !kingInCheck;
@@ -175,84 +226,77 @@ internal class MoveGenerator
     /// <summary>
     /// Generates all pawn moves (quiet moves, double pushes, captures, promotions, en passant).
     /// </summary>
-    private void GeneratePawnMoves(Color color, bool tacticalOnly = false)
+    private void GeneratePawnMoves(Square square, Color color, bool tacticalOnly = false)
     {
         int pawnDirection = color.PawnDirection();
         int startingRank = color == Color.White ? 1 : 6;
         int promotionRank = color == Color.White ? 7 : 0;
 
-        int pieceCount = _board.GetPiecesOf(color, _pieceBuffer);
-        for (int pi = 0; pi < pieceCount; pi++)
+        // Single push forward (always tactical when it promotes; otherwise quiet)
+        int targetRank = square.Rank + pawnDirection;
+        if (targetRank >= 0 && targetRank <= 7)
         {
-            var (square, piece) = _pieceBuffer[pi];
-            if (piece.Type != PieceType.Pawn) continue;
-
-            // Single push forward (always tactical when it promotes; otherwise quiet)
-            int targetRank = square.Rank + pawnDirection;
-            if (targetRank >= 0 && targetRank <= 7)
+            Square targetSquare = new Square(square.File, targetRank);
+            if (_board.GetPiece(targetSquare).IsEmpty)
             {
-                Square targetSquare = new Square(square.File, targetRank);
-                if (_board.GetPiece(targetSquare).IsEmpty)
+                if (targetRank == promotionRank)
                 {
-                    if (targetRank == promotionRank)
-                    {
-                        // Promotion moves (tactical — always generated)
-                        _moves.Add(new Move(square, targetSquare, MoveType.Promotion, PieceType.Queen));
-                        _moves.Add(new Move(square, targetSquare, MoveType.Promotion, PieceType.Rook));
-                        _moves.Add(new Move(square, targetSquare, MoveType.Promotion, PieceType.Bishop));
-                        _moves.Add(new Move(square, targetSquare, MoveType.Promotion, PieceType.Knight));
-                    }
-                    else if (!tacticalOnly)
-                    {
-                        _moves.Add(new Move(square, targetSquare, MoveType.Quiet));
-                    }
+                    // Promotion moves (tactical — always generated)
+                    AddPseudoMove(new Move(square, targetSquare, MoveType.Promotion, PieceType.Queen));
+                    AddPseudoMove(new Move(square, targetSquare, MoveType.Promotion, PieceType.Rook));
+                    AddPseudoMove(new Move(square, targetSquare, MoveType.Promotion, PieceType.Bishop));
+                    AddPseudoMove(new Move(square, targetSquare, MoveType.Promotion, PieceType.Knight));
+                }
+                else if (!tacticalOnly)
+                {
+                    AddPseudoMove(new Move(square, targetSquare, MoveType.Quiet));
+                }
 
-                    // Double push from starting position (always quiet)
-                    if (!tacticalOnly && square.Rank == startingRank)
+                // Double push from starting position (always quiet)
+                if (!tacticalOnly && square.Rank == startingRank)
+                {
+                    int doubleTargetRank = square.Rank + 2 * pawnDirection;
+                    Square doubleTargetSquare = new Square(square.File, doubleTargetRank);
+                    if (_board.GetPiece(doubleTargetSquare).IsEmpty)
                     {
-                        int doubleTargetRank = square.Rank + 2 * pawnDirection;
-                        Square doubleTargetSquare = new Square(square.File, doubleTargetRank);
-                        if (_board.GetPiece(doubleTargetSquare).IsEmpty)
-                        {
-                            _moves.Add(new Move(square, doubleTargetSquare, MoveType.DoublePawnPush));
-                        }
+                        AddPseudoMove(new Move(square, doubleTargetSquare, MoveType.DoublePawnPush));
                     }
                 }
             }
+        }
 
-            // Pawn captures (left and right)
-            for (int fileOffset = -1; fileOffset <= 1; fileOffset += 2)
+        // Pawn captures (left and right)
+        for (int fileOffset = -1; fileOffset <= 1; fileOffset += 2)
+        {
+            int captureFile = square.File + fileOffset;
+            int captureRank = square.Rank + pawnDirection;
+
+            if (captureFile >= 0 && captureFile < 8 && captureRank >= 0 && captureRank <= 7)
             {
-                int captureFile = square.File + fileOffset;
-                int captureRank = square.Rank + pawnDirection;
+                Square captureSquare = new Square(captureFile, captureRank);
+                Piece targetPiece = _board.GetPiece(captureSquare);
 
-                if (captureFile >= 0 && captureFile < 8 && captureRank >= 0 && captureRank <= 7)
+                // Normal capture
+                if (!targetPiece.IsEmpty && targetPiece.Color != color)
                 {
-                    Square captureSquare = new Square(captureFile, captureRank);
-                    Piece targetPiece = _board.GetPiece(captureSquare);
-
-                    // Normal capture
-                    if (!targetPiece.IsEmpty && targetPiece.Color != color)
+                    if (captureRank == promotionRank)
                     {
-                        if (captureRank == promotionRank)
-                        {
-                            // Promotion captures — From is always the pawn's current square
-                            _moves.Add(new Move(square, captureSquare, MoveType.Capture | MoveType.Promotion, PieceType.Queen));
-                            _moves.Add(new Move(square, captureSquare, MoveType.Capture | MoveType.Promotion, PieceType.Rook));
-                            _moves.Add(new Move(square, captureSquare, MoveType.Capture | MoveType.Promotion, PieceType.Bishop));
-                            _moves.Add(new Move(square, captureSquare, MoveType.Capture | MoveType.Promotion, PieceType.Knight));
-                        }
-                        else
-                        {
-                            _moves.Add(new Move(square, captureSquare, MoveType.Capture));
-                        }
+                        // Promotion captures — From is always the pawn's current square
+                        AddPseudoMove(new Move(square, captureSquare, MoveType.Capture | MoveType.Promotion, PieceType.Queen));
+                        AddPseudoMove(new Move(square, captureSquare, MoveType.Capture | MoveType.Promotion, PieceType.Rook));
+                        AddPseudoMove(new Move(square, captureSquare, MoveType.Capture | MoveType.Promotion, PieceType.Bishop));
+                        AddPseudoMove(new Move(square, captureSquare, MoveType.Capture | MoveType.Promotion, PieceType.Knight));
                     }
-
-                    // En passant capture
-                    if (_board.State.HasEnPassant && _board.EnPassantTarget == captureSquare)
+                    else
                     {
-                        _moves.Add(new Move(square, captureSquare, MoveType.EnPassant));
+                        AddPseudoMove(new Move(square, captureSquare, MoveType.Capture));
                     }
+                }
+
+                // En passant capture
+                if (_board.State.HasEnPassant && _board.EnPassantTarget == captureSquare)
+                {
+                    AddPseudoMove(new Move(square, captureSquare, MoveType.EnPassant));
                 }
             }
         }
@@ -261,32 +305,25 @@ internal class MoveGenerator
     /// <summary>
     /// Generates all knight moves.
     /// </summary>
-    private void GenerateKnightMoves(Color color, bool tacticalOnly = false)
+    private void GenerateKnightMoves(Square square, Color color, bool tacticalOnly = false)
     {
-        int pieceCount = _board.GetPiecesOf(color, _pieceBuffer);
-        for (int pi = 0; pi < pieceCount; pi++)
+        for (int i = 0; i < 8; i++)
         {
-            var (square, piece) = _pieceBuffer[pi];
-            if (piece.Type != PieceType.Knight) continue;
+            int targetFile = square.File + KnightFileOffsets[i];
+            int targetRank = square.Rank + KnightRankOffsets[i];
 
-            for (int i = 0; i < 8; i++)
+            if (targetFile >= 0 && targetFile < 8 && targetRank >= 0 && targetRank < 8)
             {
-                int targetFile = square.File + KnightFileOffsets[i];
-                int targetRank = square.Rank + KnightRankOffsets[i];
+                Square targetSquare = new Square(targetFile, targetRank);
+                Piece targetPiece = _board.GetPiece(targetSquare);
 
-                if (targetFile >= 0 && targetFile < 8 && targetRank >= 0 && targetRank < 8)
+                if (targetPiece.IsEmpty)
                 {
-                    Square targetSquare = new Square(targetFile, targetRank);
-                    Piece targetPiece = _board.GetPiece(targetSquare);
-
-                    if (targetPiece.IsEmpty)
-                    {
-                        if (!tacticalOnly)
-                            _moves.Add(new Move(square, targetSquare, MoveType.Quiet));
-                    }
-                    else if (targetPiece.Color != color)
-                        _moves.Add(new Move(square, targetSquare, MoveType.Capture));
+                    if (!tacticalOnly)
+                        AddPseudoMove(new Move(square, targetSquare, MoveType.Quiet));
                 }
+                else if (targetPiece.Color != color)
+                    AddPseudoMove(new Move(square, targetSquare, MoveType.Capture));
             }
         }
     }
@@ -294,54 +331,33 @@ internal class MoveGenerator
     /// <summary>
     /// Generates all bishop moves (diagonals).
     /// </summary>
-    private void GenerateBishopMoves(Color color, bool tacticalOnly = false)
+    private void GenerateBishopMoves(Square square, Color color, bool tacticalOnly = false)
     {
-        int pieceCount = _board.GetPiecesOf(color, _pieceBuffer);
-        for (int pi = 0; pi < pieceCount; pi++)
+        for (int dir = 0; dir < 4; dir++)
         {
-            var (square, piece) = _pieceBuffer[pi];
-            if (piece.Type != PieceType.Bishop) continue;
-
-            for (int dir = 0; dir < 4; dir++)
-            {
-                GenerateSlidingMoves(square, BishopFileOffsets[dir], BishopRankOffsets[dir], color, tacticalOnly);
-            }
+            GenerateSlidingMoves(square, BishopFileOffsets[dir], BishopRankOffsets[dir], color, tacticalOnly);
         }
     }
 
     /// <summary>
     /// Generates all rook moves (orthogonal).
     /// </summary>
-    private void GenerateRookMoves(Color color, bool tacticalOnly = false)
+    private void GenerateRookMoves(Square square, Color color, bool tacticalOnly = false)
     {
-        int pieceCount = _board.GetPiecesOf(color, _pieceBuffer);
-        for (int pi = 0; pi < pieceCount; pi++)
+        for (int dir = 0; dir < 4; dir++)
         {
-            var (square, piece) = _pieceBuffer[pi];
-            if (piece.Type != PieceType.Rook) continue;
-
-            for (int dir = 0; dir < 4; dir++)
-            {
-                GenerateSlidingMoves(square, RookFileOffsets[dir], RookRankOffsets[dir], color, tacticalOnly);
-            }
+            GenerateSlidingMoves(square, RookFileOffsets[dir], RookRankOffsets[dir], color, tacticalOnly);
         }
     }
 
     /// <summary>
     /// Generates all queen moves (both diagonals and orthogonal).
     /// </summary>
-    private void GenerateQueenMoves(Color color, bool tacticalOnly = false)
+    private void GenerateQueenMoves(Square square, Color color, bool tacticalOnly = false)
     {
-        int pieceCount = _board.GetPiecesOf(color, _pieceBuffer);
-        for (int pi = 0; pi < pieceCount; pi++)
+        for (int dir = 0; dir < 8; dir++)
         {
-            var (square, piece) = _pieceBuffer[pi];
-            if (piece.Type != PieceType.Queen) continue;
-
-            for (int dir = 0; dir < 8; dir++)
-            {
-                GenerateSlidingMoves(square, QueenFileOffsets[dir], QueenRankOffsets[dir], color, tacticalOnly);
-            }
+            GenerateSlidingMoves(square, QueenFileOffsets[dir], QueenRankOffsets[dir], color, tacticalOnly);
         }
     }
 
@@ -361,12 +377,12 @@ internal class MoveGenerator
             if (targetPiece.IsEmpty)
             {
                 if (!tacticalOnly)
-                    _moves.Add(new Move(square, targetSquare, MoveType.Quiet));
+                    AddPseudoMove(new Move(square, targetSquare, MoveType.Quiet));
             }
             else
             {
                 if (targetPiece.Color != color)
-                    _moves.Add(new Move(square, targetSquare, MoveType.Capture));
+                    AddPseudoMove(new Move(square, targetSquare, MoveType.Capture));
                 break;  // Path is blocked
             }
 
@@ -378,32 +394,25 @@ internal class MoveGenerator
     /// <summary>
     /// Generates all king moves (adjacent squares).
     /// </summary>
-    private void GenerateKingMoves(Color color, bool tacticalOnly = false)
+    private void GenerateKingMoves(Square square, Color color, bool tacticalOnly = false)
     {
-        int pieceCount = _board.GetPiecesOf(color, _pieceBuffer);
-        for (int pi = 0; pi < pieceCount; pi++)
+        for (int i = 0; i < 8; i++)
         {
-            var (square, piece) = _pieceBuffer[pi];
-            if (piece.Type != PieceType.King) continue;
+            int targetFile = square.File + KingFileOffsets[i];
+            int targetRank = square.Rank + KingRankOffsets[i];
 
-            for (int i = 0; i < 8; i++)
+            if (targetFile >= 0 && targetFile < 8 && targetRank >= 0 && targetRank < 8)
             {
-                int targetFile = square.File + KingFileOffsets[i];
-                int targetRank = square.Rank + KingRankOffsets[i];
+                Square targetSquare = new Square(targetFile, targetRank);
+                Piece targetPiece = _board.GetPiece(targetSquare);
 
-                if (targetFile >= 0 && targetFile < 8 && targetRank >= 0 && targetRank < 8)
+                if (targetPiece.IsEmpty)
                 {
-                    Square targetSquare = new Square(targetFile, targetRank);
-                    Piece targetPiece = _board.GetPiece(targetSquare);
-
-                    if (targetPiece.IsEmpty)
-                    {
-                        if (!tacticalOnly)
-                            _moves.Add(new Move(square, targetSquare, MoveType.Quiet));
-                    }
-                    else if (targetPiece.Color != color)
-                        _moves.Add(new Move(square, targetSquare, MoveType.Capture));
+                    if (!tacticalOnly)
+                        AddPseudoMove(new Move(square, targetSquare, MoveType.Quiet));
                 }
+                else if (targetPiece.Color != color)
+                    AddPseudoMove(new Move(square, targetSquare, MoveType.Capture));
             }
         }
     }
@@ -436,7 +445,7 @@ internal class MoveGenerator
                         !_checkDetector.IsSquareAttackedBy(new Square(5, kingRank), color.Opposite()))
                     {
                         Square castleKingTarget = new Square(6, kingRank);
-                        _moves.Add(new Move(kingSquare, castleKingTarget, MoveType.Castling));
+                        AddPseudoMove(new Move(kingSquare, castleKingTarget, MoveType.Castling));
                     }
                 }
             }
@@ -459,7 +468,7 @@ internal class MoveGenerator
                         !_checkDetector.IsSquareAttackedBy(new Square(3, kingRank), color.Opposite()))
                     {
                         Square castleKingTarget = new Square(2, kingRank);
-                        _moves.Add(new Move(kingSquare, castleKingTarget, MoveType.Castling));
+                        AddPseudoMove(new Move(kingSquare, castleKingTarget, MoveType.Castling));
                     }
                 }
             }
