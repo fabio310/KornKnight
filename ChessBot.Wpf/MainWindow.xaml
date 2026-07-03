@@ -1,0 +1,169 @@
+<Window x:Class="ChessBot.Wpf.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="ChessBot" Height="680" Width="1020" MinHeight="480" MinWidth="720"
+        Background="#1a1a1a">
+    <Window.Resources>
+        <Style x:Key="ToolBtn" TargetType="Button">
+            <Setter Property="Background" Value="#333"/>
+            <Setter Property="Foreground" Value="#ddd"/>
+            <Setter Property="BorderBrush" Value="#555"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="8,3"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#555"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="PromoBtn" TargetType="Button" BasedOn="{StaticResource ToolBtn}">
+            <Setter Property="FontFamily" Value="Segoe UI Symbol,Arial Unicode MS"/>
+            <Setter Property="Background" Value="#2a2a2a"/>
+            <Setter Property="BorderBrush" Value="#76b900"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#3a4a20"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="InfoHeader" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#aaa"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="0,10,0,2"/>
+        </Style>
+        <Style x:Key="InfoValue" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#eee"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+    </Window.Resources>
+
+    <DockPanel>
+        <!-- Toolbar -->
+        <ToolBarTray DockPanel.Dock="Top" Background="#2a2a2a">
+            <ToolBar Background="#2a2a2a" Foreground="#ddd">
+                <Button x:Name="BtnNewGame"    Content="New Game"    Style="{StaticResource ToolBtn}" Margin="2"/>
+                <Button x:Name="BtnReset"      Content="Reset"       Style="{StaticResource ToolBtn}" Margin="2"/>
+                <Button x:Name="BtnUndo"       Content="Undo"        Style="{StaticResource ToolBtn}" Margin="2"/>
+                <Button x:Name="BtnFlip"       Content="Flip Board"  Style="{StaticResource ToolBtn}" Margin="2"/>
+                <Separator/>
+                <Button x:Name="BtnEngineMove" Content="Engine Move" Style="{StaticResource ToolBtn}" Margin="2"/>
+                <Button x:Name="BtnStopEngine" Content="Stop Engine" Style="{StaticResource ToolBtn}" Margin="2"/>
+                <Separator/>
+                <Button x:Name="BtnCopyFen"    Content="Copy FEN"    Style="{StaticResource ToolBtn}" Margin="2"/>
+                <Button x:Name="BtnLoadFen"    Content="Load FEN"    Style="{StaticResource ToolBtn}" Margin="2"/>
+            </ToolBar>
+        </ToolBarTray>
+
+        <!-- Status bar -->
+        <Border DockPanel.Dock="Bottom" Background="#222" Height="22">
+            <TextBlock x:Name="TxtStatus" Foreground="#aaa" FontSize="11"
+                       VerticalAlignment="Center" Margin="8,0"/>
+        </Border>
+
+        <!-- Main area -->
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="1"/>
+                <ColumnDefinition Width="240"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Board: single Canvas owns squares, highlights, and drag ghost -->
+            <Grid Grid.Column="0">
+                <Canvas x:Name="BoardCanvas" Background="#2b2b2b"
+                        SizeChanged="BoardCanvas_SizeChanged"
+                        MouseDown="BoardCanvas_MouseDown"
+                        MouseMove="BoardCanvas_MouseMove"
+                        MouseUp="BoardCanvas_MouseUp"/>
+
+                <!-- Promotion picker overlay -->
+                <Border x:Name="PromotionPanel" Visibility="Collapsed"
+                        HorizontalAlignment="Center" VerticalAlignment="Center"
+                        Background="#1e1e1e" BorderBrush="#76b900" BorderThickness="2"
+                        CornerRadius="6" Padding="18,14" Panel.ZIndex="10">
+                    <Border.Effect>
+                        <DropShadowEffect BlurRadius="20" ShadowDepth="0" Opacity="0.8" Color="Black"/>
+                    </Border.Effect>
+                    <StackPanel>
+                        <TextBlock Text="Promote to:" Foreground="#eeeeee" FontSize="14"
+                                   FontWeight="SemiBold" HorizontalAlignment="Center"
+                                   Margin="0,0,0,12"/>
+                        <UniformGrid Rows="1" Columns="4">
+                            <Button x:Name="BtnPromoQueen"  Width="70" Height="70" Margin="4"
+                                    FontSize="40" Cursor="Hand" Style="{StaticResource PromoBtn}"/>
+                            <Button x:Name="BtnPromoRook"   Width="70" Height="70" Margin="4"
+                                    FontSize="40" Cursor="Hand" Style="{StaticResource PromoBtn}"/>
+                            <Button x:Name="BtnPromoBishop" Width="70" Height="70" Margin="4"
+                                    FontSize="40" Cursor="Hand" Style="{StaticResource PromoBtn}"/>
+                            <Button x:Name="BtnPromoKnight" Width="70" Height="70" Margin="4"
+                                    FontSize="40" Cursor="Hand" Style="{StaticResource PromoBtn}"/>
+                        </UniformGrid>
+                        <Button x:Name="BtnPromoCancel" Content="Cancel"
+                                HorizontalAlignment="Center" Margin="0,12,0,0"
+                                Width="90" Height="28" FontSize="12"
+                                Style="{StaticResource ToolBtn}"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <!-- Splitter -->
+            <GridSplitter Grid.Column="1" Width="1" Background="#444"
+                          HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
+
+            <!-- Sidebar -->
+            <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto"
+                          Background="#252525" Padding="12">
+                <StackPanel x:Name="InfoPanel">
+
+                    <TextBlock Text="MOVE" Style="{StaticResource InfoHeader}"/>
+                    <Grid Margin="0,4,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="8"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="TxtFrom" Grid.Column="0"
+                                 Background="#1a1a1a" Foreground="#eeeeee"
+                                 BorderBrush="#555" BorderThickness="1"
+                                 FontFamily="Consolas" FontSize="14"
+                                 Padding="6,4" MaxLength="2"
+                                 ToolTip="From (e.g. e2)" Text=""/>
+                        <TextBlock Grid.Column="1" Text="&#x2192;" Foreground="#777"
+                                   VerticalAlignment="Center" HorizontalAlignment="Center"
+                                   FontSize="14"/>
+                        <TextBox x:Name="TxtTo" Grid.Column="2"
+                                 Background="#1a1a1a" Foreground="#eeeeee"
+                                 BorderBrush="#555" BorderThickness="1"
+                                 FontFamily="Consolas" FontSize="14"
+                                 Padding="6,4" MaxLength="2"
+                                 ToolTip="To (e.g. e4)" Text=""/>
+                    </Grid>
+                    <Button x:Name="BtnApplyMove" Content="Make Move"
+                            Style="{StaticResource ToolBtn}" Margin="0,6,0,0"
+                            HorizontalAlignment="Stretch" Height="28"/>
+                    <TextBlock x:Name="TxtMoveError" Foreground="#f66" FontSize="11"
+                               TextWrapping="Wrap" Margin="0,3,0,0" Text=""/>
+
+                    <TextBlock Text="ENGINE" Style="{StaticResource InfoHeader}"/>
+                    <TextBlock x:Name="TxtEval"  Style="{StaticResource InfoValue}"/>
+                    <TextBlock x:Name="TxtBest"  Style="{StaticResource InfoValue}"/>
+                    <TextBlock x:Name="TxtDepth" Style="{StaticResource InfoValue}"/>
+                    <TextBlock x:Name="TxtNodes" Style="{StaticResource InfoValue}"/>
+                    <TextBlock x:Name="TxtNps"   Style="{StaticResource InfoValue}"/>
+
+                    <TextBlock Text="PV" Style="{StaticResource InfoHeader}"/>
+                    <TextBlock x:Name="TxtPv"    Style="{StaticResource InfoValue}"/>
+
+                    <TextBlock Text="FEN" Style="{StaticResource InfoHeader}"/>
+                    <TextBlock x:Name="TxtFen"   Style="{StaticResource InfoValue}"
+                               FontFamily="Consolas" FontSize="10"/>
+
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+    </DockPanel>
+</Window>

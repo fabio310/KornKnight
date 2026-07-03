@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+	<TargetFramework>net8.0</TargetFramework>
+	<LangVersion>latest</LangVersion>
+	<Nullable>enable</Nullable>
+	<ImplicitUsings>enable</ImplicitUsings>
+	<AssemblyName>ChessBot.Engine</AssemblyName>
+	<RootNamespace>ChessBot.Engine</RootNamespace>
+	<GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+	<InternalsVisibleTo Include="ChessBot.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+	<!-- No external dependencies for the engine core -->
+  </ItemGroup>
+
+</Project>

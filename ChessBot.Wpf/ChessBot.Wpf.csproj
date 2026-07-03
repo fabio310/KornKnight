@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+
+  <PropertyGroup>
+	<OutputType>WinExe</OutputType>
+	<TargetFramework>net8.0-windows</TargetFramework>
+	<LangVersion>latest</LangVersion>
+	<Nullable>enable</Nullable>
+	<ImplicitUsings>enable</ImplicitUsings>
+	<UseWPF>true</UseWPF>
+	<AssemblyName>ChessBot.Wpf</AssemblyName>
+	<RootNamespace>ChessBot.Wpf</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+	<ProjectReference Include="..\ChessBot.Engine\ChessBot.Engine.csproj" />
+  </ItemGroup>
+
+</Project>
