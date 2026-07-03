@@ -4,6 +4,36 @@ using ChessBot.Engine.Types;
 using ChessBot.Engine.Hashing;
 
 /// <summary>
+/// A single undo-history entry: the move made, the piece captured (if any), the game state
+/// before the move, and the Zobrist hash before the move. Used to restore board state in
+/// UndoMove/UndoNullMove without recomputing anything from scratch. Backing store for
+/// Board's preallocated undo stack (replaces a List{T} of tuples).
+/// </summary>
+internal readonly struct UndoState
+{
+    public readonly Move Move;
+    public readonly Piece CapturedPiece;
+    public readonly GameState GameState;
+    public readonly ulong Hash;
+
+    public UndoState(Move move, Piece capturedPiece, GameState gameState, ulong hash)
+    {
+        Move = move;
+        CapturedPiece = capturedPiece;
+        GameState = gameState;
+        Hash = hash;
+    }
+
+    public void Deconstruct(out Move move, out Piece capturedPiece, out GameState gameState, out ulong hash)
+    {
+        move = Move;
+        capturedPiece = CapturedPiece;
+        gameState = GameState;
+        hash = Hash;
+    }
+}
+
+/// <summary>
 /// Represents the chess board state and piece placement.
 /// Uses a 0x64 (8x8 mailbox) representation for simplicity and correctness.
 /// The architecture is decoupled to allow future optimization (e.g., Bitboard) without interface changes.
@@ -27,12 +57,33 @@ public class Board
     /// </summary>
     private readonly Square[] _kingPositions;
 
+    // ── Compact per-color piece lists (hot-path optimization) ──────────────────────────────
+    // GetPiecesOf/GetAllPiecesInto used to scan all 64 squares on every call; both are invoked
+    // once per node by MoveGenerator and Evaluator respectively. These lists are maintained
+    // incrementally by SetPiece (never by SetPieceRaw, which is a throwaway probe — see its
+    // doc comment) so piece iteration becomes O(pieceCount) instead of O(64). A side can have
+    // at most 16 pieces on a legal board. Index 0 = White, 1 = Black.
+    private const int MaxPiecesPerColor = 16;
+    private readonly Square[][] _pieceListSquares;
+    private readonly Piece[][] _pieceListPieces;
+    private readonly int[] _pieceListCount;
+
     /// <summary>
-    /// A history of previous board states (for move undo operations).
-    /// Stores: the move made, the captured piece, the game state, and the Zobrist hash before the move.
-    /// Uses List (not Stack) so the Searcher can iterate by index without a ToArray() allocation.
+    /// Maps a square index (0-63) to its slot within the occupying piece's color list
+    /// (_pieceListSquares[color]/_pieceListPieces[color]), or -1 if the square is empty.
+    /// Enables O(1) removal (via swap-remove) when a piece leaves a square.
     /// </summary>
-    private readonly List<(Move move, Piece capturedPiece, GameState gameState, ulong hash)> _history;
+    private readonly int[] _squareToListSlot;
+
+    /// <summary>
+    /// A history of previous board states (for move undo operations), backed by a preallocated
+    /// array + stack pointer instead of a List{T} to avoid List mutation overhead on every
+    /// make/undo call. Stores: the move made, the captured piece, the game state, and the
+    /// Zobrist hash before the move. Grows (doubles) on overflow; indexed access for the
+    /// Searcher's repetition detection is exposed via HistoryCount/GetHistoryEntry.
+    /// </summary>
+    private UndoState[] _history;
+    private int _historyCount;
 
     /// <summary>
     /// The current game state (active color, castling rights, en passant, halfmove clock, fullmove number).
@@ -55,7 +106,16 @@ public class Board
     {
         _pieces = new Piece[64];
         _kingPositions = new Square[2];
-        _history = new List<(Move, Piece, GameState, ulong)>(128);
+
+        _pieceListSquares = new Square[2][] { new Square[MaxPiecesPerColor], new Square[MaxPiecesPerColor] };
+        _pieceListPieces  = new Piece[2][]  { new Piece[MaxPiecesPerColor],  new Piece[MaxPiecesPerColor] };
+        _pieceListCount   = new int[2];
+        _squareToListSlot = new int[64];
+        Array.Fill(_squareToListSlot, -1);
+
+        _history = new UndoState[128];
+        _historyCount = 0;
+
         _gameState = new GameState();
         _hasher = new ZobristHasher();
         _hash = 0;
@@ -78,17 +138,71 @@ public class Board
         // XOR out the old piece key before replacing
         Piece old = _pieces[square.Index];
         if (old.Type != PieceType.None)
+        {
             _hash ^= _hasher.GetPieceKey(old.Color, old.Type, square);
+            RemoveFromPieceList(old.Color, square);
+        }
 
         _pieces[square.Index] = piece;
 
         // XOR in the new piece key after placement
         if (piece.Type != PieceType.None)
+        {
             _hash ^= _hasher.GetPieceKey(piece.Color, piece.Type, square);
+            AddToPieceList(piece.Color, square, piece);
+        }
 
         // Track king positions for efficient check detection
         if (piece.Type == PieceType.King)
             _kingPositions[(int)piece.Color] = square;
+    }
+
+    /// <summary>
+    /// Adds a piece to its color's compact piece list and records the square's slot,
+    /// enabling O(1) later removal. Called only from SetPiece.
+    /// </summary>
+    private void AddToPieceList(Color color, Square square, Piece piece)
+    {
+        int colorIdx = (int)color;
+        int slot = _pieceListCount[colorIdx]++;
+        _pieceListSquares[colorIdx][slot] = square;
+        _pieceListPieces[colorIdx][slot] = piece;
+        _squareToListSlot[square.Index] = slot;
+    }
+
+    /// <summary>
+    /// Removes the piece occupying <paramref name="square"/> from <paramref name="color"/>'s
+    /// compact piece list via swap-remove (move the last entry into the freed slot), keeping
+    /// the list dense with O(1) cost. Called only from SetPiece.
+    /// </summary>
+    private void RemoveFromPieceList(Color color, Square square)
+    {
+        int colorIdx = (int)color;
+        int slot = _squareToListSlot[square.Index];
+        int lastSlot = --_pieceListCount[colorIdx];
+
+        if (slot != lastSlot)
+        {
+            Square movedSquare = _pieceListSquares[colorIdx][lastSlot];
+            Piece movedPiece = _pieceListPieces[colorIdx][lastSlot];
+            _pieceListSquares[colorIdx][slot] = movedSquare;
+            _pieceListPieces[colorIdx][slot] = movedPiece;
+            _squareToListSlot[movedSquare.Index] = slot;
+        }
+
+        _squareToListSlot[square.Index] = -1;
+    }
+
+    /// <summary>
+    /// Resets both colors' piece lists to empty and marks every square as unoccupied in the
+    /// slot map. Must be called before bulk-clearing _pieces directly (i.e. not through
+    /// SetPiece) in ResetToStartingPosition/LoadFromFen, since those bypass RemoveFromPieceList.
+    /// </summary>
+    private void ClearPieceLists()
+    {
+        _pieceListCount[0] = 0;
+        _pieceListCount[1] = 0;
+        Array.Fill(_squareToListSlot, -1);
     }
 
     /// <summary>
@@ -136,11 +250,15 @@ public class Board
     public Square EnPassantTarget => _gameState.EnPassantTarget;
 
     /// <summary>
-    /// <summary>
-    /// Gets the move history for repetition detection.
-    /// Entries are (move, capturedPiece, previousState, hashBeforeMove); index 0 = oldest, Count-1 = newest.
+    /// Gets the number of entries in the undo history (for repetition detection).
     /// </summary>
-    internal List<(Move move, Piece capturedPiece, GameState gameState, ulong hash)> History => _history;
+    internal int HistoryCount => _historyCount;
+
+    /// <summary>
+    /// Gets the undo-history entry at <paramref name="index"/> (0 = oldest, HistoryCount-1 = newest).
+    /// Provides indexed access equivalent to a List{T} without exposing a mutable List{T}.
+    /// </summary>
+    internal UndoState GetHistoryEntry(int index) => _history[index];
 
     /// <summary>
     /// Gets the position of the specified color's king.
@@ -165,7 +283,7 @@ public class Board
         // Save the current state for undo (including hash for O(1) restoration)
         Piece capturedPiece = GetPiece(move.To);
         GameState preMoveState = _gameState;
-        _history.Add((move, capturedPiece, _gameState, _hash));
+        PushHistory(move, capturedPiece, _gameState, _hash);
 
         // Get the moving piece
         Piece movingPiece = GetPiece(move.From);
@@ -333,12 +451,10 @@ public class Board
     /// </summary>
     public void UndoMove()
     {
-        if (_history.Count == 0)
+        if (_historyCount == 0)
             throw new InvalidOperationException("Cannot undo: no moves have been made.");
 
-        var entry = _history[_history.Count - 1];
-        _history.RemoveAt(_history.Count - 1);
-        var (move, capturedPiece, previousState, savedHash) = entry;
+        var (move, capturedPiece, previousState, savedHash) = PopHistory();
 
         // Restore the game state
         _gameState = previousState;
@@ -382,7 +498,7 @@ public class Board
     {
         // Save current state so we can restore it (including hash)
         var savedState = _gameState;
-        _history.Add((default, Piece.Empty, savedState, _hash));
+        PushHistory(default, Piece.Empty, savedState, _hash);
 
         // Update hash: XOR out old EP (if any), toggle color; castling is unchanged
         if (savedState.EnPassantTarget.Index != 0)
@@ -404,14 +520,32 @@ public class Board
     /// </summary>
     public void UndoNullMove()
     {
-        if (_history.Count == 0)
+        if (_historyCount == 0)
             throw new InvalidOperationException("Cannot undo null move: history is empty.");
 
-        var nullEntry = _history[_history.Count - 1];
-        _history.RemoveAt(_history.Count - 1);
-        var (_, _, previousState, savedHash) = nullEntry;
+        var (_, _, previousState, savedHash) = PopHistory();
         _gameState = previousState;
         _hash = savedHash;
+    }
+
+    /// <summary>
+    /// Pushes a new undo-history entry, growing the backing array (doubling) if full.
+    /// Replaces List{T}.Add to avoid List mutation overhead on every move made.
+    /// </summary>
+    private void PushHistory(Move move, Piece capturedPiece, GameState gameState, ulong hash)
+    {
+        if (_historyCount == _history.Length)
+            Array.Resize(ref _history, _history.Length * 2);
+
+        _history[_historyCount++] = new UndoState(move, capturedPiece, gameState, hash);
+    }
+
+    /// <summary>
+    /// Pops and returns the most recent undo-history entry. Caller must check HistoryCount > 0.
+    /// </summary>
+    private UndoState PopHistory()
+    {
+        return _history[--_historyCount];
     }
 
     /// <summary>
@@ -454,7 +588,8 @@ public class Board
         // Clear the board
         for (int i = 0; i < 64; i++)
             _pieces[i] = Piece.Empty;
-        _history.Clear();
+        ClearPieceLists();
+        _historyCount = 0;
         _hash = 0; // Reset before SetPiece calls accumulate piece keys
 
         // Set up White pieces
@@ -507,6 +642,17 @@ public class Board
         Array.Copy(_kingPositions, copy._kingPositions, 2);
         copy._gameState = _gameState;
         copy._hash = _hash; // Copy the incremental hash
+
+        // Copy the compact piece lists and square->slot map so GetPiecesOf/GetAllPiecesInto
+        // remain correct on the copy (cheap: at most 16 entries per color, not a 64-square scan).
+        Array.Copy(_pieceListSquares[0], copy._pieceListSquares[0], MaxPiecesPerColor);
+        Array.Copy(_pieceListSquares[1], copy._pieceListSquares[1], MaxPiecesPerColor);
+        Array.Copy(_pieceListPieces[0], copy._pieceListPieces[0], MaxPiecesPerColor);
+        Array.Copy(_pieceListPieces[1], copy._pieceListPieces[1], MaxPiecesPerColor);
+        copy._pieceListCount[0] = _pieceListCount[0];
+        copy._pieceListCount[1] = _pieceListCount[1];
+        Array.Copy(_squareToListSlot, copy._squareToListSlot, 64);
+
         // Note: History is not copied; the copy starts fresh
         return copy;
     }
@@ -526,19 +672,21 @@ public class Board
     /// <summary>
     /// Fills <paramref name="buffer"/> with every piece on the board (both colors) and
     /// returns how many were written. The buffer must have at least 32 elements (max
-    /// possible pieces on a legal board). This avoids the heap allocation that the
-    /// GetAllPieces() iterator incurs, which matters because static evaluation runs
-    /// this scan at every leaf and quiescence stand-pat node — the majority of nodes
-    /// in the search tree.
+    /// possible pieces on a legal board). Copies directly from the compact per-color piece
+    /// lists instead of scanning all 64 squares, which matters because static evaluation
+    /// runs this at every leaf and quiescence stand-pat node — the majority of nodes in the
+    /// search tree.
     /// </summary>
     internal int GetAllPiecesInto((Square sq, Piece p)[] buffer)
     {
         int count = 0;
-        for (int i = 0; i < 64; i++)
+        for (int color = 0; color < 2; color++)
         {
-            Piece p = _pieces[i];
-            if (p.Type != PieceType.None)
-                buffer[count++] = (new Square(i), p);
+            int colorCount = _pieceListCount[color];
+            Square[] squares = _pieceListSquares[color];
+            Piece[] pieces = _pieceListPieces[color];
+            for (int i = 0; i < colorCount; i++)
+                buffer[count++] = (squares[i], pieces[i]);
         }
         return count;
     }
@@ -546,17 +694,17 @@ public class Board
     /// <summary>
     /// Fills <paramref name="buffer"/> with all pieces belonging to <paramref name="color"/>
     /// and returns how many were written.  The buffer must have at least 16 elements.
-    /// This avoids heap allocation in hot search paths.
+    /// Copies directly from the compact per-color piece list instead of scanning all 64
+    /// squares, avoiding both the heap allocation and the full-board scan in hot search paths.
     /// </summary>
     internal int GetPiecesOf(Color color, (Square sq, Piece p)[] buffer)
     {
-        int count = 0;
-        for (int i = 0; i < 64; i++)
-        {
-            Piece p = _pieces[i];
-            if (p.Type != PieceType.None && p.Color == color)
-                buffer[count++] = (new Square(i), p);
-        }
+        int colorIdx = (int)color;
+        int count = _pieceListCount[colorIdx];
+        Square[] squares = _pieceListSquares[colorIdx];
+        Piece[] pieces = _pieceListPieces[colorIdx];
+        for (int i = 0; i < count; i++)
+            buffer[i] = (squares[i], pieces[i]);
         return count;
     }
 
@@ -577,7 +725,8 @@ public class Board
         // Clear the board and history
         for (int i = 0; i < 64; i++)
             _pieces[i] = Piece.Empty;
-        _history.Clear();
+        ClearPieceLists();
+        _historyCount = 0;
         _hash = 0; // Reset before SetPiece calls accumulate piece keys
 
         // Part 0: Piece placement (from rank 8 to rank 1)

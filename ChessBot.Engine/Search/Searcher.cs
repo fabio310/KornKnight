@@ -561,15 +561,14 @@ internal class Searcher
 
     /// <summary>
     /// Detects a draw by threefold repetition via the position hash history.
-    /// Uses indexed List access (no ToArray() allocation) and iterates newest→oldest,
-    /// stopping at the first irreversible move (capture) to bound the search.
+    /// Uses indexed array access (no List<T>, no ToArray() allocation) and iterates
+    /// newest→oldest, stopping at the first irreversible move (capture) to bound the search.
     /// Zobrist hashes encode the active color, so only same-color-to-move positions
     /// can ever match, making the color check implicit.
     /// </summary>
     private bool IsDrawByRepetition()
     {
-        var history = _board.History; // List<T> – O(1) indexed access
-        int count   = history.Count;
+        int count = _board.HistoryCount; // preallocated array – O(1) indexed access
         if (count < 4) return false;
 
         ulong currentHash     = _board.ZobristHash;
@@ -580,9 +579,9 @@ internal class Searcher
         // positions (every 2 entries apart) can produce a hash match.
         for (int i = count - 1; i >= 0; i--)
         {
-            var (_, capturedPiece, _, hashBeforeMove) = history[i];
+            var entry = _board.GetHistoryEntry(i);
 
-            if (hashBeforeMove == currentHash)
+            if (entry.Hash == currentHash)
             {
                 repetitionCount++;
                 if (repetitionCount >= 2) // 3 identical positions (current + 2 in history)
@@ -590,7 +589,7 @@ internal class Searcher
             }
 
             // A capture is irreversible: positions before it cannot repeat the current one
-            if (capturedPiece.Type != PieceType.None)
+            if (entry.CapturedPiece.Type != PieceType.None)
                 break;
         }
 
