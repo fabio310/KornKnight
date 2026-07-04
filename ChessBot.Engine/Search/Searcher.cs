@@ -291,7 +291,7 @@ internal class Searcher
 
         // ── Draw / horizon ────────────────────────────────────────────────
         if (_board.State.IsFiftyMoveRuleDraw || IsDrawByRepetition()) return 0;
-        if (ply >= MAX_PLY) return _evaluator.Evaluate(_board);
+        if (ply >= MAX_PLY) return _evaluator.EvaluateFast(_board);
 
         // ── Check detection ───────────────────────────────────────────────
         bool inCheck = _checkDetector.IsInCheck(_board.State.ActiveColor);
@@ -305,7 +305,7 @@ internal class Searcher
         // ── Null-move pruning ─────────────────────────────────────────────
         // Conditions: not in check, not a PV node, not already a null-move, sufficient depth,
         // and not in a likely zugzwang (we must have non-pawn material).
-        int staticEval = _evaluator.Evaluate(_board);
+        int staticEval = _evaluator.EvaluateFast(_board);
 
         // ── Futility pruning setup ────────────────────────────────────────
         // At depth 1-2, outside check / PV positions, quiet moves that cannot
@@ -460,7 +460,7 @@ internal class Searcher
         bool inCheck = _checkDetector.IsInCheck(_board.State.ActiveColor);
 
         // Stand-pat evaluation (only valid when not in check)
-        int standPat = _evaluator.Evaluate(_board);
+        int standPat = _evaluator.EvaluateFast(_board);
 
         if (!inCheck)
         {

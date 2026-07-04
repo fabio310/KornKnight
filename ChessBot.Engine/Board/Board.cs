@@ -2,34 +2,54 @@ namespace ChessBot.Engine.Board;
 
 using ChessBot.Engine.Types;
 using ChessBot.Engine.Hashing;
+using ChessBot.Engine.Evaluation;
 
 /// <summary>
-/// A single undo-history entry: the move made, the piece captured (if any), the game state
-/// before the move, and the Zobrist hash before the move. Used to restore board state in
-/// UndoMove/UndoNullMove without recomputing anything from scratch. Backing store for
-/// Board's preallocated undo stack (replaces a List{T} of tuples).
+/// A single undo-history entry capturing everything needed to reverse one make/unmake in O(1)
+/// without recomputation. Stores the move made, the piece that moved (its pre-promotion identity),
+/// the captured piece and the exact square it stood on (which differs from the move's target for en
+/// passant), the rook's from/to squares for castling, the game state and Zobrist hash before the
+/// move, and a snapshot of the incremental evaluation accumulators (material, PST, total material)
+/// so those are restored exactly on undo. Backing store for Board's preallocated undo stack.
 /// </summary>
 internal readonly struct UndoState
 {
     public readonly Move Move;
+    public readonly Piece MovingPiece;
     public readonly Piece CapturedPiece;
+    public readonly Square CapturedSquare;
+    public readonly Square RookFrom;
+    public readonly Square RookTo;
     public readonly GameState GameState;
     public readonly ulong Hash;
+    public readonly int EvalMaterial;
+    public readonly int EvalPst;
+    public readonly int EvalTotalMaterial;
 
-    public UndoState(Move move, Piece capturedPiece, GameState gameState, ulong hash)
+    public UndoState(
+        Move move,
+        Piece movingPiece,
+        Piece capturedPiece,
+        Square capturedSquare,
+        Square rookFrom,
+        Square rookTo,
+        GameState gameState,
+        ulong hash,
+        int evalMaterial,
+        int evalPst,
+        int evalTotalMaterial)
     {
         Move = move;
+        MovingPiece = movingPiece;
         CapturedPiece = capturedPiece;
+        CapturedSquare = capturedSquare;
+        RookFrom = rookFrom;
+        RookTo = rookTo;
         GameState = gameState;
         Hash = hash;
-    }
-
-    public void Deconstruct(out Move move, out Piece capturedPiece, out GameState gameState, out ulong hash)
-    {
-        move = Move;
-        capturedPiece = CapturedPiece;
-        gameState = GameState;
-        hash = Hash;
+        EvalMaterial = evalMaterial;
+        EvalPst = evalPst;
+        EvalTotalMaterial = evalTotalMaterial;
     }
 }
 
@@ -101,6 +121,33 @@ public class Board
     /// Updated incrementally by MakeMove/UndoMove; always consistent with the board state.
     /// </summary>
     public ulong ZobristHash => _hash;
+
+    // ── Incremental evaluation state (hot-path optimization) ───────────────────────────────
+    // White-positive accumulators mirrored on every AddPiece/RemovePiece so Evaluator.EvaluateFast
+    // can skip the per-node full-board material/PST/pawn scan. Kings contribute nothing to material
+    // or PST (the full Evaluate scan skips them), so they are excluded here too. Initialized from a
+    // full scan by RecomputeIncrementalEval after ResetToStartingPosition/LoadFromFen and then kept
+    // exactly consistent through the direct-mutation MakeMove/UndoMove path.
+    private int _evalMaterial;        // Σ sign * MaterialValue over non-king pieces (White +, Black -)
+    private int _evalPst;             // Σ sign * PST[rank][file] over non-king pieces
+    private int _evalTotalMaterial;   // Σ MaterialValue over non-king pieces (unsigned)
+    private readonly int[] _whitePawnFiles = new int[8];
+    private readonly int[] _blackPawnFiles = new int[8];
+
+    /// <summary>White-positive incremental material score (non-king). Consumed by Evaluator.EvaluateFast.</summary>
+    internal int IncrementalMaterialScore => _evalMaterial;
+
+    /// <summary>White-positive incremental piece-square-table score (non-king). Consumed by Evaluator.EvaluateFast.</summary>
+    internal int IncrementalPstScore => _evalPst;
+
+    /// <summary>Total (unsigned) non-king material on the board, used for the endgame phase test.</summary>
+    internal int IncrementalTotalMaterial => _evalTotalMaterial;
+
+    /// <summary>Per-file White pawn counts (index 0 = a-file), maintained incrementally.</summary>
+    internal ReadOnlySpan<int> WhitePawnFileCounts => _whitePawnFiles;
+
+    /// <summary>Per-file Black pawn counts (index 0 = a-file), maintained incrementally.</summary>
+    internal ReadOnlySpan<int> BlackPawnFileCounts => _blackPawnFiles;
 
     public Board()
     {
@@ -205,6 +252,121 @@ public class Board
         Array.Fill(_squareToListSlot, -1);
     }
 
+    // ── Direct-mutation primitives (make/unmake hot path) ──────────────────────────────────
+    // AddPiece/RemovePiece/MovePiece are the single mutation path used by MakeMove/UndoMove. Each
+    // keeps _pieces, the compact piece list, king positions, the Zobrist hash, and the incremental
+    // evaluation accumulators consistent in one pass, replacing the previous chain of SetPiece
+    // calls (which re-derived nothing incrementally). Preconditions are asserted by contract:
+    // AddPiece requires an empty target; RemovePiece requires an occupied source.
+
+    /// <summary>
+    /// Places <paramref name="piece"/> on an empty square, updating the piece array, Zobrist hash,
+    /// compact piece list, king position, and incremental eval accumulators. The target must be empty.
+    /// </summary>
+    private void AddPiece(Square square, Piece piece)
+    {
+        _pieces[square.Index] = piece;
+        _hash ^= _hasher.GetPieceKey(piece.Color, piece.Type, square);
+        AddToPieceList(piece.Color, square, piece);
+
+        if (piece.Type == PieceType.King)
+            _kingPositions[(int)piece.Color] = square;
+
+        AddPieceEval(piece.Color, piece.Type, square);
+    }
+
+    /// <summary>
+    /// Removes and returns the piece occupying <paramref name="square"/>, updating the piece array,
+    /// Zobrist hash, compact piece list, and incremental eval accumulators. The square must be occupied.
+    /// </summary>
+    private Piece RemovePiece(Square square)
+    {
+        Piece piece = _pieces[square.Index];
+        _hash ^= _hasher.GetPieceKey(piece.Color, piece.Type, square);
+        RemoveFromPieceList(piece.Color, square);
+        _pieces[square.Index] = Piece.Empty;
+
+        RemovePieceEval(piece.Color, piece.Type, square);
+        return piece;
+    }
+
+    /// <summary>
+    /// Moves the piece on <paramref name="from"/> to the empty square <paramref name="to"/> and
+    /// returns it. Composed from RemovePiece + AddPiece so every derived structure stays consistent.
+    /// </summary>
+    private Piece MovePiece(Square from, Square to)
+    {
+        Piece piece = RemovePiece(from);
+        AddPiece(to, piece);
+        return piece;
+    }
+
+    /// <summary>
+    /// Applies the White-positive incremental-eval contribution of a piece entering the board.
+    /// Kings are excluded (they contribute no material and are skipped by the PST scan), matching
+    /// Evaluator.Evaluate exactly so EvaluateFast returns identical scores.
+    /// </summary>
+    private void AddPieceEval(Color color, PieceType type, Square square)
+    {
+        if (type == PieceType.King) return;
+
+        int sign = color == Color.White ? 1 : -1;
+        int matVal = type.MaterialValue();
+        _evalMaterial += sign * matVal;
+        _evalTotalMaterial += matVal;
+        _evalPst += sign * PieceSquareTables.Value(color, type, square);
+
+        if (type == PieceType.Pawn)
+        {
+            if (color == Color.White) _whitePawnFiles[square.File]++;
+            else                      _blackPawnFiles[square.File]++;
+        }
+    }
+
+    /// <summary>
+    /// Reverses <see cref="AddPieceEval"/> for a piece leaving the board.
+    /// </summary>
+    private void RemovePieceEval(Color color, PieceType type, Square square)
+    {
+        if (type == PieceType.King) return;
+
+        int sign = color == Color.White ? 1 : -1;
+        int matVal = type.MaterialValue();
+        _evalMaterial -= sign * matVal;
+        _evalTotalMaterial -= matVal;
+        _evalPst -= sign * PieceSquareTables.Value(color, type, square);
+
+        if (type == PieceType.Pawn)
+        {
+            if (color == Color.White) _whitePawnFiles[square.File]--;
+            else                      _blackPawnFiles[square.File]--;
+        }
+    }
+
+    /// <summary>
+    /// Rebuilds the incremental evaluation accumulators (material, PST, total material, per-file
+    /// pawn counts) from a full scan of the compact piece lists. Called after
+    /// ResetToStartingPosition/LoadFromFen populate the board, so the incremental state is exactly
+    /// consistent with the position before any make/unmake occurs.
+    /// </summary>
+    private void RecomputeIncrementalEval()
+    {
+        _evalMaterial = 0;
+        _evalPst = 0;
+        _evalTotalMaterial = 0;
+        Array.Clear(_whitePawnFiles, 0, 8);
+        Array.Clear(_blackPawnFiles, 0, 8);
+
+        for (int color = 0; color < 2; color++)
+        {
+            int count = _pieceListCount[color];
+            Square[] squares = _pieceListSquares[color];
+            Piece[] pieces = _pieceListPieces[color];
+            for (int i = 0; i < count; i++)
+                AddPieceEval(pieces[i].Color, pieces[i].Type, squares[i]);
+        }
+    }
+
     /// <summary>
     /// Sets a piece on a specific square WITHOUT updating the Zobrist hash or king positions.
     /// Intended only for the cheap, throwaway make/restore probe used by
@@ -275,122 +437,116 @@ public class Board
     }
 
     /// <summary>
-    /// Makes a move on the board, updating all state (piece positions, castling rights, en passant, halfmove clock, fullmove number).
-    /// Pushes the move and previous state to the undo stack for move reversal.
+    /// Makes a move on the board, updating all state (piece positions, castling rights, en passant,
+    /// halfmove clock, fullmove number, Zobrist hash, and incremental eval) through a single direct
+    /// mutation path (AddPiece/RemovePiece/MovePiece) instead of repeated SetPiece calls. Pushes a
+    /// full undo snapshot so UndoMove can restore everything in O(1).
     /// </summary>
     public void MakeMove(Move move)
     {
-        // Save the current state for undo (including hash for O(1) restoration)
-        Piece capturedPiece = GetPiece(move.To);
-        GameState preMoveState = _gameState;
-        PushHistory(move, capturedPiece, _gameState, _hash);
-
-        // Get the moving piece
-        Piece movingPiece = GetPiece(move.From);
+        Piece movingPiece = _pieces[move.From.Index];
         if (movingPiece.IsEmpty)
             throw new InvalidOperationException($"Cannot make move: no piece on {move.From}.");
 
-        // Move the piece
-        SetPiece(move.From, Piece.Empty);
-        SetPiece(move.To, movingPiece);
+        GameState preMoveState = _gameState;
+        ulong preHash = _hash;
+        Color us = preMoveState.ActiveColor;
 
-        // Handle special moves
-        if ((move.MoveType & MoveType.Castling) != 0)
+        bool isCastling   = (move.MoveType & MoveType.Castling) != 0;
+        bool isEnPassant  = (move.MoveType & MoveType.EnPassant) != 0;
+        bool isPromotion  = (move.MoveType & MoveType.Promotion) != 0;
+        bool isDoublePush = (move.MoveType & MoveType.DoublePawnPush) != 0;
+
+        // Resolve the captured piece and the exact square it occupies. For en passant the victim
+        // sits on the moving pawn's rank (not on move.To); otherwise it is whatever stands on move.To.
+        Square capturedSquare;
+        Piece capturedPiece;
+        if (isEnPassant)
         {
-            HandleCastling(move);
+            int captureRank = us == Color.White ? move.To.Rank - 1 : move.To.Rank + 1;
+            capturedSquare = new Square(move.To.File, captureRank);
+            capturedPiece = _pieces[capturedSquare.Index];
+        }
+        else
+        {
+            capturedSquare = move.To;
+            capturedPiece = _pieces[move.To.Index];
         }
 
-        if ((move.MoveType & MoveType.EnPassant) != 0)
+        // Resolve the rook relocation for castling (from corner to the king's transit square).
+        Square rookFrom = default;
+        Square rookTo = default;
+        if (isCastling)
         {
-            HandleEnPassantCapture(move);
+            int rank = move.To.Rank;
+            if (move.To.File == 6) { rookFrom = new Square(7, rank); rookTo = new Square(5, rank); }
+            else                   { rookFrom = new Square(0, rank); rookTo = new Square(3, rank); }
         }
 
-        // Handle pawn promotion
-        if ((move.MoveType & MoveType.Promotion) != 0)
-        {
-            SetPiece(move.To, new Piece(movingPiece.Color, move.PromotionType));
-        }
+        // Snapshot everything needed to reverse this move before mutating the board.
+        PushHistory(new UndoState(
+            move, movingPiece, capturedPiece, capturedSquare, rookFrom, rookTo,
+            preMoveState, preHash, _evalMaterial, _evalPst, _evalTotalMaterial));
 
-        // Update castling rights — pass capturedPiece (saved before move) so detection is correct
-        UpdateCastlingRights(movingPiece, move.From, move.To, capturedPiece);
+        // ── Apply piece movement through the single mutation path ──
+        RemovePiece(move.From);
+        if (!capturedPiece.IsEmpty)
+            RemovePiece(capturedSquare);
 
-        // Update en passant target
-        Square newEnPassantTarget = new Square(0);  // Default: no en passant
-        if ((move.MoveType & MoveType.DoublePawnPush) != 0)
+        Piece placedPiece = isPromotion ? new Piece(movingPiece.Color, move.PromotionType) : movingPiece;
+        AddPiece(move.To, placedPiece);
+
+        if (isCastling)
+            MovePiece(rookFrom, rookTo);
+
+        // ── Compute new game state ──
+        CastlingRights newRights =
+            ComputeCastlingRights(preMoveState.CastlingRights, movingPiece, move.From, move.To, capturedPiece);
+
+        Square newEnPassantTarget = default;  // no en passant unless a double pawn push occurs
+        if (isDoublePush)
         {
-            // Set en passant target to the square behind the pawn
-            int epRank = movingPiece.Color == Color.White ? move.To.Rank - 1 : move.To.Rank + 1;
+            int epRank = us == Color.White ? move.To.Rank - 1 : move.To.Rank + 1;
             newEnPassantTarget = new Square(move.To.File, epRank);
         }
 
-        // Update halfmove clock (reset on pawn moves or captures)
-        int newHalfmoveClock = _gameState.HalfmoveClock + 1;
-        if (movingPiece.Type == PieceType.Pawn || (move.MoveType & MoveType.Capture) != 0 || (move.MoveType & MoveType.EnPassant) != 0)
+        // Halfmove clock resets on a pawn move or any capture (en passant included, since its victim
+        // is non-empty above); otherwise it increments.
+        int newHalfmoveClock = preMoveState.HalfmoveClock + 1;
+        if (movingPiece.Type == PieceType.Pawn || !capturedPiece.IsEmpty)
             newHalfmoveClock = 0;
 
-        // Update fullmove number (increment after Black's move)
-        int newFullmoveNumber = _gameState.FullmoveNumber;
-        if (_gameState.ActiveColor == Color.Black)
+        int newFullmoveNumber = preMoveState.FullmoveNumber;
+        if (us == Color.Black)
             newFullmoveNumber++;
 
-        // Update game state
         _gameState = new GameState(
-            _gameState.ActiveColor.Opposite(),
-            _gameState.CastlingRights,
+            us.Opposite(),
+            newRights,
             newEnPassantTarget,
             newHalfmoveClock,
             newFullmoveNumber
         );
 
-        // Update Zobrist hash for non-piece state changes.
-        // Piece-level XORs are handled automatically by SetPiece calls above.
+        // ── Update Zobrist hash for non-piece state changes (piece keys handled by the primitives) ──
         _hash ^= _hasher.GetCastlingKey(preMoveState.CastlingRights.Mask);
-        _hash ^= _hasher.GetCastlingKey(_gameState.CastlingRights.Mask);
+        _hash ^= _hasher.GetCastlingKey(newRights.Mask);
         if (preMoveState.EnPassantTarget.Index != 0)
             _hash ^= _hasher.GetEnPassantKey(preMoveState.EnPassantTarget.File);
-        if (_gameState.EnPassantTarget.Index != 0)
-            _hash ^= _hasher.GetEnPassantKey(_gameState.EnPassantTarget.File);
+        if (newEnPassantTarget.Index != 0)
+            _hash ^= _hasher.GetEnPassantKey(newEnPassantTarget.File);
         _hash ^= _hasher.GetColorKey(Color.Black); // Always toggle; Black key encodes whose turn it is
     }
 
     /// <summary>
-    /// Handles rook movement for castling
+    /// Computes the castling rights that result from a move, given the rights before it. Pure
+    /// function (does not mutate board state): a king move revokes both of that color's rights, a
+    /// rook move revokes that side's right, and capturing a corner rook revokes the captured side's
+    /// right. capturedPiece is the pre-move occupant of the captured square.
     /// </summary>
-    private void HandleCastling(Move move)
+    private static CastlingRights ComputeCastlingRights(
+        CastlingRights rights, Piece movingPiece, Square from, Square to, Piece capturedPiece)
     {
-        int rank = move.To.Rank;
-        if (move.To.File == 6)  // King-side castling (king moves to g-file)
-        {
-            Piece rook = GetPiece(new Square(7, rank));
-            SetPiece(new Square(7, rank), Piece.Empty);
-            SetPiece(new Square(5, rank), rook);
-        }
-        else if (move.To.File == 2)  // Queen-side castling (king moves to c-file)
-        {
-            Piece rook = GetPiece(new Square(0, rank));
-            SetPiece(new Square(0, rank), Piece.Empty);
-            SetPiece(new Square(3, rank), rook);
-        }
-    }
-
-    /// <summary>
-    /// Handles en passant capture (removing the captured pawn from the board).
-    /// </summary>
-    private void HandleEnPassantCapture(Move move)
-    {
-        int captureRank = _gameState.ActiveColor == Color.White ? move.To.Rank - 1 : move.To.Rank + 1;
-        Square captureSquare = new Square(move.To.File, captureRank);
-        SetPiece(captureSquare, Piece.Empty);
-    }
-
-    /// <summary>
-    /// Updates castling rights based on the move (loses rights if king or rook moves, or if a corner rook is captured).
-    /// capturedPiece must be passed in from before the move was applied to the board.
-    /// </summary>
-    private void UpdateCastlingRights(Piece movingPiece, Square from, Square to, Piece capturedPiece)
-    {
-        CastlingRights rights = _gameState.CastlingRights;
-
         // King move: lose all castling rights for that color
         if (movingPiece.Type == PieceType.King)
         {
@@ -417,7 +573,6 @@ public class Board
         }
 
         // Rook capture: lose castling right for the captured rook's side.
-        // capturedPiece is the pre-move occupant of 'to', passed by the caller.
         if (capturedPiece.Type == PieceType.Rook)
         {
             if (capturedPiece.Color == Color.White && to.Rank == 0)
@@ -436,58 +591,45 @@ public class Board
             }
         }
 
-        _gameState = new GameState(
-            _gameState.ActiveColor,
-            rights,
-            _gameState.EnPassantTarget,
-            _gameState.HalfmoveClock,
-            _gameState.FullmoveNumber
-        );
+        return rights;
     }
 
     /// <summary>
     /// Undoes the last move made. Throws if no moves have been made.
-    /// Restores all piece positions, game state, and move history.
+    /// Restores all piece positions, game state, Zobrist hash, and incremental eval in O(1)
+    /// using the snapshot pushed by MakeMove, through the same direct-mutation primitives.
     /// </summary>
     public void UndoMove()
     {
         if (_historyCount == 0)
             throw new InvalidOperationException("Cannot undo: no moves have been made.");
 
-        var (move, capturedPiece, previousState, savedHash) = PopHistory();
+        UndoState undo = PopHistory();
+        Move move = undo.Move;
 
-        // Restore the game state
-        _gameState = previousState;
+        bool isCastling = (move.MoveType & MoveType.Castling) != 0;
 
-        // Get the piece that moved (now on the destination square)
-        Piece movedPiece = GetPiece(move.To);
+        // Reverse castling rook relocation first (mirror of MakeMove's order).
+        if (isCastling)
+            MovePiece(undo.RookTo, undo.RookFrom);
 
-        // Reverse the move: piece goes back to source square
-        SetPiece(move.To, capturedPiece);  // Restore captured piece (or empty)
+        // Lift the (possibly promoted) piece off the destination square.
+        RemovePiece(move.To);
 
-        // If it was a promotion, restore the pawn; otherwise restore the moved piece as-is
-        if ((move.MoveType & MoveType.Promotion) != 0)
-        {
-            SetPiece(move.From, new Piece(movedPiece.Color, PieceType.Pawn));
-        }
-        else
-        {
-            SetPiece(move.From, movedPiece);
-        }
+        // Restore the mover on its origin square as its pre-promotion identity (MovingPiece is the
+        // pawn for a promotion, so no special-casing is needed here).
+        AddPiece(move.From, undo.MovingPiece);
 
-        // Handle undo of special moves
-        if ((move.MoveType & MoveType.Castling) != 0)
-        {
-            UndoCastling(move);
-        }
+        // Restore any captured piece on its exact original square (differs from move.To for en passant).
+        if (!undo.CapturedPiece.IsEmpty)
+            AddPiece(undo.CapturedSquare, undo.CapturedPiece);
 
-        if ((move.MoveType & MoveType.EnPassant) != 0)
-        {
-            UndoEnPassantCapture(move, previousState);
-        }
-
-        // Restore the Zobrist hash to its exact pre-move value (faster than reversing all XORs)
-        _hash = savedHash;
+        // Restore snapshotted state in O(1) (cheaper and exact vs. reversing every XOR/accumulator).
+        _gameState = undo.GameState;
+        _hash = undo.Hash;
+        _evalMaterial = undo.EvalMaterial;
+        _evalPst = undo.EvalPst;
+        _evalTotalMaterial = undo.EvalTotalMaterial;
     }
 
     /// <summary>
@@ -496,9 +638,11 @@ public class Board
     /// </summary>
     public void MakeNullMove()
     {
-        // Save current state so we can restore it (including hash)
+        // Save current state so we can restore it (including hash and incremental eval accumulators).
         var savedState = _gameState;
-        PushHistory(default, Piece.Empty, savedState, _hash);
+        PushHistory(new UndoState(
+            default, Piece.Empty, Piece.Empty, default, default, default,
+            savedState, _hash, _evalMaterial, _evalPst, _evalTotalMaterial));
 
         // Update hash: XOR out old EP (if any), toggle color; castling is unchanged
         if (savedState.EnPassantTarget.Index != 0)
@@ -523,21 +667,26 @@ public class Board
         if (_historyCount == 0)
             throw new InvalidOperationException("Cannot undo null move: history is empty.");
 
-        var (_, _, previousState, savedHash) = PopHistory();
-        _gameState = previousState;
-        _hash = savedHash;
+        UndoState undo = PopHistory();
+        _gameState = undo.GameState;
+        _hash = undo.Hash;
+        // A null move makes no piece changes, so the incremental eval accumulators are unchanged;
+        // restoring them from the snapshot is a harmless no-op that keeps the code uniform.
+        _evalMaterial = undo.EvalMaterial;
+        _evalPst = undo.EvalPst;
+        _evalTotalMaterial = undo.EvalTotalMaterial;
     }
 
     /// <summary>
     /// Pushes a new undo-history entry, growing the backing array (doubling) if full.
     /// Replaces List{T}.Add to avoid List mutation overhead on every move made.
     /// </summary>
-    private void PushHistory(Move move, Piece capturedPiece, GameState gameState, ulong hash)
+    private void PushHistory(in UndoState state)
     {
         if (_historyCount == _history.Length)
             Array.Resize(ref _history, _history.Length * 2);
 
-        _history[_historyCount++] = new UndoState(move, capturedPiece, gameState, hash);
+        _history[_historyCount++] = state;
     }
 
     /// <summary>
@@ -546,38 +695,6 @@ public class Board
     private UndoState PopHistory()
     {
         return _history[--_historyCount];
-    }
-
-    /// <summary>
-    /// Undoes a castling move by restoring the rook to its original corner.
-    /// </summary>
-    private void UndoCastling(Move move)
-    {
-        int rank = move.To.Rank;
-        if (move.To.File == 6)  // King-side castling (undo: rook from f-file back to h-file)
-        {
-            Piece rook = GetPiece(new Square(5, rank));
-            SetPiece(new Square(5, rank), Piece.Empty);
-            SetPiece(new Square(7, rank), rook);
-        }
-        else if (move.To.File == 2)  // Queen-side castling (undo: rook from d-file back to a-file)
-        {
-            Piece rook = GetPiece(new Square(3, rank));
-            SetPiece(new Square(3, rank), Piece.Empty);
-            SetPiece(new Square(0, rank), rook);
-        }
-    }
-
-    /// <summary>
-    /// Undoes an en passant capture by restoring the captured pawn to the board.
-    /// </summary>
-    private void UndoEnPassantCapture(Move move, GameState previousState)
-    {
-        // The captured pawn was on the source rank, same file as destination
-        int captureRank = previousState.ActiveColor == Color.White ? move.To.Rank - 1 : move.To.Rank + 1;
-        Square captureSquare = new Square(move.To.File, captureRank);
-        Color capturedColor = previousState.ActiveColor.Opposite();
-        SetPiece(captureSquare, new Piece(capturedColor, PieceType.Pawn));
     }
 
     /// <summary>
@@ -630,6 +747,9 @@ public class Board
         // Finalize hash: pieces are already XOR'd in by SetPiece; add state components.
         // White to move → no color XOR. No en passant. KQkq castling.
         _hash ^= _hasher.GetCastlingKey(_gameState.CastlingRights.Mask);
+
+        // Initialize incremental eval accumulators from the freshly placed pieces.
+        RecomputeIncrementalEval();
     }
 
     /// <summary>
@@ -652,6 +772,14 @@ public class Board
         copy._pieceListCount[0] = _pieceListCount[0];
         copy._pieceListCount[1] = _pieceListCount[1];
         Array.Copy(_squareToListSlot, copy._squareToListSlot, 64);
+
+        // Copy the incremental evaluation accumulators so EvaluateFast is correct on the copy
+        // without a rebuild (the copy also starts with a fresh, empty history).
+        copy._evalMaterial = _evalMaterial;
+        copy._evalPst = _evalPst;
+        copy._evalTotalMaterial = _evalTotalMaterial;
+        Array.Copy(_whitePawnFiles, copy._whitePawnFiles, 8);
+        Array.Copy(_blackPawnFiles, copy._blackPawnFiles, 8);
 
         // Note: History is not copied; the copy starts fresh
         return copy;
@@ -805,6 +933,9 @@ public class Board
         _hash ^= _hasher.GetCastlingKey(_gameState.CastlingRights.Mask);
         if (_gameState.EnPassantTarget.Index != 0)
             _hash ^= _hasher.GetEnPassantKey(_gameState.EnPassantTarget.File);
+
+        // Initialize incremental eval accumulators from the freshly placed pieces.
+        RecomputeIncrementalEval();
     }
 
     /// <summary>
