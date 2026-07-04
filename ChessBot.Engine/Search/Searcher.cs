@@ -351,7 +351,9 @@ internal class Searcher
             var move = moves[moveIndex];
             moveCount++;
 
-            bool isCapture   = (move.MoveType & MoveType.Capture)   != 0;
+            // En passant is a capture (MoveTypeExtensions.IsCapture covers it), so it is never
+            // treated as a quiet move for futility pruning / LMR / killer / history purposes.
+            bool isCapture   = move.MoveType.IsCapture();
             bool isPromotion = (move.MoveType & MoveType.Promotion) != 0;
             bool isQuiet     = !isCapture && !isPromotion;
 
@@ -499,8 +501,10 @@ internal class Searcher
         {
             var move = moves[mi];
 
-            // Delta pruning (captures only — a hopeless capture can't raise alpha)
-            if (!inCheck && (move.MoveType & MoveType.Capture) != 0)
+            // Delta pruning (captures only — a hopeless capture can't raise alpha).
+            // IsCapture() includes en passant; its victim is always a pawn (the target square
+            // itself is empty), so the material gain is computed explicitly below.
+            if (!inCheck && move.MoveType.IsCapture())
             {
                 Piece victim = _board.GetPiece(move.To);
                 if ((move.MoveType & MoveType.EnPassant) != 0)

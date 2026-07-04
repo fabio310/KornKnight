@@ -106,13 +106,14 @@ internal class MoveOrdering
         if (move == ttMove && ttMove != default)
             return 999999;
 
-        // Captures: scored by MVV-LVA + SEE (good trades first)
-        if ((move.MoveType & MoveType.Capture) != 0)
+        // Captures: scored by MVV-LVA + SEE (good trades first).
+        // IsCapture() includes en passant, so it is ordered as a capture rather than a quiet move.
+        if (move.MoveType.IsCapture())
         {
             Piece victim = _board.GetPiece(move.To);
             Piece attacker = _board.GetPiece(move.From);
 
-            // En passant: victim is always a pawn
+            // En passant: the target square is empty; the victim is always a pawn.
             if ((move.MoveType & MoveType.EnPassant) != 0)
                 victim = new Piece(_board.State.ActiveColor.Opposite(), PieceType.Pawn);
 
@@ -221,8 +222,11 @@ internal class MoveOrdering
         Piece capturedPiece = _board.GetPiece(toSquare);
         Piece movingPiece = _board.GetPiece(captureMove.From);
 
-        // Start with the material gain from the capture
-        int gain = capturedPiece.Type.MaterialValue();
+        // Start with the material gain from the capture. En passant captures land on an empty
+        // square, so the victim (always a pawn) must be valued explicitly.
+        int gain = (captureMove.MoveType & MoveType.EnPassant) != 0
+            ? PieceType.Pawn.MaterialValue()
+            : capturedPiece.Type.MaterialValue();
 
         // For speed, we use a simplified SEE: just check if it's defended/attacking.
         // Full SEE would recurse, but this is a good balance for move ordering.
