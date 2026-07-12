@@ -275,6 +275,7 @@ internal class Evaluator
         return count;
     }
 
+    /// <summary>
     /// Bonus for king centralization in endgame.
     /// </summary>
     private int EvaluateKingCentrality(Board board)

@@ -50,8 +50,7 @@
                 <Button x:Name="BtnUndo"       Content="Undo"        Style="{StaticResource ToolBtn}" Margin="2"/>
                 <Button x:Name="BtnFlip"       Content="Flip Board"  Style="{StaticResource ToolBtn}" Margin="2"/>
                 <Separator/>
-                <Button x:Name="BtnEngineMove" Content="Engine Move" Style="{StaticResource ToolBtn}" Margin="2"/>
-                <Button x:Name="BtnStopEngine" Content="Stop Engine" Style="{StaticResource ToolBtn}" Margin="2"/>
+                <Button x:Name="BtnEngineMove" Content="Engine Move" Style="{StaticResource ToolBtn}" Margin="2" />
                 <Separator/>
                 <Button x:Name="BtnCopyFen"    Content="Copy FEN"    Style="{StaticResource ToolBtn}" Margin="2"/>
                 <Button x:Name="BtnLoadFen"    Content="Load FEN"    Style="{StaticResource ToolBtn}" Margin="2"/>
@@ -118,33 +117,13 @@
             <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto"
                           Background="#252525" Padding="12">
                 <StackPanel x:Name="InfoPanel">
-
-                    <TextBlock Text="MOVE" Style="{StaticResource InfoHeader}"/>
                     <Grid Margin="0,4,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="8"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        <TextBox x:Name="TxtFrom" Grid.Column="0"
-                                 Background="#1a1a1a" Foreground="#eeeeee"
-                                 BorderBrush="#555" BorderThickness="1"
-                                 FontFamily="Consolas" FontSize="14"
-                                 Padding="6,4" MaxLength="2"
-                                 ToolTip="From (e.g. e2)" Text=""/>
-                        <TextBlock Grid.Column="1" Text="&#x2192;" Foreground="#777"
-                                   VerticalAlignment="Center" HorizontalAlignment="Center"
-                                   FontSize="14"/>
-                        <TextBox x:Name="TxtTo" Grid.Column="2"
-                                 Background="#1a1a1a" Foreground="#eeeeee"
-                                 BorderBrush="#555" BorderThickness="1"
-                                 FontFamily="Consolas" FontSize="14"
-                                 Padding="6,4" MaxLength="2"
-                                 ToolTip="To (e.g. e4)" Text=""/>
                     </Grid>
-                    <Button x:Name="BtnApplyMove" Content="Make Move"
-                            Style="{StaticResource ToolBtn}" Margin="0,6,0,0"
-                            HorizontalAlignment="Stretch" Height="28"/>
                     <TextBlock x:Name="TxtMoveError" Foreground="#f66" FontSize="11"
                                TextWrapping="Wrap" Margin="0,3,0,0" Text=""/>
 
