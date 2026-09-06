@@ -99,6 +99,9 @@ internal class Program
             Console.WriteLine("  --ab-corpus-size  Generate a deterministic corpus of N positions instead of the");
             Console.WriteLine("                    built-in 10-position smoke corpus (needed for any KEEP verdict)");
             Console.WriteLine("  --ab-corpus-seed  Seed for the generated corpus (default: 20260906)");
+            Console.WriteLine("  --ab-reference-engine <path>  Adjudicate differing choices with this UCI engine.");
+            Console.WriteLine("                    Required for any KEEP or REVERT verdict.");
+            Console.WriteLine("  --ab-reference-depth <n>      Fixed adjudication depth (default: 16)");
             return 0;
         }
 
@@ -170,6 +173,24 @@ internal class Program
         Console.WriteLine($"Running A/B harness: mode={mode}  depth={depth}  nodeBudget={nodes:N0}  corpus={corpus.Count} ({corpusSource})");
         var results = AbHarness.Run(configA, configB, corpus, maxDepth: depth, maxNodes: nodes);
         var report = AbHarness.BuildReport(results, mode, depth, nodes, corpusSource);
+
+        // Reference adjudication of the positions where the two configurations differ. Without
+        // it the verdict stays INCONCLUSIVE by design, because nothing else in this harness can
+        // say which of two different moves was better.
+        string? refEngine = GetArgValue(args, "--ab-reference-engine");
+        int refDepth = int.TryParse(GetArgValue(args, "--ab-reference-depth"), out int rd) ? rd : 16;
+        if (!string.IsNullOrWhiteSpace(refEngine))
+        {
+            if (!File.Exists(refEngine))
+            {
+                Console.Error.WriteLine($"ERROR: reference engine not found: {refEngine}");
+                return 2;
+            }
+
+            Console.WriteLine($"Adjudicating {report.Disagreements.Count} disagreement(s) with " +
+                              $"{refEngine} at depth {refDepth}...");
+            AbHarness.AdjudicateAsync(report, refEngine, refDepth).GetAwaiter().GetResult();
+        }
 
         string textPath = Path.Combine(outDir, reportStem + ".log");
         string jsonPath = Path.Combine(outDir, reportStem + ".json");
