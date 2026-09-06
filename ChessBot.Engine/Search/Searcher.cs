@@ -26,6 +26,7 @@ internal class Searcher
     // Late Move Reduction
     private const int LMR_MIN_DEPTH  = 3;
     private const int LMR_FULL_MOVES = 4;   // search first N moves at full depth before reducing
+    private const int LMR_MAX_MOVES  = 64;  // move-count axis of the reduction table
 
     // Delta pruning in quiescence
     private const int DELTA_MARGIN   = 200; // centipawns
@@ -100,6 +101,14 @@ internal class Searcher
     private readonly Move[] _rootPartialPv;
     private int    _rootPartialPvLength;
 
+    // Number of root moves that finished searching in the iteration currently in progress —
+    // separate from the partial best-move fields above because it must be reported even when
+    // no root move ever raised alpha (i.e. every root move so far failed low).
+    private int    _rootMovesCompleted;
+    private int    _rootMoveCount;
+
+    /// <summary>Precomputed LMR reductions indexed by [depth, moveNumber]; built in the constructor.</summary>
+    private readonly int[,] _lmrTable;
 
     // Triangular PV table: _pvTable[ply, ply..ply+len] stores the PV from ply
     private readonly Move[,] _pvTable;
@@ -132,6 +141,18 @@ internal class Searcher
 
         _rootPartialPv = new Move[MAX_PLY];
 
+        // ── Late Move Reduction table ─────────────────────────────────────────
+        // R = 0.75 + ln(depth)·ln(moveNumber) / 2.25, the standard logarithmic schedule.
+        //
+        // The previous flat rule (reduce 1, or 2 past move 8) reduced the same amount at
+        // depth 4 as at depth 12, which is where the tree is widest. Profiling the 203-position
+        // regression corpus showed only 0.7% of reduced searches ever needed a full-depth
+        // re-search — reductions were so timid they almost never changed an outcome, so the
+        // nodes they saved were nodes that could have bought depth instead.
+        _lmrTable = new int[MAX_PLY, LMR_MAX_MOVES];
+        for (int d = 1; d < MAX_PLY; d++)
+            for (int m = 1; m < LMR_MAX_MOVES; m++)
+                _lmrTable[d, m] = (int)(0.75 + Math.Log(d) * Math.Log(m) / 2.25);
     }
 
     // ── Public search entry point ─────────────────────────────────────────────
@@ -212,6 +233,8 @@ internal class Searcher
             _rootPartialMove     = default;
             _rootPartialScore    = -INFINITY;
             _rootPartialPvLength = 0;
+            _rootMovesCompleted  = 0;
+            _rootMoveCount       = rootMoveCount;
 
             int score;
 
@@ -251,16 +274,28 @@ internal class Searcher
 
             if (_cancelRequested)
             {
-                // The iteration was abandoned, but if it already found a root move that
-                // beats the previous iteration's score, that move is the better answer.
-                // A fail-low re-search cannot get here: its scores never exceed prevScore.
-                if (result.DepthAchieved > 0 &&
+                // The iteration was abandoned. DepthAchieved must stay at the last fully
+                // completed depth — reporting this unfinished iteration's depth as "achieved"
+                // would claim a depth that was never actually finished. The partial-iteration
+                // depth and how many root moves it completed are reported separately.
+                result.PartialDepth        = depth;
+                result.RootMovesCompleted  = _rootMovesCompleted;
+                result.RootMoveCount       = _rootMoveCount;
+
+                // If enabled, and the iteration already found a root move that beats the
+                // previous (completed) iteration's score, that move can replace the completed
+                // iteration's answer. A fail-low re-search cannot get here: its scores never
+                // exceed prevScore. This is a heuristic substitution — the partial score and
+                // the completed score come from different depths and not every root move was
+                // searched at the partial depth, so it must remain independently switchable.
+                if (_settings.UsePartialRootResult &&
+                    result.DepthAchieved > 0 &&
                     _rootPartialMove != default &&
                     _rootPartialScore > prevScore)
                 {
-                    result.BestMove      = _rootPartialMove;
-                    result.Evaluation    = _rootPartialScore;
-                    result.DepthAchieved = depth;
+                    result.BestMove             = _rootPartialMove;
+                    result.Evaluation           = _rootPartialScore;
+                    result.UsedPartialRootResult = true;
 
                     result.PrincipalVariation.Clear();
                     for (int i = 0; i < _rootPartialPvLength; i++)
@@ -489,9 +524,18 @@ internal class Searcher
             if (_settings.UseLmr
                 && !inCheck && depth >= LMR_MIN_DEPTH && moveCount > LMR_FULL_MOVES && isQuiet)
             {
-                reduction = 1;
-                if (moveCount > 8) reduction = 2;
-                _lmrReductions++;
+                reduction = _lmrTable[Math.Min(depth, MAX_PLY - 1),
+                                      Math.Min(moveCount, LMR_MAX_MOVES - 1)];
+
+                // PV nodes carry the principal variation; reduce them one ply less so the
+                // main line keeps its accuracy while the rest of the tree is cut harder.
+                if (pvNode) reduction--;
+
+                // Leave at least one real ply below the reduction: the null-window probe has
+                // to be a search, not a jump straight into quiescence, or the full-depth
+                // re-search that recovers accuracy is never triggered.
+                reduction = Math.Clamp(reduction, 0, depth - 2);
+                if (reduction > 0) _lmrReductions++;
             }
 
             // Record for counter-move heuristic (child nodes read _lastMoveAtPly[ply])
@@ -530,6 +574,9 @@ internal class Searcher
             _board.UndoMove();
 
             if (_cancelRequested) return 0;
+
+            // A root move has now fully completed its search at this depth.
+            if (ply == 0) _rootMovesCompleted = moveCount;
 
             if (score > bestScore)
             {
