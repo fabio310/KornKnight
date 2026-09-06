@@ -21,7 +21,19 @@ public class SearchSettings
     /// <summary>
     /// Minimum number of nodes to search. If null, defaults to 300,000.
     /// </summary>
+    /// <remarks>
+    /// Declared but never read by the search — kept only so existing callers still compile.
+    /// Use <see cref="MaxNodes"/> for an enforced node budget.
+    /// </remarks>
     public long? MinNodeTarget { get; set; }
+
+    /// <summary>
+    /// Hard node budget. When set, the search stops once this many nodes (main + quiescence)
+    /// have been visited, making the result reproducible: unlike a time limit, the same
+    /// position and settings always produce the same move, score and node count. That is what
+    /// makes a paired A/B comparison of search changes possible without timing noise.
+    /// </summary>
+    public long? MaxNodes { get; set; }
 
     /// <summary>
     /// If true, the search will perform iterative deepening (search at depths 1, 2, ..., until time/depth limit).
@@ -33,10 +45,58 @@ public class SearchSettings
     /// </summary>
     public bool Verbose { get; set; }
 
+    // ── Heuristic toggles ────────────────────────────────────────────────────
+    // All default to true, so normal play is unaffected. Turning them off yields a
+    // plain alpha-beta search, whose score must equal an unpruned minimax of the same
+    // depth — that equivalence is the correctness gate for the search. Null-move,
+    // LMR and futility pruning are deliberately unsound heuristics: they trade exact
+    // scores for depth, so they must be excluded from that comparison.
+
+    /// <summary>Null-move pruning.</summary>
+    public bool UseNullMove { get; set; } = true;
+
+    /// <summary>Late move reductions.</summary>
+    public bool UseLmr { get; set; } = true;
+
+    /// <summary>Futility pruning near the horizon.</summary>
+    public bool UseFutility { get; set; } = true;
+
+    /// <summary>Transposition table probes and cutoffs (stores still happen).</summary>
+    public bool UseTranspositionTable { get; set; } = true;
+
+    /// <summary>Quiescence search at the horizon; when false, the horizon returns a static eval.</summary>
+    public bool UseQuiescence { get; set; } = true;
+
+    /// <summary>Aspiration windows; when false, every iteration uses a full window.</summary>
+    public bool UseAspiration { get; set; } = true;
+
+    /// <summary>
+    /// Check extension (search one ply deeper when in check). Sound, but it changes the
+    /// shape of a fixed-depth tree, so it must be off when comparing against a fixed-depth
+    /// minimax reference.
+    /// </summary>
+    public bool UseCheckExtension { get; set; } = true;
+
     public SearchSettings()
     {
         MinNodeTarget ??= 300_000;
     }
+
+    /// <summary>
+    /// A settings instance with every unsound heuristic disabled — plain alpha-beta with
+    /// quiescence off. Used by the correctness gate that compares against minimax.
+    /// </summary>
+    public static SearchSettings PlainAlphaBeta(int depth) => new()
+    {
+        MaxDepth              = depth,
+        UseNullMove           = false,
+        UseLmr                = false,
+        UseFutility           = false,
+        UseTranspositionTable = false,
+        UseQuiescence         = false,
+        UseAspiration         = false,
+        UseCheckExtension     = false,
+    };
 }
 
 /// <summary>
@@ -114,6 +174,45 @@ public class SearchResult
     /// Used by the match runner to log "Avg TT fill".
     /// </summary>
     public int HashFull { get; set; } = -1;
+
+    // ── Search-shape profiling ───────────────────────────────────────────────
+    // These separate raw execution speed from tree quality: a search can be fast and
+    // still reach little depth if ordering is poor, and the cutoff figures are what
+    // distinguish the two.
+
+    /// <summary>Static evaluation calls (main search and quiescence).</summary>
+    public long EvaluationCalls { get; set; }
+
+    /// <summary>Moves produced by move generation across the whole search.</summary>
+    public long MovesGenerated { get; set; }
+
+    /// <summary>Nodes where a move raised alpha to beta (fail-high).</summary>
+    public long BetaCutoffs { get; set; }
+
+    /// <summary>Fail-highs produced by the first move tried — the move-ordering quality metric.</summary>
+    public long BetaCutoffsFirstMove { get; set; }
+
+    /// <summary>Fraction of fail-highs delivered by the first ordered move (0-1).</summary>
+    public double FirstMoveCutoffRate =>
+        BetaCutoffs > 0 ? (double)BetaCutoffsFirstMove / BetaCutoffs : 0;
+
+    /// <summary>Effective branching factor: nodes^(1/depth) over the completed depth.</summary>
+    public double EffectiveBranchingFactor =>
+        DepthAchieved > 0 && NodesSearched > 0
+            ? Math.Pow(NodesSearched, 1.0 / DepthAchieved)
+            : 0;
+
+    public long NullMoveAttempts   { get; set; }
+    public long NullMoveCutoffs    { get; set; }
+    public long LmrReductions      { get; set; }
+    public long LmrReSearches      { get; set; }
+    public long FutilitySkips      { get; set; }
+    public long PvsReSearches      { get; set; }
+    public long AspirationFailLow  { get; set; }
+    public long AspirationFailHigh { get; set; }
+
+    /// <summary>Draw scores returned for repetition, split out because they are path-dependent.</summary>
+    public long RepetitionDraws    { get; set; }
 }
 
 /// <summary>

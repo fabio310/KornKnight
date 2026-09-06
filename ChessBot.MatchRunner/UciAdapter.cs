@@ -14,6 +14,7 @@ public sealed class UciAdapter : IDisposable
     private StreamWriter? _stdin;
     private StreamReader? _stdout;
     private bool _disposed;
+    private readonly List<string> _handshakeLines = new();
 
     public string EngineName { get; private set; } = "Unknown";
     public bool IsRunning => _process is { HasExited: false };
@@ -97,6 +98,46 @@ public sealed class UciAdapter : IDisposable
     }
 
     /// <summary>
+    /// Analyses a position to a fixed depth and returns the engine's score for it.
+    ///
+    /// <paramref name="restrictToMove"/> maps to UCI "searchmoves": when set, the engine is
+    /// forced to search only that root move, so its score is the value of *that* move rather
+    /// than of the position. Analysing the same position twice — once unrestricted, once
+    /// restricted to the move actually played — yields both sides of a move-loss measurement
+    /// from one pre-move position, on one engine, on one scale.
+    ///
+    /// Clears the hash first so that a fixed depth gives a reproducible score independent of
+    /// what was analysed before.
+    /// </summary>
+    public async Task<UciMoveResult> AnalyzeFenAsync(
+        string fen,
+        int depth,
+        string? restrictToMove = null,
+        CancellationToken ct = default)
+    {
+        EnsureRunning();
+
+        await SendAsync("ucinewgame");
+        await SyncAsync(ct: ct);
+
+        await SendAsync($"position fen {fen}");
+
+        string go = $"go depth {depth}";
+        if (!string.IsNullOrWhiteSpace(restrictToMove))
+            go += $" searchmoves {restrictToMove}";
+
+        await SendAsync(go);
+
+        return await ReadUntilBestMoveAsync(timeoutMs: 120_000, ct);
+    }
+
+    /// <summary>
+    /// Returns the engine's reported id/option lines from the handshake, so an analysis run
+    /// can record the exact configuration it used instead of describing it loosely.
+    /// </summary>
+    public IReadOnlyList<string> HandshakeLines => _handshakeLines;
+
+    /// <summary>
     /// Sends the "ucinewgame" command to reset engine state between games.
     /// </summary>
     public async Task NewGameAsync()
@@ -129,6 +170,13 @@ public sealed class UciAdapter : IDisposable
             // Capture engine name from "id name ..."
             if (line.StartsWith("id name ", StringComparison.OrdinalIgnoreCase))
                 EngineName = line[8..].Trim();
+
+            // Keep id/option/info-string lines so a run can record the engine's actual
+            // reported configuration (threads, hash, NNUE nets) rather than asserting it.
+            if (line.StartsWith("id ", StringComparison.OrdinalIgnoreCase) ||
+                line.StartsWith("option name ", StringComparison.OrdinalIgnoreCase) ||
+                line.StartsWith("info string ", StringComparison.OrdinalIgnoreCase))
+                _handshakeLines.Add(line);
 
             if (line.StartsWith(expectedToken, StringComparison.OrdinalIgnoreCase))
                 return;
