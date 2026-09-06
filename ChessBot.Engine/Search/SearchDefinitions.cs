@@ -87,6 +87,25 @@ public class SearchSettings
     public bool UsePartialRootResult { get; set; } = false;
 
     /// <summary>
+    /// Optional override of the LMR schedule's base term (R = LmrBaseOverride + ln(depth)·ln(moveCount) / LmrDivisorOverride).
+    /// Null = use the engine's built-in default (0.75). Exists solely to allow controlled
+    /// A/B comparison of LMR schedules without recompiling; never set by normal callers.
+    /// </summary>
+    public double? LmrBaseOverride { get; set; }
+
+    /// <summary>
+    /// Optional override of the LMR schedule's divisor term. Null = use the engine's
+    /// built-in default (2.25). See <see cref="LmrBaseOverride"/>.
+    /// </summary>
+    public double? LmrDivisorOverride { get; set; }
+
+    /// <summary>
+    /// Optional override of how many first moves at a node are searched at full depth
+    /// before LMR starts reducing (built-in default: 4). See <see cref="LmrBaseOverride"/>.
+    /// </summary>
+    public int? LmrFullMovesOverride { get; set; }
+
+    /// <summary>
     /// Check extension (search one ply deeper when in check). Sound, but it changes the
     /// shape of a fixed-depth tree, so it must be off when comparing against a fixed-depth
     /// minimax reference.

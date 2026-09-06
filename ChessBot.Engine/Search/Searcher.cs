@@ -27,6 +27,14 @@ internal class Searcher
     private const int LMR_MIN_DEPTH  = 3;
     private const int LMR_FULL_MOVES = 4;   // search first N moves at full depth before reducing
     private const int LMR_MAX_MOVES  = 64;  // move-count axis of the reduction table
+    private const double LMR_BASE_DEFAULT    = 0.75;
+    private const double LMR_DIVISOR_DEFAULT = 2.25;
+
+    // Current LMR schedule in effect (rebuilt only when SearchSettings overrides differ from
+    // the values the table was last built with — see Search() and BuildLmrTable above).
+    private int    _lmrFullMoves;
+    private double _lmrTableBase;
+    private double _lmrTableDivisor;
 
     // Delta pruning in quiescence
     private const int DELTA_MARGIN   = 200; // centipawns
@@ -173,9 +181,17 @@ internal class Searcher
         // re-search — reductions were so timid they almost never changed an outcome, so the
         // nodes they saved were nodes that could have bought depth instead.
         _lmrTable = new int[MAX_PLY, LMR_MAX_MOVES];
+        BuildLmrTable(LMR_BASE_DEFAULT, LMR_DIVISOR_DEFAULT);
+        _lmrFullMoves = LMR_FULL_MOVES;
+        _lmrTableBase = LMR_BASE_DEFAULT;
+        _lmrTableDivisor = LMR_DIVISOR_DEFAULT;
+    }
+
+    private void BuildLmrTable(double lmrBase, double lmrDivisor)
+    {
         for (int d = 1; d < MAX_PLY; d++)
             for (int m = 1; m < LMR_MAX_MOVES; m++)
-                _lmrTable[d, m] = (int)(0.75 + Math.Log(d) * Math.Log(m) / 2.25);
+                _lmrTable[d, m] = (int)(lmrBase + Math.Log(d) * Math.Log(m) / lmrDivisor);
     }
 
     // ── Public search entry point ─────────────────────────────────────────────
@@ -183,6 +199,19 @@ internal class Searcher
     public SearchResult Search(SearchSettings settings, CancellationToken ct = default)
     {
         _settings        = settings ?? new SearchSettings();
+
+        // ── Controlled A/B override of the LMR schedule (see SearchSettings.LmrBaseOverride) ──
+        double wantBase    = _settings.LmrBaseOverride    ?? LMR_BASE_DEFAULT;
+        double wantDivisor = _settings.LmrDivisorOverride ?? LMR_DIVISOR_DEFAULT;
+        int    wantFullMoves = _settings.LmrFullMovesOverride ?? LMR_FULL_MOVES;
+        if (wantBase != _lmrTableBase || wantDivisor != _lmrTableDivisor)
+        {
+            BuildLmrTable(wantBase, wantDivisor);
+            _lmrTableBase    = wantBase;
+            _lmrTableDivisor = wantDivisor;
+        }
+        _lmrFullMoves = wantFullMoves;
+
         _nodesSearched   = 0;
         _qnodesSearched  = 0;
         _cancelRequested = false;
@@ -569,7 +598,7 @@ internal class Searcher
             // ── Late Move Reductions ──────────────────────────────────────
             int reduction = 0;
             if (_settings.UseLmr
-                && !inCheck && depth >= LMR_MIN_DEPTH && moveCount > LMR_FULL_MOVES && isQuiet)
+                && !inCheck && depth >= LMR_MIN_DEPTH && moveCount > _lmrFullMoves && isQuiet)
             {
                 reduction = _lmrTable[Math.Min(depth, MAX_PLY - 1),
                                       Math.Min(moveCount, LMR_MAX_MOVES - 1)];
