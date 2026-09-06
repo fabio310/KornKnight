@@ -233,10 +233,17 @@ public class PositionAnalyzer
             w.WriteLine($"  PVS re-searches              : {cbMoves.Sum(m => m.PvsReSearches):N0}");
             w.WriteLine($"  Aspiration fail-low/fail-high: {cbMoves.Sum(m => m.AspirationFailLow):N0} / {cbMoves.Sum(m => m.AspirationFailHigh):N0}");
             w.WriteLine($"  Repetition draws             : {cbMoves.Sum(m => m.RepetitionDraws):N0}");
-            // EffectiveBranchingFactor (nodes^(1/depth)) is inherently a per-move metric and cannot
-            // be meaningfully summed across moves, so this remains a per-move average by design.
-            w.WriteLine($"  Avg effective branching factor (per-move avg): {cbMoves.Where(m => m.EffectiveBranchingFactor > 0).DefaultIfEmpty().Average(m => m?.EffectiveBranchingFactor ?? 0):F2}");
+            w.WriteLine($"  Aspiration retry nodes       : {cbMoves.Sum(m => m.AspirationRetryNodes):N0}");
+            w.WriteLine($"  LMR plies saved              : {cbMoves.Sum(m => m.LmrPliesSaved):N0}");
+            // Ratio of the last completed iteration's own nodes to the previous iteration's,
+            // averaged over moves where two iterations completed. This is not the old
+            // nodes^(1/depth) figure, which mixed cumulative iterations with a partial one.
+            var ratios = cbMoves.Where(m => m.IterationNodeRatio > 0).Select(m => m.IterationNodeRatio).ToList();
+            w.WriteLine($"  Iteration node ratio (per-move avg, {ratios.Count} moves): " +
+                        $"{(ratios.Count > 0 ? ratios.Average() : 0):F2}");
+            w.WriteLine($"  Moves with a cancelled iteration: {cbMoves.Count(m => m.PartialDepth > 0)}");
             w.WriteLine($"  Moves using partial root result: {cbMoves.Count(m => m.UsedPartialRootResult)}");
+            w.WriteLine($"  Unsearched fallback moves    : {cbMoves.Count(m => m.IsUnsearchedFallbackMove)}");
         }
 
         // ── Move list ─────────────────────────────────────────────────────────
@@ -281,9 +288,26 @@ public class PositionAnalyzer
                 w.WriteLine($"  Search shape: qnodes {m.QNodes:N0}  evalCalls {m.EvaluationCalls:N0}  movesGen {m.MovesGenerated:N0}");
                 w.WriteLine($"  Cutoffs     : beta {m.BetaCutoffs:N0} (firstMove {m.FirstMoveCutoffRate:P1})  nullMove {m.NullMoveAttempts:N0}/{m.NullMoveCutoffs:N0}");
                 w.WriteLine($"  Reductions  : LMR {m.LmrReductions:N0}/{m.LmrReSearches:N0} re-search  futilitySkips {m.FutilitySkips:N0}  PVS re-search {m.PvsReSearches:N0}");
-                w.WriteLine($"  Aspiration  : failLow {m.AspirationFailLow:N0}  failHigh {m.AspirationFailHigh:N0}  repetitionDraws {m.RepetitionDraws:N0}  EBF {m.EffectiveBranchingFactor:F2}");
-                if (m.UsedPartialRootResult)
-                    w.WriteLine($"  Partial root: used (partial depth {m.PartialDepth}, completed depth {m.Depth})");
+                w.WriteLine($"  Aspiration  : failLow {m.AspirationFailLow:N0}  failHigh {m.AspirationFailHigh:N0}  " +
+                            $"retryNodes {m.AspirationRetryNodes:N0}  repetitionDraws {m.RepetitionDraws:N0}  " +
+                            $"iterNodeRatio {m.IterationNodeRatio:F2}");
+                w.WriteLine($"  Nodes       : main {m.MainNodes:N0}  q {m.QNodes:N0}  total {m.Nodes:N0}  " +
+                            $"lastIteration {m.LastIterationNodes:N0}");
+
+                // Partial-iteration facts are reported whenever an iteration was cancelled, not
+                // only when its candidate was selected: root coverage explains how much of the
+                // deeper iteration was actually seen regardless of which move was reported.
+                if (m.PartialDepth > 0)
+                {
+                    string selection = m.UsedPartialRootResult
+                        ? $"selected (score {(m.PartialScoreIsExact ? "exact" : "lower bound")})"
+                        : "not selected";
+                    w.WriteLine($"  Partial     : depth {m.PartialDepth} cancelled, completed depth {m.Depth}, " +
+                                $"root coverage {m.RootMovesCompleted}/{m.RootMoveCount} " +
+                                $"({m.RootCoveragePercent:F1}%), {selection}");
+                }
+                if (m.IsUnsearchedFallbackMove)
+                    w.WriteLine("  Fallback    : budget too small for depth 1 — move is an unevaluated legal fallback");
             }
 
             // Raw UCI info lines (external engine only)

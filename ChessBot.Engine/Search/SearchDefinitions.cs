@@ -106,6 +106,15 @@ public class SearchSettings
     public int? LmrFullMovesOverride { get; set; }
 
     /// <summary>
+    /// Reproduces the flat LMR schedule the engine used before the logarithmic table was
+    /// introduced: reduce by 1 from the fifth move onward, by 2 past the eighth, regardless
+    /// of depth. Exists so the current schedule can be A/B compared against the exact
+    /// implementation it replaced, rather than against another logarithmic parameterisation.
+    /// When true, <see cref="LmrBaseOverride"/> and <see cref="LmrDivisorOverride"/> are ignored.
+    /// </summary>
+    public bool UseLegacyFlatLmr { get; set; }
+
+    /// <summary>
     /// Check extension (search one ply deeper when in check). Sound, but it changes the
     /// shape of a fixed-depth tree, so it must be off when comparing against a fixed-depth
     /// minimax reference.
@@ -205,9 +214,23 @@ public class SearchResult
     public bool PartialScoreIsExact { get; set; }
 
     /// <summary>
-    /// Total nodes evaluated during the search.
+    /// Total nodes visited: main-search nodes plus quiescence nodes. Identical to
+    /// <see cref="TotalNodes"/>; kept under this name because existing callers and log
+    /// formats use it.
     /// </summary>
     public long NodesSearched { get; set; }
+
+    /// <summary>Main-search (non-quiescence) nodes only.</summary>
+    public long MainNodes { get; set; }
+
+    /// <summary>Quiescence nodes only. Same value as <see cref="QNodesSearched"/>.</summary>
+    public long QNodes => QNodesSearched;
+
+    /// <summary>Main + quiescence nodes. Same value as <see cref="NodesSearched"/>.</summary>
+    public long TotalNodes => MainNodes + QNodesSearched;
+
+    /// <summary>Share of total nodes spent in quiescence (0-1).</summary>
+    public double QNodeShare => TotalNodes > 0 ? (double)QNodesSearched / TotalNodes : 0;
 
     /// <summary>
     /// Nodes per second (performance metric).
@@ -240,7 +263,10 @@ public class SearchResult
 
     // ── Extended diagnostics ─────────────────────────────────────────────────
 
-    /// <summary>Quiescence nodes searched (not counted in NodesSearched).</summary>
+    /// <summary>
+    /// Quiescence nodes searched. These ARE included in <see cref="NodesSearched"/>
+    /// (which is main + quiescence); use <see cref="MainNodes"/> for the main-search count.
+    /// </summary>
     public long QNodesSearched { get; set; }
 
     /// <summary>Maximum quiescence/selective depth reached.</summary>
@@ -285,11 +311,74 @@ public class SearchResult
     public double FirstMoveCutoffRate =>
         BetaCutoffs > 0 ? (double)BetaCutoffsFirstMove / BetaCutoffs : 0;
 
-    /// <summary>Effective branching factor: nodes^(1/depth) over the completed depth.</summary>
-    public double EffectiveBranchingFactor =>
-        DepthAchieved > 0 && NodesSearched > 0
-            ? Math.Pow(NodesSearched, 1.0 / DepthAchieved)
-            : 0;
+    /// <summary>
+    /// Node counts of each completed iterative-deepening iteration, indexed by depth
+    /// (<c>IterationNodes[d]</c> = total nodes the search had visited when depth <c>d</c>
+    /// finished). Index 0 is unused. Only populated for completed iterations; a cancelled
+    /// iteration contributes nothing here even though its nodes count towards
+    /// <see cref="NodesSearched"/>.
+    /// </summary>
+    public List<long> IterationNodes { get; set; } = new();
+
+    /// <summary>
+    /// Nodes spent by the last completed iteration alone (its cumulative count minus the
+    /// previous iteration's). This is the quantity an effective-branching-factor estimate
+    /// needs; the cumulative total is not.
+    /// </summary>
+    public long LastIterationNodes { get; set; }
+
+    /// <summary>
+    /// Effective branching factor estimated the standard way: the ratio of the last completed
+    /// iteration's own node count to the previous iteration's.
+    ///
+    /// The earlier metric raised the *cumulative* node total — nodes from every completed
+    /// iteration plus an unfinished one — to the power 1/depth and called the result an EBF.
+    /// That quantity has no branching-factor meaning: iterative deepening re-searches the tree
+    /// at every depth, so the cumulative total is a sum of geometrically growing terms, and an
+    /// unfinished iteration contributes an arbitrary partial amount. Returns 0 when fewer than
+    /// two iterations completed, rather than inventing a value.
+    /// </summary>
+    public double IterationNodeRatio
+    {
+        get
+        {
+            if (IterationNodes.Count < 3) return 0;   // need two completed iterations (index 0 unused)
+            long last = IterationNodes[^1] - IterationNodes[^2];
+            long prev = IterationNodes[^2] - IterationNodes[^3];
+            return prev > 0 && last > 0 ? (double)last / prev : 0;
+        }
+    }
+
+    /// <summary>Aspiration re-search attempts (fail-low plus fail-high) across the search.</summary>
+    public long AspirationRetries => AspirationFailLow + AspirationFailHigh;
+
+    /// <summary>
+    /// True when the search was cancelled while an aspiration re-search was in flight, rather
+    /// than during a first attempt at a depth. This is the case the root-partial state reset
+    /// has to handle correctly, so it is reported explicitly instead of being inferred.
+    /// </summary>
+    public bool CancelledDuringAspirationRetry { get; set; }
+
+    /// <summary>
+    /// Nodes spent on aspiration re-searches — the cost of a window that was set too narrow.
+    /// Measured as nodes visited inside a re-search attempt, not the whole iteration.
+    /// </summary>
+    public long AspirationRetryNodes { get; set; }
+
+    /// <summary>
+    /// LMR reductions bucketed by remaining depth (index = depth, capped) so a schedule can be
+    /// tuned against where it actually fires instead of against a single total.
+    /// </summary>
+    public long[] LmrReductionsByDepth { get; set; } = new long[LmrBucketCount];
+
+    /// <summary>LMR reductions bucketed by move number at the node (index = move number, capped).</summary>
+    public long[] LmrReductionsByMoveNumber { get; set; } = new long[LmrBucketCount];
+
+    /// <summary>Total plies actually removed by LMR (sum of reductions), not the count of reduced moves.</summary>
+    public long LmrPliesSaved { get; set; }
+
+    /// <summary>Upper bound of the LMR telemetry buckets; values at or above land in the last bucket.</summary>
+    public const int LmrBucketCount = 32;
 
     public long NullMoveAttempts   { get; set; }
     public long NullMoveCutoffs    { get; set; }
