@@ -27,6 +27,8 @@ internal class Program
             Console.WriteLine("  --reference-engine   Path to a reference UCI engine used for post-game same-engine");
             Console.WriteLine("                       move-loss analysis (default: unset = analysis skipped)");
             Console.WriteLine("  --reference-depth    Fixed search depth for reference-engine analysis (default: 18)");
+            Console.WriteLine("  --reference-option   Reference-engine UCI option as name=value, e.g. Threads=1 (repeatable)");
+            Console.WriteLine("  --moveloss-retries   Deterministic re-search attempts before an ineligible sample is excluded (default: 2)");
             Console.WriteLine("  --use-partial-root-result  Enable UsePartialRootResult in ChessBot's search (default: off)");
             Console.WriteLine("  --quiet              Suppress move-by-move output");
             Console.WriteLine();
