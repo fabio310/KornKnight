@@ -62,6 +62,17 @@ public sealed class UciAdapter : IDisposable
     }
 
     /// <summary>
+    /// Sends "isready" and waits for "readyok" — used to make sure the engine has
+    /// processed pending commands (e.g. setoption) before the next search.
+    /// </summary>
+    public async Task SyncAsync(int timeoutMs = 5000, CancellationToken ct = default)
+    {
+        EnsureRunning();
+        await SendAsync("isready");
+        await WaitForAsync("readyok", timeoutMs, ct);
+    }
+
+    /// <summary>
     /// Asks the engine for the best move from the given FEN with move list applied,
     /// using a fixed move-time budget.
     /// Returns the best move in UCI format (e.g., "e2e4", "e7e8q") and any info lines.

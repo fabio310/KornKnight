@@ -10,4 +10,9 @@
 	<LangVersion>latest</LangVersion>
   </PropertyGroup>
 
+  <ItemGroup>
+	<!-- The sweep mode plays real games; the game loop lives in MatchRunner. -->
+	<ProjectReference Include="..\ChessBot.MatchRunner\ChessBot.MatchRunner.csproj" />
+  </ItemGroup>
+
 </Project>
