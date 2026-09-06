@@ -58,14 +58,14 @@ internal class MoveOrdering
     }
 
     /// <summary>
-    /// Sorts moves in-place using a pre-allocated score buffer and insertion sort.
-    /// Returns the same (now sorted) list – zero heap allocations.
-    /// Best for the typical node move count of 20–35 where insertion sort beats List.Sort overhead.
+    /// Sorts the first <paramref name="count"/> entries of a caller-supplied array in-place using
+    /// a pre-allocated score buffer and insertion sort – zero heap allocations. This is the
+    /// hot-path overload: root move handling, negamax, and quiescence all pass fixed-size Move[]
+    /// buffers (paired with a count) rather than List&lt;Move&gt;.
+    /// Best for the typical node move count of 20–35 where insertion sort beats Array.Sort overhead.
     /// </summary>
-    public List<Move> OrderMoves(List<Move> moves, Move ttMove, Move lastOpponentMove, int depth)
+    public void OrderMoves(Move[] moves, int count, Move ttMove, Move lastOpponentMove, int depth)
     {
-        int count = moves.Count;
-
         // Score every move into the pre-allocated buffer (avoids List<(Move,int)> allocation)
         for (int i = 0; i < count; i++)
             _moveScores[i] = CalculateMoveScore(moves[i], ttMove, lastOpponentMove, depth);
@@ -85,16 +85,14 @@ internal class MoveOrdering
             moves[j + 1] = m;
             _moveScores[j + 1] = s;
         }
-
-        return moves; // same list, sorted in-place
     }
 
     /// <summary>
     /// Overload for backward compatibility (used in quiescence search).
     /// </summary>
-    public List<Move> OrderMoves(List<Move> moves, Move pvMove, int depth)
+    public void OrderMoves(Move[] moves, int count, Move pvMove, int depth)
     {
-        return OrderMoves(moves, pvMove, default, depth);
+        OrderMoves(moves, count, pvMove, default, depth);
     }
 
     /// <summary>
@@ -108,13 +106,14 @@ internal class MoveOrdering
         if (move == ttMove && ttMove != default)
             return 999999;
 
-        // Captures: scored by MVV-LVA + SEE (good trades first)
-        if ((move.MoveType & MoveType.Capture) != 0)
+        // Captures: scored by MVV-LVA + SEE (good trades first).
+        // IsCapture() includes en passant, so it is ordered as a capture rather than a quiet move.
+        if (move.MoveType.IsCapture())
         {
             Piece victim = _board.GetPiece(move.To);
             Piece attacker = _board.GetPiece(move.From);
 
-            // En passant: victim is always a pawn
+            // En passant: the target square is empty; the victim is always a pawn.
             if ((move.MoveType & MoveType.EnPassant) != 0)
                 victim = new Piece(_board.State.ActiveColor.Opposite(), PieceType.Pawn);
 
@@ -223,8 +222,11 @@ internal class MoveOrdering
         Piece capturedPiece = _board.GetPiece(toSquare);
         Piece movingPiece = _board.GetPiece(captureMove.From);
 
-        // Start with the material gain from the capture
-        int gain = capturedPiece.Type.MaterialValue();
+        // Start with the material gain from the capture. En passant captures land on an empty
+        // square, so the victim (always a pawn) must be valued explicitly.
+        int gain = (captureMove.MoveType & MoveType.EnPassant) != 0
+            ? PieceType.Pawn.MaterialValue()
+            : capturedPiece.Type.MaterialValue();
 
         // For speed, we use a simplified SEE: just check if it's defended/attacking.
         // Full SEE would recurse, but this is a good balance for move ordering.
