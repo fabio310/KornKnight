@@ -12,6 +12,20 @@ public sealed class EvaluatorConfig
 
     private EvaluatorConfig() { }
 
+    /// <summary>
+    /// Builds a config for evaluating one already-populated directory of .pgn/.log files
+    /// (used by the sweep mode to run the normal report pipeline per round).
+    /// </summary>
+    public static EvaluatorConfig ForDirectory(string pgnDir, string outDir,
+                                               double? referenceElo = null, bool verbose = false)
+        => new()
+        {
+            PgnDir       = pgnDir,
+            OutDir       = outDir,
+            ReferenceElo = referenceElo,
+            Verbose      = verbose
+        };
+
     public static EvaluatorConfig Parse(string[] args)
     {
         var cfg = new EvaluatorConfig();
@@ -44,6 +58,8 @@ public sealed class EvaluatorConfig
     public static void PrintUsage()
     {
         Console.WriteLine("Usage: ChessBot.EloEvaluator [options]");
+        Console.WriteLine("       ChessBot.EloEvaluator sweep [options]   (play a strength sweep vs. Stockfish;");
+        Console.WriteLine("                                                run 'sweep --help' for its options)");
         Console.WriteLine();
         Console.WriteLine("Options:");
         Console.WriteLine("  --pgn-dir <dir>         Directory containing .pgn and .log files  (default: pgns)");

@@ -1,6 +1,13 @@
 namespace ChessBot.MatchRunner;
 
 /// <summary>
+/// A single UCI option to send to the external engine before play starts.
+/// </summary>
+/// <param name="Name">UCI option name, e.g. "UCI_Elo".</param>
+/// <param name="Value">UCI option value, e.g. "1500".</param>
+public readonly record struct UciOptionSetting(string Name, string Value);
+
+/// <summary>
 /// Configuration for a match between ChessBot and an external UCI engine.
 /// </summary>
 public class MatchConfig
@@ -27,6 +34,41 @@ public class MatchConfig
     public bool Verbose { get; set; } = true;
 
     /// <summary>
+    /// When set, the external engine is capped to this Elo via the standard UCI options
+    /// "UCI_LimitStrength" (true) and "UCI_Elo". Null = no strength limit (full strength).
+    /// </summary>
+    public int? EngineElo { get; set; }
+
+    /// <summary>
+    /// Extra UCI options sent to the external engine right after the handshake.
+    /// Applied after the <see cref="EngineElo"/> options, so they can override them.
+    /// </summary>
+    public List<UciOptionSetting> EngineOptions { get; } = new();
+
+    /// <summary>
+    /// Sends the configured UCI options to an already-initialized engine.
+    /// Must be called after <see cref="UciAdapter.InitializeAsync"/> and before the
+    /// first "position"/"go" command. A no-op when nothing is configured.
+    /// </summary>
+    public async Task ApplyEngineOptionsAsync(UciAdapter engine, CancellationToken ct = default)
+    {
+        if (EngineElo is null && EngineOptions.Count == 0)
+            return;
+
+        if (EngineElo is int elo)
+        {
+            await engine.SetOptionAsync("UCI_LimitStrength", "true");
+            await engine.SetOptionAsync("UCI_Elo", elo.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        foreach (var opt in EngineOptions)
+            await engine.SetOptionAsync(opt.Name, opt.Value);
+
+        // Make sure the engine has digested the options before the first search.
+        await engine.SyncAsync(ct: ct);
+    }
+
+    /// <summary>
     /// Parse command-line arguments into a MatchConfig.
     /// Supported flags:
     ///   --engine &lt;path&gt;
@@ -34,6 +76,8 @@ public class MatchConfig
     ///   --games &lt;n&gt;
     ///   --pgn-dir &lt;dir&gt;
     ///   --blunder &lt;cp&gt;
+    ///   --engine-elo &lt;elo&gt;
+    ///   --engine-option &lt;name=value&gt;   (repeatable)
     ///   --quiet
     /// </summary>
     public static MatchConfig Parse(string[] args)
@@ -58,6 +102,18 @@ public class MatchConfig
                 case "--blunder" when i + 1 < args.Length:
                     if (int.TryParse(args[++i], out int b)) cfg.BlunderThresholdCp = b;
                     break;
+                case "--engine-elo" when i + 1 < args.Length:
+                    if (int.TryParse(args[++i], out int elo)) cfg.EngineElo = elo;
+                    break;
+                case "--engine-option" when i + 1 < args.Length:
+                    {
+                        string raw = args[++i];
+                        int eq = raw.IndexOf('=');
+                        if (eq > 0)
+                            cfg.EngineOptions.Add(new UciOptionSetting(
+                                raw[..eq].Trim(), raw[(eq + 1)..].Trim()));
+                        break;
+                    }
                 case "--quiet":
                     cfg.Verbose = false;
                     break;

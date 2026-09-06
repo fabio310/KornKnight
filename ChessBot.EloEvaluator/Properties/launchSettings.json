@@ -2,7 +2,7 @@
   "profiles": {
     "ChessBot.EloEvaluator": {
       "commandName": "Project",
-      "commandLineArgs": "--pgn-dir \"C:\\Users\\Fabio\\source\\repos\\Chess\\pgns\" --reference-elo 3650 --out \"C:\\Users\\Fabio\\source\\repos\\Chess\\pgns\""
+      "commandLineArgs": "sweep --verbose"
     }
   }
 }
