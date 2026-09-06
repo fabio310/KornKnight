@@ -10,6 +10,9 @@ internal class Program
     {
         Console.WriteLine("=== ChessBot Match Runner ===");
 
+        if (args.Contains("--ab-harness"))
+            return RunAbHarness(args);
+
         var cfg = MatchConfig.Parse(args);
 
         if (string.IsNullOrWhiteSpace(cfg.ExternalEnginePath))
@@ -31,6 +34,9 @@ internal class Program
             Console.WriteLine("  --moveloss-retries   Deterministic re-search attempts before an ineligible sample is excluded (default: 2)");
             Console.WriteLine("  --use-partial-root-result  Enable UsePartialRootResult in ChessBot's search (default: off)");
             Console.WriteLine("  --quiet              Suppress move-by-move output");
+            Console.WriteLine();
+            Console.WriteLine("  --ab-harness         Run a controlled, no-external-engine A/B comparison instead of a match");
+            Console.WriteLine("                       (see --ab-harness --help for its own options)");
             Console.WriteLine();
             Console.WriteLine("No --engine path supplied. Exiting.");
             return 1;
@@ -65,5 +71,77 @@ internal class Program
         Console.WriteLine($"Summary written to: {outcome.SummaryPath}");
 
         return 0;
+    }
+
+    /// <summary>
+    /// Runs a controlled, no-external-engine A/B comparison. Supported flags:
+    ///   --ab-harness             (required to enter this mode)
+    ///   --ab-mode partial-root|lmr   (default: partial-root)
+    ///   --ab-out &lt;dir&gt;           (default: ab_reports)
+    ///   --ab-depth &lt;n&gt;           (default: 8)
+    ///   --ab-nodes &lt;n&gt;           (default: 200000)
+    /// </summary>
+    private static int RunAbHarness(string[] args)
+    {
+        if (args.Contains("--help"))
+        {
+            Console.WriteLine("Usage: ChessBot.MatchRunner --ab-harness [--ab-mode partial-root|lmr] [--ab-out <dir>] [--ab-depth <n>] [--ab-nodes <n>]");
+            Console.WriteLine("  --ab-mode   partial-root: baseline vs UsePartialRootResult=true (default)");
+            Console.WriteLine("              lmr: baseline LMR schedule vs an alternative schedule");
+            Console.WriteLine("  --ab-out    Output directory for the report (default: ab_reports)");
+            Console.WriteLine("  --ab-depth  Fixed max search depth per position (default: 8)");
+            Console.WriteLine("  --ab-nodes  Node budget per position (default: 200000)");
+            return 0;
+        }
+
+        string mode = GetArgValue(args, "--ab-mode") ?? "partial-root";
+        string outDir = GetArgValue(args, "--ab-out") ?? "ab_reports";
+        int depth = int.TryParse(GetArgValue(args, "--ab-depth"), out int d) ? d : 8;
+        long nodes = long.TryParse(GetArgValue(args, "--ab-nodes"), out long n) ? n : 200_000;
+
+        Directory.CreateDirectory(outDir);
+
+        AbConfig configA;
+        AbConfig configB;
+        string reportName;
+
+        switch (mode)
+        {
+            case "lmr":
+                configA = new AbConfig { Name = "baseline-lmr", Build = () => new ChessBot.Engine.Search.SearchSettings() };
+                configB = new AbConfig
+                {
+                    Name = "alt-lmr",
+                    Build = () => new ChessBot.Engine.Search.SearchSettings
+                    {
+                        LmrBaseOverride    = 1.0,
+                        LmrDivisorOverride = 2.0,
+                    },
+                };
+                reportName = "ab_report_lmr.log";
+                break;
+
+            case "partial-root":
+            default:
+                configA = new AbConfig { Name = "baseline", Build = () => new ChessBot.Engine.Search.SearchSettings { UsePartialRootResult = false } };
+                configB = new AbConfig { Name = "partial-root", Build = () => new ChessBot.Engine.Search.SearchSettings { UsePartialRootResult = true } };
+                reportName = "ab_report_partial_root.log";
+                break;
+        }
+
+        Console.WriteLine($"Running A/B harness: mode={mode}  depth={depth}  nodeBudget={nodes:N0}");
+        var results = AbHarness.Run(configA, configB, maxDepth: depth, maxNodes: nodes);
+
+        string reportPath = Path.Combine(outDir, reportName);
+        AbHarness.WriteReport(results, reportPath);
+
+        Console.WriteLine($"A/B report written to: {reportPath}");
+        return 0;
+    }
+
+    private static string? GetArgValue(string[] args, string flag)
+    {
+        int idx = Array.IndexOf(args, flag);
+        return idx >= 0 && idx + 1 < args.Length ? args[idx + 1] : null;
     }
 }
