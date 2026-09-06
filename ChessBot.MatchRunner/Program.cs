@@ -20,7 +20,8 @@ internal class Program
             Console.WriteLine("Usage: ChessBot.MatchRunner --engine <path> [--time <ms>] [--games <n>] [--pgn-dir <dir>] [--quiet]");
             Console.WriteLine("  --engine             Path to external UCI engine executable");
             Console.WriteLine("  --time               Milliseconds per move (default: 1000)");
-            Console.WriteLine("  --games              TOTAL games played, both colors combined (default: 2; must be even)");
+            Console.WriteLine("  --games              EXACT total games played, both colors combined (default: 2).");
+            Console.WriteLine("                       Odd totals are allowed; colors alternate and the imbalance is reported.");
             Console.WriteLine("  --games-per-side     Unambiguous alternative: n games as White + n as Black");
             Console.WriteLine("  --pgn-dir            PGN output directory (default: pgns)");
             Console.WriteLine("  --blunder            Cross-engine evaluation disagreement threshold in centipawns (default: 200)");
@@ -61,10 +62,11 @@ internal class Program
         if (!string.IsNullOrWhiteSpace(cfg.ReferenceEnginePath))
             Console.WriteLine($"Reference engine: {cfg.ReferenceEnginePath} (depth {cfg.ReferenceEngineDepth})");
         Console.WriteLine($"UsePartialRootResult: {cfg.UsePartialRootResult}");
-        Console.WriteLine($"Games: {cfg.GamesPerSide} per side ({cfg.GamesPerSide * 2} total)");
+        Console.WriteLine($"Games: {cfg.TotalGames} total" +
+                          (cfg.ColorImbalance > 0 ? $" (odd: {(cfg.TotalGames + 1) / 2} as White, {cfg.TotalGames / 2} as Black)" : " (evenly split between colors)"));
 
 
-        var outcome = await MatchExecutor.RunAsync(cfg);
+        var outcome = await MatchExecutor.RunAsync(cfg, commandLineArgs: args);
 
         Console.WriteLine();
         Console.WriteLine($"=== Match complete: +{outcome.Wins}={outcome.Draws}-{outcome.Losses} for ChessBot ===");
@@ -87,10 +89,13 @@ internal class Program
         {
             Console.WriteLine("Usage: ChessBot.MatchRunner --ab-harness [--ab-mode partial-root|lmr] [--ab-out <dir>] [--ab-depth <n>] [--ab-nodes <n>]");
             Console.WriteLine("  --ab-mode   partial-root: baseline vs UsePartialRootResult=true (default)");
-            Console.WriteLine("              lmr: baseline LMR schedule vs an alternative schedule");
+            Console.WriteLine("              lmr: legacy flat schedule vs the current logarithmic schedule");
             Console.WriteLine("  --ab-out    Output directory for the report (default: ab_reports)");
             Console.WriteLine("  --ab-depth  Fixed max search depth per position (default: 8)");
-            Console.WriteLine("  --ab-nodes  Node budget per position (default: 200000)");
+            Console.WriteLine("  --ab-nodes  Enforced node budget per position (default: 200000)");
+            Console.WriteLine("  --ab-corpus-size  Generate a deterministic corpus of N positions instead of the");
+            Console.WriteLine("                    built-in 10-position smoke corpus (needed for any KEEP verdict)");
+            Console.WriteLine("  --ab-corpus-seed  Seed for the generated corpus (default: 20260906)");
             return 0;
         }
 
@@ -98,44 +103,79 @@ internal class Program
         string outDir = GetArgValue(args, "--ab-out") ?? "ab_reports";
         int depth = int.TryParse(GetArgValue(args, "--ab-depth"), out int d) ? d : 8;
         long nodes = long.TryParse(GetArgValue(args, "--ab-nodes"), out long n) ? n : 200_000;
+        int corpusSize = int.TryParse(GetArgValue(args, "--ab-corpus-size"), out int cs) ? cs : 0;
+        int corpusSeed = int.TryParse(GetArgValue(args, "--ab-corpus-seed"), out int seed) ? seed : 20260906;
 
         Directory.CreateDirectory(outDir);
 
+        IReadOnlyList<string> corpus;
+        string corpusSource;
+        if (corpusSize > 0)
+        {
+            corpus = AbHarness.GenerateCorpus(corpusSize, corpusSeed);
+            corpusSource = $"generated, seed {corpusSeed}";
+        }
+        else
+        {
+            corpus = AbHarness.DefaultCorpus;
+            corpusSource = "built-in smoke corpus";
+        }
+
         AbConfig configA;
         AbConfig configB;
-        string reportName;
+        string reportStem;
 
         switch (mode)
         {
             case "lmr":
-                configA = new AbConfig { Name = "baseline-lmr", Build = () => new ChessBot.Engine.Search.SearchSettings() };
+                // Compares the schedule the engine replaced against the one it now uses, rather
+                // than two parameterisations of the new one.
+                configA = new AbConfig
+                {
+                    Name = "legacy-flat-lmr",
+                    Description = "pre-table schedule: reduce 1 from move 5, 2 past move 8, depth-independent, no PV relief",
+                    Build = () => new ChessBot.Engine.Search.SearchSettings { UseLegacyFlatLmr = true },
+                };
                 configB = new AbConfig
                 {
-                    Name = "alt-lmr",
-                    Build = () => new ChessBot.Engine.Search.SearchSettings
-                    {
-                        LmrBaseOverride    = 1.0,
-                        LmrDivisorOverride = 2.0,
-                    },
+                    Name = "logarithmic-lmr",
+                    Description = "current schedule: R = 0.75 + ln(depth)*ln(moveNumber)/2.25, one ply less at PV nodes",
+                    Build = () => new ChessBot.Engine.Search.SearchSettings { UseLegacyFlatLmr = false },
                 };
-                reportName = "ab_report_lmr.log";
+                reportStem = "ab_report_lmr";
                 break;
 
             case "partial-root":
             default:
-                configA = new AbConfig { Name = "baseline", Build = () => new ChessBot.Engine.Search.SearchSettings { UsePartialRootResult = false } };
-                configB = new AbConfig { Name = "partial-root", Build = () => new ChessBot.Engine.Search.SearchSettings { UsePartialRootResult = true } };
-                reportName = "ab_report_partial_root.log";
+                mode = "partial-root";
+                configA = new AbConfig
+                {
+                    Name = "baseline",
+                    Description = "always fall back to the last fully completed iteration",
+                    Build = () => new ChessBot.Engine.Search.SearchSettings { UsePartialRootResult = false },
+                };
+                configB = new AbConfig
+                {
+                    Name = "partial-root",
+                    Description = "use a cancelled iteration's root candidate when it beats the completed score",
+                    Build = () => new ChessBot.Engine.Search.SearchSettings { UsePartialRootResult = true },
+                };
+                reportStem = "ab_report_partial_root";
                 break;
         }
 
-        Console.WriteLine($"Running A/B harness: mode={mode}  depth={depth}  nodeBudget={nodes:N0}");
-        var results = AbHarness.Run(configA, configB, maxDepth: depth, maxNodes: nodes);
+        Console.WriteLine($"Running A/B harness: mode={mode}  depth={depth}  nodeBudget={nodes:N0}  corpus={corpus.Count} ({corpusSource})");
+        var results = AbHarness.Run(configA, configB, corpus, maxDepth: depth, maxNodes: nodes);
+        var report = AbHarness.BuildReport(results, mode, depth, nodes, corpusSource);
 
-        string reportPath = Path.Combine(outDir, reportName);
-        AbHarness.WriteReport(results, reportPath);
+        string textPath = Path.Combine(outDir, reportStem + ".log");
+        string jsonPath = Path.Combine(outDir, reportStem + ".json");
+        AbHarness.WriteReport(report, textPath);
+        AbHarness.WriteJson(report, jsonPath);
 
-        Console.WriteLine($"A/B report written to: {reportPath}");
+        Console.WriteLine($"A/B reports written to: {textPath}");
+        Console.WriteLine($"                        {jsonPath}");
+        Console.WriteLine($"Partial-root verdict: {report.PartialSelectionVerdict}  |  LMR verdict: {report.LmrVerdict}");
         return 0;
     }
 
