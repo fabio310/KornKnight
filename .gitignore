@@ -361,3 +361,16 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+# ── Generated match/benchmark artifacts ──────────────────────────────────────
+# Runs write PGNs, per-game logs, move-loss reports, match results, A/B reports and
+# manifests into these directories. They are outputs, not source: without these rules a
+# run inside the working tree makes `git status` dirty, and the run manifest then records
+# HasUncommittedChanges=true for a source tree that was clean when the run started.
+pgns/
+matches/
+ab_reports/
+elo-sweep/
+elo-reports/
+*.moveloss.log
+match_result.json
+run_manifest.json

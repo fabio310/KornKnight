@@ -22,6 +22,12 @@ public sealed class MatchOutcome
 
     /// <summary>Path of the written match_summary.log.</summary>
     public string SummaryPath { get; set; } = string.Empty;
+
+    /// <summary>Identifier shared by every artifact this run produced.</summary>
+    public string RunId { get; set; } = string.Empty;
+
+    /// <summary>Path of the written run_manifest.json.</summary>
+    public string ManifestPath { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -33,14 +39,25 @@ public sealed class MatchOutcome
 /// </summary>
 public static class MatchExecutor
 {
-    public static async Task<MatchOutcome> RunAsync(MatchConfig cfg, CancellationToken ct = default)
+    public static async Task<MatchOutcome> RunAsync(
+        MatchConfig cfg, CancellationToken ct = default, IEnumerable<string>? commandLineArgs = null)
     {
         Directory.CreateDirectory(cfg.PgnOutputDir);
 
-        var outcome = new MatchOutcome();
+        // Source state and start time are captured before anything is written, so the manifest
+        // describes the code that produced the run rather than the working tree afterwards
+        // (which the run's own PGNs and JSON would otherwise make look dirty).
+        string runId = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+        var manifest = RunManifestWriter.BeginRun(
+            runId,
+            cfg.PgnOutputDir,
+            commandLineArgs ?? Environment.GetCommandLineArgs().Skip(1),
+            cfg.Describe());
+
+        var outcome = new MatchOutcome { RunId = runId };
         var artifactFiles = new List<string>();
 
-        for (int game = 0; game < cfg.GamesPerSide * 2; game++)
+        for (int game = 0; game < cfg.TotalGames; game++)
         {
             ct.ThrowIfCancellationRequested();
 
@@ -124,9 +141,21 @@ public static class MatchExecutor
         artifactFiles.Add(resultJsonPath);
 
         // ── Run manifest (reproducibility metadata) ──────────────────────────────
+        // The inventory lists every artifact the run produced, not just the last few: the PGNs
+        // and per-game logs are the primary evidence and were previously missing entirely.
         string manifestPath = Path.Combine(cfg.PgnOutputDir, "run_manifest.json");
-        var manifest = RunManifestWriter.Build(artifactFiles.Append(manifestPath));
+        foreach (var game in outcome.Games)
+        {
+            if (!string.IsNullOrWhiteSpace(game.PgnPath))
+            {
+                artifactFiles.Add(game.PgnPath);
+                artifactFiles.Add(Path.ChangeExtension(game.PgnPath, ".log"));
+            }
+        }
+
+        RunManifestWriter.CompleteRun(manifest, artifactFiles.Append(manifestPath));
         RunManifestWriter.Write(manifest, manifestPath);
+        outcome.ManifestPath = manifestPath;
 
         return outcome;
     }

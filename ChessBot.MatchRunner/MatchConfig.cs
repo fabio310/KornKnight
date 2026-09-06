@@ -18,8 +18,31 @@ public class MatchConfig
     /// <summary>Milliseconds per move for both engines.</summary>
     public int MoveTimeMs { get; set; } = 1000;
 
-    /// <summary>Number of games to play (each side plays both colors).</summary>
-    public int GamesPerSide { get; set; } = 1;
+    /// <summary>
+    /// Exact total number of games to play, both colors combined. This is the authoritative
+    /// count: <c>--games n</c> plays exactly n games, odd values included. Colors alternate
+    /// starting with ChessBot as White, so an odd total gives ChessBot one extra White game;
+    /// <see cref="ColorImbalance"/> reports that so it is never silent.
+    /// </summary>
+    public int TotalGames { get; set; } = 2;
+
+    /// <summary>
+    /// Per-color view of <see cref="TotalGames"/>. Setting it requests n games as White plus n
+    /// as Black, i.e. a total of 2n. Reading it returns the number of games ChessBot plays as
+    /// White, which for an odd total is the larger half.
+    /// </summary>
+    public int GamesPerSide
+    {
+        get => (TotalGames + 1) / 2;
+        set => TotalGames = value * 2;
+    }
+
+    /// <summary>
+    /// Difference between the number of games played as White and as Black: 0 for an even
+    /// total, 1 for an odd one. Reported rather than corrected, because an odd total is a
+    /// legitimate request for a diagnostic run.
+    /// </summary>
+    public int ColorImbalance => TotalGames % 2;
 
     /// <summary>
     /// When true, propagated into every <see cref="ChessBot.Engine.Search.SearchSettings"/>
@@ -103,6 +126,35 @@ public class MatchConfig
     }
 
     /// <summary>
+    /// Renders the configuration that the arguments actually parsed to, so a run's manifest can
+    /// state what was in effect rather than leaving it to be inferred from the command line.
+    /// </summary>
+    public Dictionary<string, string> Describe() => new()
+    {
+        ["ExternalEnginePath"]    = ExternalEnginePath,
+        ["MoveTimeMs"]            = MoveTimeMs.ToString(),
+        ["TotalGames"]            = TotalGames.ToString(),
+        ["GamesAsWhite"]          = ((TotalGames + 1) / 2).ToString(),
+        ["GamesAsBlack"]          = (TotalGames / 2).ToString(),
+        ["ColorImbalance"]        = ColorImbalance.ToString(),
+        ["PgnOutputDir"]          = PgnOutputDir,
+        ["DisagreementThresholdCp"] = BlunderThresholdCp.ToString(),
+        ["EngineElo"]             = EngineElo?.ToString() ?? "(unset — full strength)",
+        ["EngineOptions"]         = EngineOptions.Count == 0
+            ? "(none)"
+            : string.Join(", ", EngineOptions.Select(o => $"{o.Name}={o.Value}")),
+        ["ReferenceEnginePath"]   = string.IsNullOrWhiteSpace(ReferenceEnginePath)
+            ? "(unset — move-loss analysis skipped)" : ReferenceEnginePath,
+        ["ReferenceEngineDepth"]  = ReferenceEngineDepth.ToString(),
+        ["ReferenceEngineOptions"] = ReferenceEngineOptions.Count == 0
+            ? "(none)"
+            : string.Join(", ", ReferenceEngineOptions.Select(o => $"{o.Name}={o.Value}")),
+        ["MoveLossMaxRetries"]    = MoveLossMaxRetries.ToString(),
+        ["UsePartialRootResult"]  = UsePartialRootResult.ToString(),
+        ["Verbose"]               = Verbose.ToString(),
+    };
+
+    /// <summary>
     /// Parse command-line arguments into a MatchConfig.
     /// Supported flags:
     ///   --engine &lt;path&gt;
@@ -141,15 +193,29 @@ public class MatchConfig
                 case "--games" when i + 1 < args.Length:
                     if (int.TryParse(args[++i], out int g))
                     {
+                        // --games means exactly this many games. It previously halved the value
+                        // and rounded down, so "--games 5" silently played 4 and "--games 1"
+                        // played none at all — the requested number must be honoured instead.
+                        if (g < 1)
+                            throw new ArgumentException(
+                                $"--games must be at least 1; got {g}.");
+
+                        cfg.TotalGames = g;
                         if (g % 2 != 0)
                             Console.Error.WriteLine(
-                                $"WARNING: --games {g} is odd; total games played will be rounded down to {g / 2 * 2} " +
-                                "(an even number split between colors). Use --games-per-side for exact per-color control.");
-                        cfg.GamesPerSide = g / 2;
+                                $"NOTE: --games {g} is odd, so colors cannot be split evenly: " +
+                                $"ChessBot plays {(g + 1) / 2} game(s) as White and {g / 2} as Black. " +
+                                "All requested games are played.");
                     }
                     break;
                 case "--games-per-side" when i + 1 < args.Length:
-                    if (int.TryParse(args[++i], out int gps)) cfg.GamesPerSide = gps;
+                    if (int.TryParse(args[++i], out int gps))
+                    {
+                        if (gps < 1)
+                            throw new ArgumentException(
+                                $"--games-per-side must be at least 1; got {gps}.");
+                        cfg.GamesPerSide = gps;
+                    }
                     break;
                 case "--pgn-dir" when i + 1 < args.Length:
                     cfg.PgnOutputDir = args[++i];
