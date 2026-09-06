@@ -78,11 +78,27 @@ public static class MatchExecutor
             analyzer.WriteGameLog(result, analysis, logFile);
             Console.WriteLine($"  Log written to: {logFile}");
 
-            if (analysis.Blunders.Count > 0)
+            if (analysis.CrossEngineEvaluationDisagreements.Count > 0)
             {
-                Console.WriteLine($"  Blunders found: {analysis.Blunders.Count}");
-                foreach (var b in analysis.Blunders)
+                Console.WriteLine($"  Cross-engine eval disagreements found: {analysis.CrossEngineEvaluationDisagreements.Count}");
+                foreach (var b in analysis.CrossEngineEvaluationDisagreements)
                     Console.WriteLine($"    Move {b.MoveNumber}: {b.Move} swing {b.SwingCp:+#;-#;0}cp — FEN: {b.Fen}");
+            }
+
+            // ── Real move-loss analysis (outside the timed game) ────────────────────
+            // Runs after the game has fully completed, using a separate reference-engine
+            // process (normally Stockfish), so it can never affect move-time budgets.
+            if (!string.IsNullOrWhiteSpace(cfg.ReferenceEnginePath))
+            {
+                using var refEngine = new UciAdapter(cfg.ReferenceEnginePath);
+                await refEngine.InitializeAsync(ct);
+
+                var lossRecords = await MoveLossAnalyzer.AnalyzeGameAsync(
+                    result, refEngine, cfg.ReferenceEngineDepth, ct);
+
+                string lossPath = Path.ChangeExtension(result.PgnPath, ".moveloss.log");
+                MoveLossAnalyzer.WriteReport(result, lossRecords, lossPath);
+                Console.WriteLine($"  Move-loss report written to: {lossPath}");
             }
         }
 

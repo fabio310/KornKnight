@@ -44,6 +44,25 @@ public record MoveRecord
     public required string Pv             { get; init; }
     // ── Raw engine output (external engine only) ─────────────────────────────
     public IReadOnlyList<string> RawUciLines { get; init; } = Array.Empty<string>();
+
+    // ── Search-shape instrumentation (ChessBot moves only; 0 for external-engine moves) ──────
+    public long   QNodes                { get; init; }
+    public long   EvaluationCalls       { get; init; }
+    public long   MovesGenerated        { get; init; }
+    public long   BetaCutoffs           { get; init; }
+    public double FirstMoveCutoffRate   { get; init; }
+    public long   NullMoveAttempts      { get; init; }
+    public long   NullMoveCutoffs       { get; init; }
+    public long   LmrReductions         { get; init; }
+    public long   LmrReSearches         { get; init; }
+    public long   FutilitySkips         { get; init; }
+    public long   PvsReSearches         { get; init; }
+    public long   AspirationFailLow     { get; init; }
+    public long   AspirationFailHigh    { get; init; }
+    public long   RepetitionDraws       { get; init; }
+    public double EffectiveBranchingFactor { get; init; }
+    public bool   UsedPartialRootResult { get; init; }
+    public int    PartialDepth          { get; init; }
 }
 
 /// <summary>
@@ -122,6 +141,24 @@ public class GameRunner
             long   elapsedMs  = 0;
             IReadOnlyList<string> rawLines = Array.Empty<string>();
 
+            long   qNodes                = 0;
+            long   evaluationCalls       = 0;
+            long   movesGenerated        = 0;
+            long   betaCutoffs           = 0;
+            double firstMoveCutoffRate   = 0;
+            long   nullMoveAttempts      = 0;
+            long   nullMoveCutoffs       = 0;
+            long   lmrReductions         = 0;
+            long   lmrReSearches         = 0;
+            long   futilitySkips         = 0;
+            long   pvsReSearches         = 0;
+            long   aspirationFailLow     = 0;
+            long   aspirationFailHigh    = 0;
+            long   repetitionDraws       = 0;
+            double effectiveBranchingFactor = 0;
+            bool   usedPartialRootResult = false;
+            int    partialDepth          = 0;
+
             if (chessBotMoves)
             {
                 // ChessBot's turn
@@ -152,6 +189,24 @@ public class GameRunner
                 pv        = string.Join(' ', searchResult.PrincipalVariation.Select(m => m.ToString()));
                 elapsedMs = sw.ElapsedMilliseconds;
                 rawLines  = Array.Empty<string>();
+
+                qNodes                 = searchResult.QNodesSearched;
+                evaluationCalls        = searchResult.EvaluationCalls;
+                movesGenerated         = searchResult.MovesGenerated;
+                betaCutoffs            = searchResult.BetaCutoffs;
+                firstMoveCutoffRate    = searchResult.FirstMoveCutoffRate;
+                nullMoveAttempts       = searchResult.NullMoveAttempts;
+                nullMoveCutoffs        = searchResult.NullMoveCutoffs;
+                lmrReductions          = searchResult.LmrReductions;
+                lmrReSearches          = searchResult.LmrReSearches;
+                futilitySkips          = searchResult.FutilitySkips;
+                pvsReSearches          = searchResult.PvsReSearches;
+                aspirationFailLow      = searchResult.AspirationFailLow;
+                aspirationFailHigh     = searchResult.AspirationFailHigh;
+                repetitionDraws        = searchResult.RepetitionDraws;
+                effectiveBranchingFactor = searchResult.EffectiveBranchingFactor;
+                usedPartialRootResult  = searchResult.UsedPartialRootResult;
+                partialDepth           = searchResult.PartialDepth;
 
                 if (_cfg.Verbose)
                     Console.WriteLine($"  {(whiteToMove ? "W" : "B")} move {moveNumber,-3}: {uciMove,-8} " +
@@ -213,6 +268,23 @@ public class GameRunner
                 Pv             = pv,
                 ElapsedMs      = elapsedMs,
                 RawUciLines    = rawLines,
+                QNodes                   = qNodes,
+                EvaluationCalls          = evaluationCalls,
+                MovesGenerated           = movesGenerated,
+                BetaCutoffs              = betaCutoffs,
+                FirstMoveCutoffRate      = firstMoveCutoffRate,
+                NullMoveAttempts         = nullMoveAttempts,
+                NullMoveCutoffs          = nullMoveCutoffs,
+                LmrReductions            = lmrReductions,
+                LmrReSearches            = lmrReSearches,
+                FutilitySkips            = futilitySkips,
+                PvsReSearches            = pvsReSearches,
+                AspirationFailLow        = aspirationFailLow,
+                AspirationFailHigh       = aspirationFailHigh,
+                RepetitionDraws          = repetitionDraws,
+                EffectiveBranchingFactor = effectiveBranchingFactor,
+                UsedPartialRootResult    = usedPartialRootResult,
+                PartialDepth             = partialDepth,
             });
 
             // Apply move to both ChessBot board and move history

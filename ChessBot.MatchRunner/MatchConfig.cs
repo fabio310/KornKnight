@@ -46,6 +46,17 @@ public class MatchConfig
     public List<UciOptionSetting> EngineOptions { get; } = new();
 
     /// <summary>
+    /// Path to a reference engine (normally full-strength Stockfish) used for post-game
+    /// move-loss analysis (see <see cref="MoveLossAnalyzer"/>). Null/empty = analysis skipped.
+    /// This is always run after the timed game completes, never during play, so it cannot
+    /// affect move-time budgets or results.
+    /// </summary>
+    public string? ReferenceEnginePath { get; set; }
+
+    /// <summary>Fixed search depth used for reference-engine move-loss analysis.</summary>
+    public int ReferenceEngineDepth { get; set; } = 18;
+
+    /// <summary>
     /// Sends the configured UCI options to an already-initialized engine.
     /// Must be called after <see cref="UciAdapter.InitializeAsync"/> and before the
     /// first "position"/"go" command. A no-op when nothing is configured.
@@ -114,6 +125,12 @@ public class MatchConfig
                                 raw[..eq].Trim(), raw[(eq + 1)..].Trim()));
                         break;
                     }
+                case "--reference-engine" when i + 1 < args.Length:
+                    cfg.ReferenceEnginePath = args[++i];
+                    break;
+                case "--reference-depth" when i + 1 < args.Length:
+                    if (int.TryParse(args[++i], out int rd)) cfg.ReferenceEngineDepth = rd;
+                    break;
                 case "--quiet":
                     cfg.Verbose = false;
                     break;

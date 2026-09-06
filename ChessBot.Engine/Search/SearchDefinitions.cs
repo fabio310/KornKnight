@@ -71,6 +71,18 @@ public class SearchSettings
     public bool UseAspiration { get; set; } = true;
 
     /// <summary>
+    /// When true, if an iterative-deepening pass is cancelled mid-iteration but has already
+    /// found a root move that beats the previous (completed) iteration's score, that partial
+    /// result replaces the last completed iteration's move. When false, the search always
+    /// falls back to the last fully completed iteration, ignoring any partial-iteration root
+    /// move regardless of its score. Kept as a setting (rather than always-on) because the
+    /// partial score and the completed-iteration score come from different depths and not
+    /// every root move was searched at the partial depth, so the comparison is not always
+    /// sound — this flag exists to allow paired A/B testing of the behavior.
+    /// </summary>
+    public bool UsePartialRootResult { get; set; } = true;
+
+    /// <summary>
     /// Check extension (search one ply deeper when in check). Sound, but it changes the
     /// shape of a fixed-depth tree, so it must be off when comparing against a fixed-depth
     /// minimax reference.
@@ -120,9 +132,38 @@ public class SearchResult
     public List<Move> PrincipalVariation { get; set; } = new();
 
     /// <summary>
-    /// The search depth achieved.
+    /// The last iterative-deepening depth that ran to completion. Never a partially searched
+    /// depth, even when a partial root result from a deeper, unfinished iteration was used as
+    /// the reported move (see <see cref="UsedPartialRootResult"/> and <see cref="PartialDepth"/>).
     /// </summary>
     public int DepthAchieved { get; set; }
+
+    /// <summary>
+    /// The depth of the iteration that was in progress (and cancelled) when the search stopped.
+    /// 0 if no iteration was cancelled mid-flight (i.e. the search ended cleanly after a fully
+    /// completed iteration, or hit the root-terminal-position case).
+    /// </summary>
+    public int PartialDepth { get; set; }
+
+    /// <summary>
+    /// True if <see cref="BestMove"/>/<see cref="Evaluation"/>/<see cref="PrincipalVariation"/> were
+    /// taken from a partially searched iteration (<see cref="PartialDepth"/>) rather than the last
+    /// fully completed one (<see cref="DepthAchieved"/>). Only ever true when
+    /// <see cref="SearchSettings.UsePartialRootResult"/> was enabled.
+    /// </summary>
+    public bool UsedPartialRootResult { get; set; }
+
+    /// <summary>
+    /// Number of root moves that finished searching in the iteration that was in progress when
+    /// the search stopped (0 if no iteration was cancelled mid-flight).
+    /// </summary>
+    public int RootMovesCompleted { get; set; }
+
+    /// <summary>
+    /// Total number of legal root moves available. Compare with <see cref="RootMovesCompleted"/>
+    /// to see how much of the partial iteration actually finished.
+    /// </summary>
+    public int RootMoveCount { get; set; }
 
     /// <summary>
     /// Total nodes evaluated during the search.
