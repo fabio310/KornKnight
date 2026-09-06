@@ -101,11 +101,34 @@ internal class Searcher
     private readonly Move[] _rootPartialPv;
     private int    _rootPartialPvLength;
 
+    // True when _rootPartialScore is an exact value (the move was the new best and did not
+    // itself trigger a beta cutoff at the root). False means the score is only a lower bound
+    // (the root move raised alpha and then immediately failed high against the *current*
+    // aspiration window) — the true value could be higher. Kept separate from ScoreBound
+    // strings used elsewhere because this is specifically about the *partial* root candidate.
+    private bool   _rootPartialIsExact;
+
     // Number of root moves that finished searching in the iteration currently in progress —
     // separate from the partial best-move fields above because it must be reported even when
     // no root move ever raised alpha (i.e. every root move so far failed low).
     private int    _rootMovesCompleted;
     private int    _rootMoveCount;
+
+    /// <summary>
+    /// Resets all partial-root-candidate and root-coverage state. Must be called before
+    /// *every* root search attempt — including each aspiration-window retry within the same
+    /// iterative-deepening depth — so that a cancellation during e.g. the fail-high re-search
+    /// cannot report a candidate or coverage count left over from the fail-low attempt that
+    /// preceded it in the same depth.
+    /// </summary>
+    private void ResetRootPartialState()
+    {
+        _rootPartialMove     = default;
+        _rootPartialScore     = -INFINITY;
+        _rootPartialPvLength = 0;
+        _rootPartialIsExact  = false;
+        _rootMovesCompleted  = 0;
+    }
 
     /// <summary>Precomputed LMR reductions indexed by [depth, moveNumber]; built in the constructor.</summary>
     private readonly int[,] _lmrTable;
@@ -229,12 +252,9 @@ internal class Searcher
 
             Array.Clear(_pvLength, 0, _pvLength.Length);
 
-            // Discard any partial root result from the previous iteration.
-            _rootPartialMove     = default;
-            _rootPartialScore    = -INFINITY;
-            _rootPartialPvLength = 0;
-            _rootMovesCompleted  = 0;
-            _rootMoveCount       = rootMoveCount;
+            // Discard any partial root result from the previous iteration/attempt.
+            ResetRootPartialState();
+            _rootMoveCount = rootMoveCount;
 
             int score;
 
@@ -254,21 +274,32 @@ internal class Searcher
 
                 if (!_cancelRequested && score <= alpha)
                 {
-                    // Fail-low: widen lower bound
+                    // Fail-low: widen lower bound. A cancellation partway through *this*
+                    // re-search must not report a root candidate/coverage count that was
+                    // accumulated during the aborted first attempt above, so state is reset
+                    // again before every retry — not just once per depth.
                     _aspirationFailLow++;
+                    ResetRootPartialState();
                     alpha = prevScore - ASP_WINDOW * 4;
                     score = NegamaxSearch(0, depth, alpha, beta);
                     if (!_cancelRequested && score <= alpha)
+                    {
+                        ResetRootPartialState();
                         score = NegamaxSearch(0, depth, -INFINITY, beta);
+                    }
                 }
                 else if (!_cancelRequested && score >= beta)
                 {
-                    // Fail-high: widen upper bound
+                    // Fail-high: widen upper bound. Same reasoning as the fail-low branch above.
                     _aspirationFailHigh++;
+                    ResetRootPartialState();
                     beta = prevScore + ASP_WINDOW * 4;
                     score = NegamaxSearch(0, depth, alpha, beta);
                     if (!_cancelRequested && score >= beta)
+                    {
+                        ResetRootPartialState();
                         score = NegamaxSearch(0, depth, alpha, INFINITY);
+                    }
                 }
             }
 
@@ -277,10 +308,14 @@ internal class Searcher
                 // The iteration was abandoned. DepthAchieved must stay at the last fully
                 // completed depth — reporting this unfinished iteration's depth as "achieved"
                 // would claim a depth that was never actually finished. The partial-iteration
-                // depth and how many root moves it completed are reported separately.
+                // depth and how many root moves it completed are reported separately. These
+                // values always belong to the specific aspiration attempt that was in flight
+                // when cancellation happened, since state is reset before every attempt above.
                 result.PartialDepth        = depth;
                 result.RootMovesCompleted  = _rootMovesCompleted;
                 result.RootMoveCount       = _rootMoveCount;
+                result.RootCoveragePercent = _rootMoveCount > 0
+                    ? 100.0 * _rootMovesCompleted / _rootMoveCount : 0;
 
                 // If enabled, and the iteration already found a root move that beats the
                 // previous (completed) iteration's score, that move can replace the completed
@@ -293,9 +328,10 @@ internal class Searcher
                     _rootPartialMove != default &&
                     _rootPartialScore > prevScore)
                 {
-                    result.BestMove             = _rootPartialMove;
-                    result.Evaluation           = _rootPartialScore;
+                    result.BestMove              = _rootPartialMove;
+                    result.Evaluation            = _rootPartialScore;
                     result.UsedPartialRootResult = true;
+                    result.PartialScoreIsExact   = _rootPartialIsExact;
 
                     result.PrincipalVariation.Clear();
                     for (int i = 0; i < _rootPartialPvLength; i++)
@@ -330,6 +366,17 @@ internal class Searcher
 
             // Early exit if a forced mate is found
             if (Math.Abs(score) >= MATE_SCORE - MAX_PLY) break;
+        }
+
+        // Extremely small node/time budgets can expire before even depth 1 completes and
+        // before UsePartialRootResult ever finds a root move that raises alpha, leaving
+        // BestMove at its default value. A legal move must still be returned — fall back to
+        // the first move produced by move ordering (root move 0) and flag this explicitly so
+        // callers never mistake it for an evaluated result.
+        if (result.BestMove == default)
+        {
+            result.BestMove                = rootMoves[0];
+            result.IsUnsearchedFallbackMove = true;
         }
 
         _searchTimer.Stop();
@@ -602,6 +649,7 @@ internal class Searcher
                         _rootPartialMove     = move;
                         _rootPartialScore    = score;
                         _rootPartialPvLength = _pvLength[0];
+                        _rootPartialIsExact  = true;
                         for (int i = 0; i < _rootPartialPvLength; i++)
                             _rootPartialPv[i] = _pvTable[0, i];
                     }
@@ -621,6 +669,12 @@ internal class Searcher
                                 _moveOrdering.RecordCounterMove(_lastMoveAtPly[ply - 1], move);
                         }
                         ttFlag2 = TranspositionTable.ScoreFlag.LowerBound;
+
+                        // The root move that just triggered a beta cutoff is only known to be
+                        // *at least* this good against the current aspiration window — the
+                        // window was too narrow to prove an exact value, so the partial
+                        // candidate captured above must be flagged as a bound, not exact.
+                        if (ply == 0) _rootPartialIsExact = false;
                         break;
                     }
                 }

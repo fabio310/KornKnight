@@ -261,7 +261,7 @@ public sealed class SweepRunner
 
             round.AvgDepth = report.EnginePerf.AvgDepth > 0 ? report.EnginePerf.AvgDepth : null;
             round.AvgNps   = report.EnginePerf.AvgNps   > 0 ? report.EnginePerf.AvgNps   : null;
-            round.Blunders = report.BlunderStats.TotalBlunders;
+            round.Blunders = report.CrossEngineDisagreementStats.TotalDisagreements;
         }
         catch (Exception ex)
         {

@@ -39,7 +39,11 @@ public sealed class EloReport
     // ── Engine performance ───────────────────────────────────────────────────
     public EnginePerf EnginePerf { get; set; } = new();
 
-    // ── Blunder stats ────────────────────────────────────────────────────────
+    // ── Cross-engine evaluation disagreement stats ─────────────────────────────
+    // NOT a blunder or centipawn-loss measurement; see MoveLossAnalyzer for that.
+    public CrossEngineDisagreementStats CrossEngineDisagreementStats { get; set; } = new();
+
+    [Obsolete("Use CrossEngineDisagreementStats.")]
     public BlunderStats BlunderStats { get; set; } = new();
 
     // ── Per-game summaries ───────────────────────────────────────────────────
@@ -68,8 +72,17 @@ public sealed class PhaseStats
     public double AvgDepth    { get; set; }
     public double AvgNps      { get; set; }
     public double AvgScoreCp  { get; set; }
-    public int    Blunders    { get; set; }
-    public double BlunderRate { get; set; }  // blunders per 10 ChessBot moves
+    /// <summary>
+    /// Cross-engine evaluation disagreements in this phase, re-detected from per-move score
+    /// swings. NOT a blunder / centipawn-loss measurement — see MoveLossAnalyzer for that.
+    /// </summary>
+    public int    CrossEngineDisagreements     { get; set; }
+    public double CrossEngineDisagreementRate  { get; set; }  // disagreements per 10 ChessBot moves
+
+    [Obsolete("Use CrossEngineDisagreements.")]
+    public int Blunders { get => CrossEngineDisagreements; set => CrossEngineDisagreements = value; }
+    [Obsolete("Use CrossEngineDisagreementRate.")]
+    public double BlunderRate { get => CrossEngineDisagreementRate; set => CrossEngineDisagreementRate = value; }
 }
 
 public sealed class EnginePerf
@@ -82,6 +95,27 @@ public sealed class EnginePerf
     public long   TotalNodes     { get; set; }
 }
 
+/// <summary>
+/// Aggregate cross-engine evaluation disagreement stats. These compare ChessBot's own pre-move
+/// score against the opponent engine's post-move score from a different search — they are NOT
+/// a blunder or centipawn-loss measurement. See MoveLossAnalyzer / MoveLossReport for that.
+/// </summary>
+public sealed class CrossEngineDisagreementStats
+{
+    public int    TotalDisagreements    { get; set; }
+    public int    TotalChessBotMoves    { get; set; }
+    public double DisagreementRate      { get; set; }  // per 10 moves
+    public int    GamesWithDisagreements { get; set; }
+
+    [Obsolete("Use TotalDisagreements.")]
+    public int TotalBlunders { get => TotalDisagreements; set => TotalDisagreements = value; }
+    [Obsolete("Use DisagreementRate.")]
+    public double BlunderRate { get => DisagreementRate; set => DisagreementRate = value; }
+    [Obsolete("Use GamesWithDisagreements.")]
+    public int GamesWithBlunders { get => GamesWithDisagreements; set => GamesWithDisagreements = value; }
+}
+
+[Obsolete("Use CrossEngineDisagreementStats.")]
 public sealed class BlunderStats
 {
     public int    TotalBlunders       { get; set; }
@@ -102,7 +136,10 @@ public sealed class GameSummary
     public double?  AvgDepth      { get; set; }
     public double?  AvgNps        { get; set; }
     public double?  PeakNps       { get; set; }
-    public int      Blunders      { get; set; }
+    /// <summary>Cross-engine evaluation disagreements for this game (not a blunder count).</summary>
+    public int      CrossEngineDisagreements { get; set; }
+    [Obsolete("Use CrossEngineDisagreements.")]
+    public int      Blunders      { get => CrossEngineDisagreements; set => CrossEngineDisagreements = value; }
     public bool     IsValid       { get; set; }
     public DateTime? Date         { get; set; }
 }

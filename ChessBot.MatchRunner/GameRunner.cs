@@ -63,6 +63,13 @@ public record MoveRecord
     public double EffectiveBranchingFactor { get; init; }
     public bool   UsedPartialRootResult { get; init; }
     public int    PartialDepth          { get; init; }
+    public long   BetaCutoffsFirstMove  { get; init; }
+    // ── Partial-root coverage (reported for every cancelled iteration, even when the
+    //    partial candidate itself was not selected as the reported move) ───────────────────
+    public int    RootMovesCompleted    { get; init; }
+    public int    RootMoveCount         { get; init; }
+    public double RootCoveragePercent   { get; init; }
+    public bool   PartialScoreIsExact   { get; init; }
 }
 
 /// <summary>
@@ -158,6 +165,11 @@ public class GameRunner
             double effectiveBranchingFactor = 0;
             bool   usedPartialRootResult = false;
             int    partialDepth          = 0;
+            long   betaCutoffsFirstMove  = 0;
+            int    rootMovesCompleted    = 0;
+            int    rootMoveCount         = 0;
+            double rootCoveragePercent   = 0;
+            bool   partialScoreIsExact   = false;
 
             if (chessBotMoves)
             {
@@ -165,8 +177,9 @@ public class GameRunner
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 var settings = new SearchSettings
                 {
-                    MaxTimeMs = _cfg.MoveTimeMs,
-                    Verbose   = false
+                    MaxTimeMs             = _cfg.MoveTimeMs,
+                    Verbose               = false,
+                    UsePartialRootResult  = _cfg.UsePartialRootResult
                 };
                 var searchResult = chessBotEngine.FindBestMove(settings, ct);
                 sw.Stop();
@@ -207,6 +220,11 @@ public class GameRunner
                 effectiveBranchingFactor = searchResult.EffectiveBranchingFactor;
                 usedPartialRootResult  = searchResult.UsedPartialRootResult;
                 partialDepth           = searchResult.PartialDepth;
+                betaCutoffsFirstMove   = searchResult.BetaCutoffsFirstMove;
+                rootMovesCompleted     = searchResult.RootMovesCompleted;
+                rootMoveCount          = searchResult.RootMoveCount;
+                rootCoveragePercent    = searchResult.RootCoveragePercent;
+                partialScoreIsExact    = searchResult.PartialScoreIsExact;
 
                 if (_cfg.Verbose)
                     Console.WriteLine($"  {(whiteToMove ? "W" : "B")} move {moveNumber,-3}: {uciMove,-8} " +
@@ -285,6 +303,11 @@ public class GameRunner
                 EffectiveBranchingFactor = effectiveBranchingFactor,
                 UsedPartialRootResult    = usedPartialRootResult,
                 PartialDepth             = partialDepth,
+                BetaCutoffsFirstMove     = betaCutoffsFirstMove,
+                RootMovesCompleted       = rootMovesCompleted,
+                RootMoveCount            = rootMoveCount,
+                RootCoveragePercent      = rootCoveragePercent,
+                PartialScoreIsExact      = partialScoreIsExact,
             });
 
             // Apply move to both ChessBot board and move history
