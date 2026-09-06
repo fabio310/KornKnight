@@ -247,6 +247,30 @@ public sealed class GameResultDto
     /// <summary>Per-game move-loss aggregate; null when analysis was off.</summary>
     public MoveLossAggregateDto? MoveLossAggregate { get; set; }
 
+    /// <summary>
+    /// LMR reductions summed over the game's ChessBot moves, bucketed by remaining depth
+    /// (index = depth). Aggregated per game rather than stored per move: the point is to see
+    /// where the schedule actually fires before tuning it, and a 32-entry array on every move
+    /// would bloat the document without adding information.
+    /// </summary>
+    public long[] LmrReductionsByDepth { get; set; } = Array.Empty<long>();
+
+    /// <summary>Same, bucketed by move number at the node (index = move number).</summary>
+    public long[] LmrReductionsByMoveNumber { get; set; } = Array.Empty<long>();
+
+    /// <summary>Sums the per-move LMR buckets of this game's ChessBot moves.</summary>
+    public static long[] SumBuckets(IEnumerable<long[]> buckets)
+    {
+        long[]? total = null;
+        foreach (var b in buckets)
+        {
+            if (b.Length == 0) continue;
+            total ??= new long[b.Length];
+            for (int i = 0; i < b.Length && i < total.Length; i++) total[i] += b[i];
+        }
+        return total ?? Array.Empty<long>();
+    }
+
     public static GameResultDto From(GameResult g) => new()
     {
         GameNumber         = g.GameNumber,
@@ -256,6 +280,11 @@ public sealed class GameResultDto
         TerminationReason  = g.TerminationReason,
         PgnPath            = g.PgnPath,
         Moves              = g.Moves.Select(MoveRecordDto.From).ToList(),
+
+        LmrReductionsByDepth =
+            SumBuckets(g.Moves.Where(m => m.IsChessBotMove).Select(m => m.LmrReductionsByDepth)),
+        LmrReductionsByMoveNumber =
+            SumBuckets(g.Moves.Where(m => m.IsChessBotMove).Select(m => m.LmrReductionsByMoveNumber)),
     };
 }
 
