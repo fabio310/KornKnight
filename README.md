@@ -10,7 +10,7 @@ The solution (`ChessBot.sln`) contains five projects:
 |---|---|---|
 | `ChessBot.Engine` | class library (net8.0) | The chess engine itself: board, move generation, search, evaluation. No external dependencies. |
 | `ChessBot.Wpf` | WPF app (net8.0-windows) | Desktop UI to play against the engine or watch it analyze, with a live eval/PV/depth/nodes panel. |
-| `ChessBot.MatchRunner` | console app (net8.0) | Plays automated games between `ChessBot.Engine` and an external UCI engine (e.g. Stockfish) for regression/strength testing, writes PGNs and flags blunders. |
+| `ChessBot.MatchRunner` | console app (net8.0) | Plays automated games between `ChessBot.Engine` and an external UCI engine (e.g. Stockfish) for regression/strength testing, writes PGNs, flags cross-engine evaluation disagreements, and (with `--reference-engine`) measures Stockfish-referenced move loss.  |
 | `ChessBot.EloEvaluator` | console app (net8.0) | Reads the logs/PGNs produced by `ChessBot.MatchRunner` and computes Elo ratings and comparison reports. |
 | `ChessBot.Tests` | xUnit test project (net8.0) | Perft, move generation, FEN, evaluation, search, Zobrist hashing, and tactical/regression tests (~10 test files). |
 
@@ -31,7 +31,7 @@ dotnet test ChessBot.Tests
 
 dotnet run --project ChessBot.Wpf
 
-dotnet run --project ChessBot.MatchRunner -- --engine <path-to-uci-engine> [--time <ms>] [--games <n>] [--pgn-dir <dir>] [--blunder <cp>]
+dotnet run --project ChessBot.MatchRunner -- --engine <path-to-uci-engine> [--time <ms>] [--games <n>] [--pgn-dir <dir>] [--disagreement-threshold <cp>] [--reference-engine <path>]
 
 dotnet run --project ChessBot.EloEvaluator -- --pgn-dir pgns --out-dir elo-reports
 ```

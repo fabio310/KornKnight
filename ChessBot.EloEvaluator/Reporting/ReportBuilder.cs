@@ -89,16 +89,10 @@ public sealed class ReportBuilder
         report.Endgame    = BuildPhaseStats(withMoves, "Endgame",    m => m.MoveNumber > 30);
 
         // ── Cross-engine evaluation disagreement stats (NOT blunder/CP-loss stats) ──────────
+        // Deliberately not mirrored into the legacy BlunderStats object: copying the numbers
+        // there kept the old name alive as a parallel, serialized source of truth and invited
+        // consumers to keep reading a disagreement count as if it were measured move loss.
         report.CrossEngineDisagreementStats = BuildDisagreementStats(scoring);
-#pragma warning disable CS0618
-        report.BlunderStats = new BlunderStats
-        {
-            TotalBlunders      = report.CrossEngineDisagreementStats.TotalDisagreements,
-            TotalChessBotMoves = report.CrossEngineDisagreementStats.TotalChessBotMoves,
-            BlunderRate        = report.CrossEngineDisagreementStats.DisagreementRate,
-            GamesWithBlunders  = report.CrossEngineDisagreementStats.GamesWithDisagreements
-        };
-#pragma warning restore CS0618
 
         // ── Per-game summaries ───────────────────────────────────────────────
         report.Games = allGames.Select(g => new GameSummary

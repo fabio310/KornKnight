@@ -229,7 +229,8 @@ public sealed class UciAdapter : IDisposable
         throw new TimeoutException($"Engine did not return 'bestmove' within {timeoutMs}ms.");
     }
 
-    private static void ParseInfoLine(string line, UciMoveResult result)
+    /// <summary>Internal for testing: UCI info-line parsing including score-state reset.</summary>
+    internal static void ParseInfoLine(string line, UciMoveResult result)
     {
         // Parses every token defined by the UCI protocol:
         // depth seldepth multipv score(cp/mate/lowerbound/upperbound)

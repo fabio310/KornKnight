@@ -55,10 +55,20 @@ public class MatchConfig
     /// <summary>Directory to save PGN files.</summary>
     public string PgnOutputDir { get; set; } = "pgns";
 
-    /// <summary>Centipawn swing that counts as a blunder.</summary>
-    public int BlunderThresholdCp { get; set; } = 200;
+    /// <summary>
+    /// Centipawn swing between ChessBot's own evaluation and the opponent's that is recorded as a
+    /// cross-engine evaluation disagreement. This is a diagnostic signal about two engines
+    /// scoring the same position differently, not a measured centipawn loss and not a confirmed
+    /// mistake; real move loss comes from the reference-engine analysis.
+    /// </summary>
+    public int DisagreementThresholdCp { get; set; } = 200;
 
-    /// <summary>Minimum engine score difference for first-blunder detection.</summary>
+    /// <summary>Compatibility alias for <see cref="DisagreementThresholdCp"/>.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    [Obsolete("Renamed to DisagreementThresholdCp: the value is a cross-engine disagreement threshold, not a blunder threshold.")]
+    public int BlunderThresholdCp { get => DisagreementThresholdCp; set => DisagreementThresholdCp = value; }
+
+    /// <summary>Minimum cross-engine score difference for first-major-disagreement detection.</summary>
     public int FirstSwingThresholdCp { get; set; } = 150;
 
     /// <summary>Whether to emit verbose move-by-move output to console.</summary>
@@ -138,7 +148,7 @@ public class MatchConfig
         ["GamesAsBlack"]          = (TotalGames / 2).ToString(),
         ["ColorImbalance"]        = ColorImbalance.ToString(),
         ["PgnOutputDir"]          = PgnOutputDir,
-        ["DisagreementThresholdCp"] = BlunderThresholdCp.ToString(),
+        ["DisagreementThresholdCp"] = DisagreementThresholdCp.ToString(),
         ["EngineElo"]             = EngineElo?.ToString() ?? "(unset — full strength)",
         ["EngineOptions"]         = EngineOptions.Count == 0
             ? "(none)"
@@ -162,7 +172,7 @@ public class MatchConfig
     ///   --games &lt;n&gt;              (TOTAL games played, both colors combined; must be even)
     ///   --games-per-side &lt;n&gt;    (unambiguous alternative: n games as White + n as Black)
     ///   --pgn-dir &lt;dir&gt;
-    ///   --blunder &lt;cp&gt;
+    ///   --disagreement-threshold &lt;cp&gt;   (alias: --blunder)
     ///   --engine-elo &lt;elo&gt;
     ///   --engine-option &lt;name=value&gt;   (repeatable)
     ///   --reference-engine &lt;path&gt;
@@ -220,8 +230,9 @@ public class MatchConfig
                 case "--pgn-dir" when i + 1 < args.Length:
                     cfg.PgnOutputDir = args[++i];
                     break;
-                case "--blunder" when i + 1 < args.Length:
-                    if (int.TryParse(args[++i], out int b)) cfg.BlunderThresholdCp = b;
+                case "--disagreement-threshold" when i + 1 < args.Length:
+                case "--blunder" when i + 1 < args.Length:   // legacy alias
+                    if (int.TryParse(args[++i], out int b)) cfg.DisagreementThresholdCp = b;
                     break;
                 case "--engine-elo" when i + 1 < args.Length:
                     if (int.TryParse(args[++i], out int elo)) cfg.EngineElo = elo;

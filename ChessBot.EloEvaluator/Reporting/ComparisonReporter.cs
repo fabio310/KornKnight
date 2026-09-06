@@ -88,15 +88,34 @@ public static class ComparisonReporter
             $"{prev.EnginePerf.AvgNps:N0}", $"{curr.EnginePerf.AvgNps:N0}",
             curr.EnginePerf.AvgNps - prev.EnginePerf.AvgNps, "",
             d => d > 0);
-        PrintDelta("Cross-engine disagreement rate /10",
-            $"{prev.CrossEngineDisagreementStats.DisagreementRate:F2}", $"{curr.CrossEngineDisagreementStats.DisagreementRate:F2}",
-            curr.CrossEngineDisagreementStats.DisagreementRate - prev.CrossEngineDisagreementStats.DisagreementRate, "",
-            d => d < 0);   // fewer disagreements = better
+        // Deliberately printed without a better/worse arrow. A cross-engine disagreement is two
+        // engines scoring a position differently; the count moves when either engine's search
+        // changes, when the opponent changes, or when the games simply differ. Fewer of them is
+        // not evidence that ChessBot improved, and marking it with an improvement arrow invited
+        // exactly that reading. Measured move loss is the metric that carries that meaning.
+        PrintNeutral("Cross-engine disagreement rate /10",
+            $"{prev.CrossEngineDisagreementStats.DisagreementRate:F2}",
+            $"{curr.CrossEngineDisagreementStats.DisagreementRate:F2}",
+            curr.CrossEngineDisagreementStats.DisagreementRate - prev.CrossEngineDisagreementStats.DisagreementRate,
+            "diagnostic only — not a strength signal");
         Console.WriteLine();
 
         Console.WriteLine("── Games ───────────────────────────────────────────────────────");
         Console.WriteLine($"  Previous : {prev.Wins}W / {prev.Draws}D / {prev.Losses}L");
         Console.WriteLine($"  Current  : {curr.Wins}W / {curr.Draws}D / {curr.Losses}L");
+    }
+
+    /// <summary>
+    /// Prints a metric that changed without judging the direction, for quantities that are
+    /// diagnostic rather than better-or-worse.
+    /// </summary>
+    private static void PrintNeutral(
+        string metric, string prevStr, string currStr, double delta, string note)
+    {
+        string sign = delta > 0 ? "+" : string.Empty;
+        Console.WriteLine(
+            $"  {metric,-22}: {prevStr,-12} → {currStr,-12} " +
+            $"({sign}{delta:F2}) ·  {note}");
     }
 
     private static void PrintDelta(

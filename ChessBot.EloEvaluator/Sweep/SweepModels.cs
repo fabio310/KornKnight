@@ -38,7 +38,8 @@ public sealed class SweepRoundResult
     // ── Extras from the per-round report pipeline (null when parsing found nothing) ──
     public double? AvgDepth { get; set; }
     public double? AvgNps   { get; set; }
-    public int     Blunders { get; set; }
+    /// <summary>Cross-engine evaluation disagreements in this round. Diagnostic only.</summary>
+    public int     Disagreements { get; set; }
 
     public double DurationSeconds { get; set; }
 

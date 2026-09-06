@@ -11,6 +11,7 @@
 
   <ItemGroup>
 	<ProjectReference Include="..\ChessBot.Engine\ChessBot.Engine.csproj" />
+	<InternalsVisibleTo Include="ChessBot.Tests" />
   </ItemGroup>
 
 </Project>

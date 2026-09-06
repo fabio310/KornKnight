@@ -24,7 +24,10 @@ internal class Program
             Console.WriteLine("                       Odd totals are allowed; colors alternate and the imbalance is reported.");
             Console.WriteLine("  --games-per-side     Unambiguous alternative: n games as White + n as Black");
             Console.WriteLine("  --pgn-dir            PGN output directory (default: pgns)");
-            Console.WriteLine("  --blunder            Cross-engine evaluation disagreement threshold in centipawns (default: 200)");
+            Console.WriteLine("  --disagreement-threshold  Cross-engine evaluation disagreement threshold in");
+            Console.WriteLine("                       centipawns (default: 200). Diagnostic only — this is two");
+            Console.WriteLine("                       engines scoring a position differently, not a measured");
+            Console.WriteLine("                       centipawn loss. Legacy alias: --blunder");
             Console.WriteLine("  --engine-elo         Cap the external engine via UCI_LimitStrength + UCI_Elo");
             Console.WriteLine("                       (default: unset = full strength)");
             Console.WriteLine("  --engine-option      Extra UCI option as name=value (repeatable)");
