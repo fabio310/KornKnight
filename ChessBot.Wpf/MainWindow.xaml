@@ -31,19 +31,36 @@
                 </Trigger>
             </Style.Triggers>
         </Style>
+        <!-- Off = red, on = green. The label carries the state as text too, so it stays
+             readable without relying on colour alone. Content is set here rather than on
+             the element: a local value on the element would override these triggers. -->
         <Style x:Key="ToggleBtn" TargetType="ToggleButton" BasedOn="{StaticResource ToolBtn}">
-            <Setter Property="Background" Value="#333"/>
-            <Setter Property="Foreground" Value="#ddd"/>
-            <Setter Property="BorderBrush" Value="#555"/>
+            <Setter Property="Background" Value="#8b2f2f"/>
+            <Setter Property="BorderBrush" Value="#c0392b"/>
+            <Setter Property="Foreground" Value="#f0dede"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Content" Value="Auto Play: OFF"/>
             <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#555"/>
-                </Trigger>
+                <MultiTrigger>
+                    <MultiTrigger.Conditions>
+                        <Condition Property="IsChecked"   Value="False"/>
+                        <Condition Property="IsMouseOver" Value="True"/>
+                    </MultiTrigger.Conditions>
+                    <Setter Property="Background" Value="#a83c3c"/>
+                </MultiTrigger>
                 <Trigger Property="IsChecked" Value="True">
-                    <Setter Property="Background" Value="#76b900"/>
+                    <Setter Property="Background"  Value="#76b900"/>
                     <Setter Property="BorderBrush" Value="#76b900"/>
-                    <Setter Property="Foreground" Value="#1a1a1a"/>
+                    <Setter Property="Foreground"  Value="#1a1a1a"/>
+                    <Setter Property="Content"     Value="Auto Play: ON"/>
                 </Trigger>
+                <MultiTrigger>
+                    <MultiTrigger.Conditions>
+                        <Condition Property="IsChecked"   Value="True"/>
+                        <Condition Property="IsMouseOver" Value="True"/>
+                    </MultiTrigger.Conditions>
+                    <Setter Property="Background" Value="#8ad617"/>
+                </MultiTrigger>
             </Style.Triggers>
         </Style>
         <Style x:Key="InfoHeader" TargetType="TextBlock">
@@ -69,7 +86,7 @@
                 <Button x:Name="BtnFlip"       Content="Flip Board"  Style="{StaticResource ToolBtn}" Margin="2"/>
                 <Separator/>
                 <Button x:Name="BtnEngineMove" Content="Engine Move" Style="{StaticResource ToolBtn}" Margin="2" />
-                <ToggleButton x:Name="BtnAutoPlay" Content="Auto Play" Style="{StaticResource ToggleBtn}" Margin="2" IsChecked="True"/>
+                <ToggleButton x:Name="BtnAutoPlay" Style="{StaticResource ToggleBtn}" Margin="2" IsChecked="True"/>
                 <Separator/>
                 <Button x:Name="BtnCopyFen"    Content="Copy FEN"    Style="{StaticResource ToolBtn}" Margin="2"/>
                 <Button x:Name="BtnLoadFen"    Content="Load FEN"    Style="{StaticResource ToolBtn}" Margin="2"/>
