@@ -2,7 +2,7 @@
   "profiles": {
     "ChessBot.EloEvaluator": {
       "commandName": "Project",
-      "commandLineArgs": "sweep --verbose"
+      "commandLineArgs": "sweep --time-ms 25"
     }
   }
 }

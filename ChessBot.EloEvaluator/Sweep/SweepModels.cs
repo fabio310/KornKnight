@@ -7,8 +7,6 @@ public sealed class SweepRoundResult
 {
     public int  RoundNumber   { get; set; }
     public int  StockfishElo  { get; set; }
-    /// <summary>True when this round came from the optional bisection refinement.</summary>
-    public bool IsRefinement  { get; set; }
 
     public int Games  { get; set; }
     public int Wins   { get; set; }
@@ -25,6 +23,12 @@ public sealed class SweepRoundResult
 
     /// <summary>True while ChessBot still scores above 50% and wins at least one game.</summary>
     public bool Passed { get; set; }
+
+    /// <summary>Step size in force for this round (halves on every direction change).</summary>
+    public int Step { get; set; }
+
+    /// <summary>Elo the ladder moved to after this round; null when the sweep stopped here.</summary>
+    public int? NextElo { get; set; }
 
     /// <summary>Why the round ended the sweep — empty while the sweep continues.</summary>
     public string StopReason { get; set; } = string.Empty;
@@ -54,8 +58,11 @@ public sealed class SweepResult
     public string EnginePath    { get; set; } = string.Empty;
     public string OpponentName  { get; set; } = "Unknown";
     public int    StartElo      { get; set; }
+    /// <summary>Initial step size; halves on each direction change.</summary>
     public int    EloStep       { get; set; }
+    public int    MinStep       { get; set; }
     public int    MaxElo        { get; set; }
+    public int    MinElo        { get; set; }
     public int    GamesPerRound { get; set; }
     public int    MoveTimeMs    { get; set; }
     public string OutDir        { get; set; } = string.Empty;
@@ -63,16 +70,27 @@ public sealed class SweepResult
     public List<SweepRoundResult> Rounds { get; set; } = [];
 
     // ── Verdict ──────────────────────────────────────────────────────────────
-    /// <summary>Lowest opponent Elo at which ChessBot stopped scoring above 50%.</summary>
+    /// <summary>
+    /// Midpoint of the final bracket — the ladder's answer for ChessBot's strength.
+    /// Null when the ladder never bracketed it (ran into the engine's Elo floor or ceiling).
+    /// </summary>
     public int? EstimatedElo { get; set; }
-    /// <summary>Highest opponent Elo ChessBot still beat, if any.</summary>
+    /// <summary>Highest opponent Elo ChessBot beat (lower edge of the bracket).</summary>
     public int? HighestPassedElo { get; set; }
+    /// <summary>Lowest opponent Elo ChessBot failed to beat (upper edge of the bracket).</summary>
+    public int? LowestFailedElo { get; set; }
+    /// <summary>Width of the final bracket in Elo — the precision of the estimate.</summary>
+    public int? BracketWidth { get; set; }
+    /// <summary>Step size the ladder had narrowed to when it stopped.</summary>
+    public int FinalStep { get; set; }
     /// <summary>Performance Elo of the deciding round (its level + its EloDiff).</summary>
     public double? PerformanceElo { get; set; }
-    /// <summary>True when the sweep ran out of levels without ChessBot ever failing.</summary>
+    /// <summary>True when the ladder ran into the engine's maximum Elo without failing.</summary>
     public bool ReachedMaxElo { get; set; }
-    /// <summary>True when ChessBot already failed the very first round.</summary>
-    public bool FailedAtStart { get; set; }
+    /// <summary>True when the ladder ran into the engine's minimum Elo without ever winning.</summary>
+    public bool ReachedMinElo { get; set; }
+    /// <summary>Why the ladder stopped: converged, hit a bound, or ran out of rounds.</summary>
+    public string StopReason { get; set; } = string.Empty;
 
     public string Verdict { get; set; } = string.Empty;
     public string ReliabilityNote { get; set; } = string.Empty;
