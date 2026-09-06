@@ -66,6 +66,18 @@ internal class Searcher
     private int _ttCutoffs;
     private int _ttStores;
 
+    // ── Partial-iteration root results ────────────────────────────────────────
+    // When an iterative-deepening pass runs out of time it is abandoned, but the root
+    // moves it *did* finish are still valid: a partially searched depth N that has
+    // examined the best few moves usually beats a completed depth N-1. These fields
+    // capture the best root move of the iteration currently in progress, recorded only
+    // when a root move actually raises alpha (so the score is a real improvement rather
+    // than a fail-low bound). Reset at the start of every depth iteration.
+    private Move   _rootPartialMove;
+    private int    _rootPartialScore;
+    private readonly Move[] _rootPartialPv;
+    private int    _rootPartialPvLength;
+
     // Triangular PV table: _pvTable[ply, ply..ply+len] stores the PV from ply
     private readonly Move[,] _pvTable;
     private readonly int[]   _pvLength;
@@ -94,6 +106,8 @@ internal class Searcher
         _moveBuffers = new Move[MAX_PLY][];
         for (int i = 0; i < MAX_PLY; i++)
             _moveBuffers[i] = new Move[MoveGenerator.MaxMoves];
+
+        _rootPartialPv = new Move[MAX_PLY];
     }
 
     // ── Public search entry point ─────────────────────────────────────────────
@@ -156,6 +170,11 @@ internal class Searcher
 
             Array.Clear(_pvLength, 0, _pvLength.Length);
 
+            // Discard any partial root result from the previous iteration.
+            _rootPartialMove     = default;
+            _rootPartialScore    = -INFINITY;
+            _rootPartialPvLength = 0;
+
             int score;
 
             if (depth <= 4)
@@ -190,7 +209,25 @@ internal class Searcher
                 }
             }
 
-            if (_cancelRequested) break;
+            if (_cancelRequested)
+            {
+                // The iteration was abandoned, but if it already found a root move that
+                // beats the previous iteration's score, that move is the better answer.
+                // A fail-low re-search cannot get here: its scores never exceed prevScore.
+                if (result.DepthAchieved > 0 &&
+                    _rootPartialMove != default &&
+                    _rootPartialScore > prevScore)
+                {
+                    result.BestMove      = _rootPartialMove;
+                    result.Evaluation    = _rootPartialScore;
+                    result.DepthAchieved = depth;
+
+                    result.PrincipalVariation.Clear();
+                    for (int i = 0; i < _rootPartialPvLength; i++)
+                        result.PrincipalVariation.Add(_rootPartialPv[i]);
+                }
+                break;
+            }
 
             prevScore            = score;
             result.Evaluation    = score;
@@ -221,6 +258,12 @@ internal class Searcher
         }
 
         _searchTimer.Stop();
+
+        // Count every node visited, including those in an iteration that was abandoned on
+        // time. Assigning this only on completed iterations understated both the node count
+        // and NPS (which divides by the *full* elapsed time) whenever the search was cut off
+        // mid-iteration — i.e. on almost every timed move.
+        result.NodesSearched  = _nodesSearched + _qnodesSearched;
         result.ElapsedTimeMs  = _searchTimer.ElapsedMilliseconds;
         result.NodesPerSecond = result.ElapsedTimeMs > 0
             ? result.NodesSearched / (result.ElapsedTimeMs / 1000.0) : 0;
@@ -417,6 +460,17 @@ internal class Searcher
                     alpha   = score;
                     ttFlag2 = TranspositionTable.ScoreFlag.Exact;
 
+                    // Root move that raised alpha: remember it so the iteration is still
+                    // worth something if we run out of time before finishing it.
+                    if (ply == 0)
+                    {
+                        _rootPartialMove     = move;
+                        _rootPartialScore    = score;
+                        _rootPartialPvLength = _pvLength[0];
+                        for (int i = 0; i < _rootPartialPvLength; i++)
+                            _rootPartialPv[i] = _pvTable[0, i];
+                    }
+
                     if (alpha >= beta)
                     {
                         if (isQuiet)
@@ -455,6 +509,17 @@ internal class Searcher
         if (ply > _selDepth) _selDepth = ply;
 
         if (_cancelRequested) return 0;
+
+        // Quiescence has to honour the clock too. Without this the only time check is in
+        // NegamaxSearch, so a capture-heavy qsearch entered just after the last check runs
+        // unbounded — measured at 29% over the move budget in tactical positions, which is
+        // a flag risk under a real clock.
+        if ((_qnodesSearched & 2047) == 0 &&
+            _searchTimer.ElapsedMilliseconds > (_settings.MaxTimeMs ?? 10_000))
+        {
+            _cancelRequested = true;
+            return 0;
+        }
 
         // Check detection (cached instance – no allocation)
         bool inCheck = _checkDetector.IsInCheck(_board.State.ActiveColor);
