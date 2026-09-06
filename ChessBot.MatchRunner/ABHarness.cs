@@ -468,6 +468,64 @@ public static class AbHarness
         }
     }
 
+    /// <summary>
+    /// Scores every position where the two configurations chose different moves with an
+    /// independent reference engine, from the same pre-move position at one fixed depth, using
+    /// UCI searchmoves once per candidate move. The difference between those two scores is the
+    /// only thing in this harness that can say which choice was better — node counts and depth
+    /// cannot — so a KEEP or REVERT verdict is gated on it.
+    ///
+    /// Positions the reference engine cannot score (mate scores on either side, or an engine
+    /// failure) are skipped rather than folded in: a mate score is not a centipawn value, and
+    /// averaging it with centipawns would produce a meaningless mean.
+    /// </summary>
+    public static async Task AdjudicateAsync(
+        AbReport report, string referenceEnginePath, int referenceDepth, CancellationToken ct = default)
+    {
+        if (report.Disagreements.Count == 0)
+        {
+            report.ReferenceEngineName  = "(no disagreements to adjudicate)";
+            report.ReferenceEngineDepth = referenceDepth;
+            return;
+        }
+
+        using var engine = new UciAdapter(referenceEnginePath);
+        await engine.InitializeAsync(ct);
+
+        report.ReferenceEngineName  = engine.EngineName;
+        report.ReferenceEngineDepth = referenceDepth;
+
+        var deltas = new List<int>();
+
+        foreach (var d in report.Disagreements)
+        {
+            try
+            {
+                var a = await engine.AnalyzeFenAsync(d.Fen, referenceDepth, d.MoveA, ct);
+                var b = await engine.AnalyzeFenAsync(d.Fen, referenceDepth, d.MoveB, ct);
+
+                if (a.ScoreMate.HasValue || b.ScoreMate.HasValue)
+                    continue;   // mate scores are not centipawns
+
+                d.ReferenceScoreA = a.ScoreCp;
+                d.ReferenceScoreB = b.ScoreCp;
+                d.ReferenceDeltaBMinusA = b.ScoreCp - a.ScoreCp;
+                deltas.Add(d.ReferenceDeltaBMinusA.Value);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // One unscoreable position must not discard the rest of the adjudication.
+                d.ReferenceScoreA = null;
+                d.ReferenceScoreB = null;
+            }
+        }
+
+        report.ReferenceMeanDeltaBMinusA = deltas.Count > 0 ? deltas.Average() : null;
+
+        // Verdicts depend on the adjudication, so they are recomputed now that it exists.
+        ApplyVerdicts(report, report.Mode, report.ConfigA!, report.ConfigB!);
+    }
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = true,
