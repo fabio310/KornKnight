@@ -221,14 +221,21 @@ public class PositionAnalyzer
             w.WriteLine($"  Total evaluation calls       : {cbMoves.Sum(m => m.EvaluationCalls):N0}");
             w.WriteLine($"  Total moves generated        : {cbMoves.Sum(m => m.MovesGenerated):N0}");
             w.WriteLine($"  Total beta cutoffs           : {cbMoves.Sum(m => m.BetaCutoffs):N0}");
-            w.WriteLine($"  Avg first-move cutoff rate   : {(cbMoves.Average(m => m.FirstMoveCutoffRate)):P1}");
+            {
+                long totalBetaCutoffs = cbMoves.Sum(m => m.BetaCutoffs);
+                long totalFirstMoveCutoffs = cbMoves.Sum(m => m.BetaCutoffsFirstMove);
+                double firstMoveCutoffRate = totalBetaCutoffs > 0 ? (double)totalFirstMoveCutoffs / totalBetaCutoffs : 0;
+                w.WriteLine($"  First-move cutoff rate (total/total): {firstMoveCutoffRate:P1}  ({totalFirstMoveCutoffs:N0} / {totalBetaCutoffs:N0})");
+            }
             w.WriteLine($"  Null-move attempts/cutoffs   : {cbMoves.Sum(m => m.NullMoveAttempts):N0} / {cbMoves.Sum(m => m.NullMoveCutoffs):N0}");
             w.WriteLine($"  LMR reductions/re-searches   : {cbMoves.Sum(m => m.LmrReductions):N0} / {cbMoves.Sum(m => m.LmrReSearches):N0}");
             w.WriteLine($"  Futility skips               : {cbMoves.Sum(m => m.FutilitySkips):N0}");
             w.WriteLine($"  PVS re-searches              : {cbMoves.Sum(m => m.PvsReSearches):N0}");
             w.WriteLine($"  Aspiration fail-low/fail-high: {cbMoves.Sum(m => m.AspirationFailLow):N0} / {cbMoves.Sum(m => m.AspirationFailHigh):N0}");
             w.WriteLine($"  Repetition draws             : {cbMoves.Sum(m => m.RepetitionDraws):N0}");
-            w.WriteLine($"  Avg effective branching factor: {cbMoves.Where(m => m.EffectiveBranchingFactor > 0).DefaultIfEmpty().Average(m => m?.EffectiveBranchingFactor ?? 0):F2}");
+            // EffectiveBranchingFactor (nodes^(1/depth)) is inherently a per-move metric and cannot
+            // be meaningfully summed across moves, so this remains a per-move average by design.
+            w.WriteLine($"  Avg effective branching factor (per-move avg): {cbMoves.Where(m => m.EffectiveBranchingFactor > 0).DefaultIfEmpty().Average(m => m?.EffectiveBranchingFactor ?? 0):F2}");
             w.WriteLine($"  Moves using partial root result: {cbMoves.Count(m => m.UsedPartialRootResult)}");
         }
 
