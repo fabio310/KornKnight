@@ -38,6 +38,7 @@ public static class MatchExecutor
         Directory.CreateDirectory(cfg.PgnOutputDir);
 
         var outcome = new MatchOutcome();
+        var artifactFiles = new List<string>();
 
         for (int game = 0; game < cfg.GamesPerSide * 2; game++)
         {
@@ -108,12 +109,24 @@ public static class MatchExecutor
                     referenceEngineDepth: cfg.ReferenceEngineDepth,
                     referenceEngineOptions: cfg.ReferenceEngineOptions);
                 Console.WriteLine($"  Move-loss report written to: {lossPath}");
+                artifactFiles.Add(lossPath);
             }
         }
 
         string summaryPath = Path.Combine(cfg.PgnOutputDir, "match_summary.log");
         WriteSummary(summaryPath, outcome, cfg);
         outcome.SummaryPath = summaryPath;
+        artifactFiles.Add(summaryPath);
+
+        // ── Versioned machine-readable result document ───────────────────────────
+        string resultJsonPath = Path.Combine(cfg.PgnOutputDir, "match_result.json");
+        MatchResultWriter.Write(outcome, resultJsonPath);
+        artifactFiles.Add(resultJsonPath);
+
+        // ── Run manifest (reproducibility metadata) ──────────────────────────────
+        string manifestPath = Path.Combine(cfg.PgnOutputDir, "run_manifest.json");
+        var manifest = RunManifestWriter.Build(artifactFiles.Append(manifestPath));
+        RunManifestWriter.Write(manifest, manifestPath);
 
         return outcome;
     }
