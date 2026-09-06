@@ -1,0 +1,17 @@
+[Event "ChessBot Match"]
+[Site "Local"]
+[Date "2026.09.06"]
+[Round "1"]
+[White "ChessBot"]
+[Black "External"]
+[Result "0-1"]
+[FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[Termination "Checkmate — Black wins"]
+
+1. e2e4 e7e5 2. g1f3 b8c6 3. f1b5 g8f6 4. d2d3 f8c5 5. b1c3 c6d4 6. f3e5 
+c7c6 7. b5a4 d7d6 8. e5f3 c8g4 9. c1e3 d6d5 10. e1g1 g4f3 11. g2f3 b7b5 
+12. e3d4 c5d4 13. a4b3 e8g8 14. a1b1 f6h5 15. c3e2 d4e5 16. d3d4 e5f4 17. e4d5 
+d8h4 18. e2g3 a8d8 19. d5c6 d8d6 20. c6c7 d6h6 21. d1e2 f4c7 22. h2h3 h5f4 
+23. b3f7 f8f7 24. e2e8 f7f8 25. e8f8 g8f8 26. f1e1 h4h3 27. e1e8 f8e8 28. b1e1 
+e8f8 29. e1e8 f8e8 30. a2a3 h3g2 0-1
+

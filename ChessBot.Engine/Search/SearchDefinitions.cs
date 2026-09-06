@@ -79,8 +79,12 @@ public class SearchSettings
     /// partial score and the completed-iteration score come from different depths and not
     /// every root move was searched at the partial depth, so the comparison is not always
     /// sound — this flag exists to allow paired A/B testing of the behavior.
+    ///
+    /// Defaults to false: this is a strength-affecting heuristic that has not yet been
+    /// validated by a controlled A/B comparison, so it must be explicitly opted into rather
+    /// than silently changing search behavior for every caller.
     /// </summary>
-    public bool UsePartialRootResult { get; set; } = true;
+    public bool UsePartialRootResult { get; set; } = false;
 
     /// <summary>
     /// Check extension (search one ply deeper when in check). Sound, but it changes the
@@ -166,6 +170,22 @@ public class SearchResult
     public int RootMoveCount { get; set; }
 
     /// <summary>
+    /// Percentage of root moves that finished searching in the cancelled iteration
+    /// (100 * RootMovesCompleted / RootMoveCount). 0 when no iteration was cancelled mid-flight.
+    /// Always belongs to the specific aspiration-window attempt that was in flight when
+    /// cancellation happened, not to any earlier attempt within the same depth.
+    /// </summary>
+    public double RootCoveragePercent { get; set; }
+
+    /// <summary>
+    /// True if the partial score used (when <see cref="UsedPartialRootResult"/> is true) is an
+    /// exact value — the candidate root move raised alpha without itself failing high against
+    /// the aspiration window in effect at the time. False means the score is only a lower bound
+    /// (the true value could be higher), so it should not be treated as a precise evaluation.
+    /// </summary>
+    public bool PartialScoreIsExact { get; set; }
+
+    /// <summary>
     /// Total nodes evaluated during the search.
     /// </summary>
     public long NodesSearched { get; set; }
@@ -179,6 +199,15 @@ public class SearchResult
     /// Time taken for the search in milliseconds.
     /// </summary>
     public long ElapsedTimeMs { get; set; }
+
+    /// <summary>
+    /// True when the node/time budget was too small to complete even the first iterative-
+    /// deepening iteration (depth 1), so <see cref="BestMove"/> is a legal but otherwise
+    /// unevaluated root move (the first move produced by move ordering) rather than the
+    /// result of any search. Callers/reporting must classify this explicitly rather than
+    /// silently presenting it as a depth-1 result.
+    /// </summary>
+    public bool IsUnsearchedFallbackMove { get; set; }
 
     /// <summary>
     /// Returns true if the search found a checkmate.

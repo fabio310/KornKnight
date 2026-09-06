@@ -88,10 +88,10 @@ public static class ComparisonReporter
             $"{prev.EnginePerf.AvgNps:N0}", $"{curr.EnginePerf.AvgNps:N0}",
             curr.EnginePerf.AvgNps - prev.EnginePerf.AvgNps, "",
             d => d > 0);
-        PrintDelta("Blunder rate /10",
-            $"{prev.BlunderStats.BlunderRate:F2}", $"{curr.BlunderStats.BlunderRate:F2}",
-            curr.BlunderStats.BlunderRate - prev.BlunderStats.BlunderRate, "",
-            d => d < 0);   // fewer blunders = better
+        PrintDelta("Cross-engine disagreement rate /10",
+            $"{prev.CrossEngineDisagreementStats.DisagreementRate:F2}", $"{curr.CrossEngineDisagreementStats.DisagreementRate:F2}",
+            curr.CrossEngineDisagreementStats.DisagreementRate - prev.CrossEngineDisagreementStats.DisagreementRate, "",
+            d => d < 0);   // fewer disagreements = better
         Console.WriteLine();
 
         Console.WriteLine("── Games ───────────────────────────────────────────────────────");

@@ -61,8 +61,19 @@ public sealed class ParsedGame
     public double? CbAvgScoreCp      { get; set; }
     public double? CbAvgTimeMsPerMove { get; set; }
 
-    // ── Blunder data ─────────────────────────────────────────────────────────
-    public int BlundersDetected { get; set; }
+    // ── Cross-engine evaluation disagreement data ──────────────────────────────
+    // These are NOT blunders / centipawn-loss measurements: they compare ChessBot's own
+    // pre-move score against the opponent engine's post-move score from a different search.
+    // Kept named "BlundersDetected" only as a backward-compatible alias for older report
+    // consumers; new code should read CrossEngineDisagreementsDetected.
+    public int CrossEngineDisagreementsDetected { get; set; }
+
+    [Obsolete("Use CrossEngineDisagreementsDetected. Cross-engine disagreements are not blunders.")]
+    public int BlundersDetected
+    {
+        get => CrossEngineDisagreementsDetected;
+        set => CrossEngineDisagreementsDetected = value;
+    }
 
     // ── Per-move records (log files only) ────────────────────────────────────
     public List<ParsedMoveData> Moves { get; } = [];

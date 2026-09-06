@@ -88,8 +88,17 @@ public sealed class ReportBuilder
         report.Middlegame = BuildPhaseStats(withMoves, "Middlegame", m => m.MoveNumber is > 10 and <= 30);
         report.Endgame    = BuildPhaseStats(withMoves, "Endgame",    m => m.MoveNumber > 30);
 
-        // ── Blunder stats ────────────────────────────────────────────────────
-        report.BlunderStats = BuildBlunderStats(scoring);
+        // ── Cross-engine evaluation disagreement stats (NOT blunder/CP-loss stats) ──────────
+        report.CrossEngineDisagreementStats = BuildDisagreementStats(scoring);
+#pragma warning disable CS0618
+        report.BlunderStats = new BlunderStats
+        {
+            TotalBlunders      = report.CrossEngineDisagreementStats.TotalDisagreements,
+            TotalChessBotMoves = report.CrossEngineDisagreementStats.TotalChessBotMoves,
+            BlunderRate        = report.CrossEngineDisagreementStats.DisagreementRate,
+            GamesWithBlunders  = report.CrossEngineDisagreementStats.GamesWithDisagreements
+        };
+#pragma warning restore CS0618
 
         // ── Per-game summaries ───────────────────────────────────────────────
         report.Games = allGames.Select(g => new GameSummary
@@ -104,7 +113,7 @@ public sealed class ReportBuilder
             AvgDepth      = g.CbAvgDepth,
             AvgNps        = g.CbAvgNps,
             PeakNps       = g.CbPeakNps,
-            Blunders      = g.BlundersDetected,
+            CrossEngineDisagreements = g.CrossEngineDisagreementsDetected,
             IsValid       = g.IsValid,
             Date          = g.Date
         }).ToList();
@@ -164,8 +173,10 @@ public sealed class ReportBuilder
         if (cbMoves.Count == 0)
             return new PhaseStats { PhaseName = name };
 
-        // Re-detect blunders for this phase using per-move scores
-        int blunders = 0;
+        // Re-detect cross-engine evaluation disagreements for this phase using per-move scores.
+        // NOTE: this is a same-side (ChessBot-internal) score-swing heuristic, not the same-
+        // engine move-loss measurement produced by MoveLossAnalyzer.
+        int disagreements = 0;
         foreach (var g in games)
         {
             var phase = g.Moves.Where(m => inPhase(m)).ToList();
@@ -181,7 +192,7 @@ public sealed class ReportBuilder
                     prev.ScoreMate == null && curr.ScoreMate == null)
                 {
                     int swing = prev.ScoreCp + curr.ScoreCp;
-                    if (swing >= BlunderThresholdCp) blunders++;
+                    if (swing >= BlunderThresholdCp) disagreements++;
                 }
             }
         }
@@ -189,6 +200,7 @@ public sealed class ReportBuilder
         var scoredMoves = cbMoves.Where(m => m.HasValidScore && m.ScoreMate == null).ToList();
         var npsPositive = cbMoves.Where(m => m.Nps > 0).ToList();
 
+#pragma warning disable CS0618
         return new PhaseStats
         {
             PhaseName   = name,
@@ -196,23 +208,24 @@ public sealed class ReportBuilder
             AvgDepth    = cbMoves.Average(m => (double)m.Depth),
             AvgNps      = npsPositive.Count > 0 ? npsPositive.Average(m => (double)m.Nps) : 0,
             AvgScoreCp  = scoredMoves.Count > 0 ? scoredMoves.Average(m => (double)m.ScoreCp) : 0,
-            Blunders    = blunders,
-            BlunderRate = cbMoves.Count > 0 ? blunders * 10.0 / cbMoves.Count : 0
+            CrossEngineDisagreements     = disagreements,
+            CrossEngineDisagreementRate  = cbMoves.Count > 0 ? disagreements * 10.0 / cbMoves.Count : 0
         };
+#pragma warning restore CS0618
     }
 
-    private static BlunderStats BuildBlunderStats(List<ParsedGame> games)
+    private static CrossEngineDisagreementStats BuildDisagreementStats(List<ParsedGame> games)
     {
-        int total  = games.Sum(g => g.BlundersDetected);
+        int total  = games.Sum(g => g.CrossEngineDisagreementsDetected);
         int cbMoves = games.Sum(g => g.ChessBotPlies);
-        int withBlunders = games.Count(g => g.BlundersDetected > 0);
+        int withDisagreements = games.Count(g => g.CrossEngineDisagreementsDetected > 0);
 
-        return new BlunderStats
+        return new CrossEngineDisagreementStats
         {
-            TotalBlunders      = total,
-            TotalChessBotMoves = cbMoves,
-            BlunderRate        = cbMoves > 0 ? total * 10.0 / cbMoves : 0,
-            GamesWithBlunders  = withBlunders
+            TotalDisagreements     = total,
+            TotalChessBotMoves     = cbMoves,
+            DisagreementRate       = cbMoves > 0 ? total * 10.0 / cbMoves : 0,
+            GamesWithDisagreements = withDisagreements
         };
     }
 }
