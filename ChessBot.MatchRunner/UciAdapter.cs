@@ -106,6 +106,13 @@ public sealed class UciAdapter : IDisposable
     /// restricted to the move actually played — yields both sides of a move-loss measurement
     /// from one pre-move position, on one engine, on one scale.
     ///
+    /// <paramref name="moveHistory"/>, when supplied together with <paramref name="fen"/> as the
+    /// *initial* position, reconstructs the position via "position fen &lt;fen&gt; moves ..."
+    /// instead of "position fen &lt;fen-at-this-ply&gt;" directly. A standalone FEN has no
+    /// repetition history (the board state before any single position does not record how many
+    /// times that position was reached before), so an engine analysing a bare mid-game FEN can
+    /// never correctly detect or avoid a repetition draw that the actual game history would show.
+    ///
     /// Clears the hash first so that a fixed depth gives a reproducible score independent of
     /// what was analysed before.
     /// </summary>
@@ -113,14 +120,18 @@ public sealed class UciAdapter : IDisposable
         string fen,
         int depth,
         string? restrictToMove = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IReadOnlyList<string>? moveHistory = null)
     {
         EnsureRunning();
 
         await SendAsync("ucinewgame");
         await SyncAsync(ct: ct);
 
-        await SendAsync($"position fen {fen}");
+        string posCmd = moveHistory is { Count: > 0 }
+            ? $"position fen {fen} moves {string.Join(' ', moveHistory)}"
+            : $"position fen {fen}";
+        await SendAsync(posCmd);
 
         string go = $"go depth {depth}";
         if (!string.IsNullOrWhiteSpace(restrictToMove))
@@ -223,7 +234,21 @@ public sealed class UciAdapter : IDisposable
         // Parses every token defined by the UCI protocol:
         // depth seldepth multipv score(cp/mate/lowerbound/upperbound)
         // nodes nps hashfull tbhits time currmove currmovenumber pv
+        //
+        // Every "info" line that carries a "score" token is a *complete* new score report —
+        // it fully replaces whatever score was reported by an earlier line, it is never a
+        // partial update. Without resetting ScoreMate/ScoreBound before parsing, a mate score
+        // or a lowerbound/upperbound qualifier from an earlier (shallower) iteration would
+        // silently persist onto a later line that reports a plain exact centipawn score,
+        // corrupting the final result with a stale mate flag or stale bound.
         var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (Array.IndexOf(parts, "score") >= 0)
+        {
+            result.ScoreCp    = 0;
+            result.ScoreMate  = null;
+            result.ScoreBound = "exact";
+        }
+
         for (int i = 0; i < parts.Length; i++)
         {
             switch (parts[i])

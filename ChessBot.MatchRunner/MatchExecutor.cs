@@ -93,11 +93,20 @@ public static class MatchExecutor
                 using var refEngine = new UciAdapter(cfg.ReferenceEnginePath);
                 await refEngine.InitializeAsync(ct);
 
+                foreach (var opt in cfg.ReferenceEngineOptions)
+                    await refEngine.SetOptionAsync(opt.Name, opt.Value);
+                if (cfg.ReferenceEngineOptions.Count > 0)
+                    await refEngine.SyncAsync(ct: ct);
+
                 var lossRecords = await MoveLossAnalyzer.AnalyzeGameAsync(
-                    result, refEngine, cfg.ReferenceEngineDepth, ct);
+                    result, refEngine, cfg.ReferenceEngineDepth, cfg.MoveLossMaxRetries, ct);
 
                 string lossPath = Path.ChangeExtension(result.PgnPath, ".moveloss.log");
-                MoveLossAnalyzer.WriteReport(result, lossRecords, lossPath);
+                MoveLossAnalyzer.WriteReport(
+                    result, lossRecords, lossPath,
+                    referenceEngineName: refEngine.EngineName,
+                    referenceEngineDepth: cfg.ReferenceEngineDepth,
+                    referenceEngineOptions: cfg.ReferenceEngineOptions);
                 Console.WriteLine($"  Move-loss report written to: {lossPath}");
             }
         }

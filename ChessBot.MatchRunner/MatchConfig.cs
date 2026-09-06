@@ -65,6 +65,21 @@ public class MatchConfig
     public int ReferenceEngineDepth { get; set; } = 18;
 
     /// <summary>
+    /// UCI options applied to the reference engine before analysis (e.g. Threads, Hash).
+    /// Recorded verbatim in the move-loss report header so results are attributable to a
+    /// specific, reproducible reference-engine configuration.
+    /// </summary>
+    public List<UciOptionSetting> ReferenceEngineOptions { get; } = new();
+
+    /// <summary>
+    /// Maximum number of deterministic re-search attempts (at increasing depth) the move-loss
+    /// analyzer will make for a single position before giving up and marking the sample
+    /// ineligible for exact aggregates. Applies to both bound-score resolution and negative
+    /// analysis-inconsistency resolution.
+    /// </summary>
+    public int MoveLossMaxRetries { get; set; } = 2;
+
+    /// <summary>
     /// Sends the configured UCI options to an already-initialized engine.
     /// Must be called after <see cref="UciAdapter.InitializeAsync"/> and before the
     /// first "position"/"go" command. A no-op when nothing is configured.
@@ -100,6 +115,8 @@ public class MatchConfig
     ///   --engine-option &lt;name=value&gt;   (repeatable)
     ///   --reference-engine &lt;path&gt;
     ///   --reference-depth &lt;depth&gt;
+    ///   --reference-option &lt;name=value&gt;   (repeatable; e.g. Threads=1, Hash=128)
+    ///   --moveloss-retries &lt;n&gt;   (deterministic re-search attempts before marking a sample ineligible)
     ///   --use-partial-root-result       (enable UsePartialRootResult; off by default)
     ///   --quiet
     ///
@@ -160,6 +177,18 @@ public class MatchConfig
                     break;
                 case "--reference-depth" when i + 1 < args.Length:
                     if (int.TryParse(args[++i], out int rd)) cfg.ReferenceEngineDepth = rd;
+                    break;
+                case "--reference-option" when i + 1 < args.Length:
+                    {
+                        string raw = args[++i];
+                        int eq = raw.IndexOf('=');
+                        if (eq > 0)
+                            cfg.ReferenceEngineOptions.Add(new UciOptionSetting(
+                                raw[..eq].Trim(), raw[(eq + 1)..].Trim()));
+                        break;
+                    }
+                case "--moveloss-retries" when i + 1 < args.Length:
+                    if (int.TryParse(args[++i], out int mlr)) cfg.MoveLossMaxRetries = mlr;
                     break;
                 case "--quiet":
                     cfg.Verbose = false;
