@@ -44,12 +44,42 @@ public static class GameCollector
     /// same day are indistinguishable from the current run's: deduplication by date and game
     /// number cannot tell two same-day runs apart, because both produce "game1" dated today.
     /// </param>
+    /// <param name="preferStructuredResult">
+    /// When true (the default), a readable match_result.json in the directory is used as the
+    /// authoritative source and the text artifacts are not parsed at all. The text parsers stay
+    /// as the fallback for directories written before the structured document existed.
+    /// </param>
     public static List<ParsedGame> Collect(
-        string dir, bool verbose = false, bool announceCounts = true, string? runId = null)
+        string dir, bool verbose = false, bool announceCounts = true, string? runId = null,
+        bool preferStructuredResult = true)
     {
         var games = new List<ParsedGame>();
         if (!Directory.Exists(dir))
             return games;
+
+        if (preferStructuredResult)
+        {
+            var doc = StructuredResultReader.TryRead(dir, out string? reason);
+            if (doc is not null)
+            {
+                games = StructuredResultReader.ToParsedGames(
+                    doc, Path.Combine(dir, StructuredResultReader.FileName));
+
+                if (announceCounts)
+                {
+                    Console.WriteLine($"Read {games.Count} game(s) from {StructuredResultReader.FileName} " +
+                                      $"(schema v{doc.SchemaVersion}" +
+                                      (doc.RequestedGames > 0 && doc.RequestedGames != doc.ActualGames
+                                          ? $"; NOTE: {doc.RequestedGames} game(s) requested, {doc.ActualGames} recorded"
+                                          : "") + ").");
+                    Console.WriteLine();
+                }
+                return games;
+            }
+
+            if (verbose && reason is not null)
+                Console.WriteLine($"  [json] falling back to text parsing: {reason}");
+        }
 
         var logFiles = Directory.GetFiles(dir, "*.log")
             .Where(IsGameLog)

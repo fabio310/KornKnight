@@ -43,7 +43,13 @@ public static class MoveLossAnalyzer
         /// "no loss". Silently clamping this to zero would hide the inconsistency. Excluded
         /// from exact aggregates until resolved by a deterministic retry at greater depth.
         /// </summary>
-        Inconsistent
+        Inconsistent,
+        /// <summary>
+        /// The reference engine failed for this position (process died, timed out, returned
+        /// nothing usable). Recorded per position so one failure excludes one sample instead of
+        /// aborting the analysis and losing the whole match's artifacts.
+        /// </summary>
+        AnalysisError
     }
 
     /// <summary>Mate-outcome category for a move, independent of any centipawn measurement.</summary>
@@ -54,8 +60,25 @@ public static class MoveLossAnalyzer
         MissedForcedMate,
         /// <summary>The played move itself walks into (or deepens) being forced-mated.</summary>
         EnteredForcedMate,
+        /// <summary>
+        /// Both sides report a forced mate for the same side and at the same distance — the
+        /// played move is as good as the best move. Distinct from
+        /// <see cref="MateDistanceChanged"/>, which previously absorbed this case and reported
+        /// an equal outcome as a change.
+        /// </summary>
+        MateUnchanged,
         /// <summary>Both best and played are mate scores for the same side, but distance changed.</summary>
-        MateDistanceChanged
+        MateDistanceChanged,
+        /// <summary>
+        /// The played move escapes a forced mate the unrestricted search reported — the two
+        /// analyses contradict each other rather than describing a better or worse move.
+        /// </summary>
+        EscapedForcedMate,
+        /// <summary>
+        /// The two searches disagree about which side is being mated. Cannot be a move-quality
+        /// statement; kept separate so it is investigated rather than aggregated.
+        /// </summary>
+        ContradictoryMate
     }
 
     /// <summary>One measured ChessBot move's centipawn loss, as judged by the reference engine.</summary>
