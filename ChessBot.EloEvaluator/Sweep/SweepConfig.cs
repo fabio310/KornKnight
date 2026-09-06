@@ -27,10 +27,12 @@ public sealed class SweepConfig
     public int    BlunderThresholdCp { get; private set; } = 200;
     /// <summary>Move-by-move engine output during the games (off by default — sweeps are long).</summary>
     public bool   Verbose      { get; private set; }
-    /// <summary>Optional bisection between the last passed and the first failed level.</summary>
-    public bool   Refine       { get; private set; }
-    /// <summary>Stop refining once the bracket is this narrow (Elo).</summary>
-    public int    RefineStep   { get; private set; } = 25;
+    /// <summary>Ladder stops once halving would take the step below this (Elo).</summary>
+    public int    MinStep      { get; private set; } = 25;
+    /// <summary>Lower bound the ladder may probe.</summary>
+    public int    MinElo       { get; private set; } = StockfishMinElo;
+    /// <summary>Safety bound so a ladder that never converges still terminates.</summary>
+    public int    MaxRounds    { get; private set; } = 20;
 
     /// <summary>Games per side handed to MatchConfig (which plays 2× that many).</summary>
     public int GamesPerSide => GamesPerRound / 2;
@@ -75,11 +77,19 @@ public sealed class SweepConfig
                 case "--blunder" when i + 1 < args.Length:
                     if (TryInt(args[++i], out int b)) cfg.BlunderThresholdCp = b;
                     break;
-                case "--refine":
-                    cfg.Refine = true;
+                case "--min-elo" when i + 1 < args.Length:
+                    if (TryInt(args[++i], out int mn)) cfg.MinElo = mn;
                     break;
+                case "--max-rounds" when i + 1 < args.Length:
+                    if (TryInt(args[++i], out int mr)) cfg.MaxRounds = mr;
+                    break;
+                // The ladder always refines now; --refine is accepted and ignored, and
+                // --refine-step is kept as an alias so older command lines still work.
+                case "--refine":
+                    break;
+                case "--min-step" when i + 1 < args.Length:
                 case "--refine-step" when i + 1 < args.Length:
-                    if (TryInt(args[++i], out int rs)) cfg.RefineStep = rs;
+                    if (TryInt(args[++i], out int rs)) cfg.MinStep = rs;
                     break;
                 case "--verbose":
                 case "-v":
@@ -121,9 +131,36 @@ public sealed class SweepConfig
             return null;
         }
 
-        if (cfg.StartElo > cfg.MaxElo)
+        if (cfg.MinElo > cfg.MaxElo)
         {
-            Console.Error.WriteLine($"ERROR: --start-elo ({cfg.StartElo}) is above --max-elo ({cfg.MaxElo}).");
+            Console.Error.WriteLine($"ERROR: --min-elo ({cfg.MinElo}) is above --max-elo ({cfg.MaxElo}).");
+            return null;
+        }
+
+        if (cfg.StartElo < cfg.MinElo || cfg.StartElo > cfg.MaxElo)
+        {
+            int clamped = Math.Clamp(cfg.StartElo, cfg.MinElo, cfg.MaxElo);
+            Console.WriteLine($"NOTE: --start-elo {cfg.StartElo} is outside {cfg.MinElo}–{cfg.MaxElo}; " +
+                              $"starting at {clamped}.");
+            cfg.StartElo = clamped;
+        }
+
+        if (cfg.MinStep < 1)
+        {
+            Console.Error.WriteLine("ERROR: --min-step must be at least 1.");
+            return null;
+        }
+
+        if (cfg.MinStep > cfg.EloStep)
+        {
+            Console.Error.WriteLine($"ERROR: --min-step ({cfg.MinStep}) must not exceed " +
+                                    $"--elo-step ({cfg.EloStep}) — the step only ever shrinks.");
+            return null;
+        }
+
+        if (cfg.MaxRounds < 1)
+        {
+            Console.Error.WriteLine("ERROR: --max-rounds must be at least 1.");
             return null;
         }
 
@@ -141,25 +178,35 @@ public sealed class SweepConfig
     {
         Console.WriteLine("Usage: ChessBot.EloEvaluator sweep [options]");
         Console.WriteLine();
-        Console.WriteLine("Plays rounds against a local UCI engine, raising its UCI_Elo each round until");
-        Console.WriteLine("ChessBot's score rate drops to 50% or below. That level is ChessBot's strength.");
+        Console.WriteLine("Binary-searches ChessBot's playing strength against a local UCI engine.");
+        Console.WriteLine("Win a round → climb by the step. Lose → drop by the step. Every direction");
+        Console.WriteLine("change halves the step, so the levels converge on the crossover point:");
+        Console.WriteLine();
+        Console.WriteLine("  1320 win → 1420 win → 1520 loss → step 50 → 1470 win → step 25 → 1495 …");
+        Console.WriteLine();
+        Console.WriteLine("It stops once the bracket is narrower than --min-step and reports the");
+        Console.WriteLine("midpoint of the highest level beaten and the lowest level not beaten.");
         Console.WriteLine();
         Console.WriteLine("Options:");
         Console.WriteLine($"  --stockfish <path>      UCI engine executable    (default: {DefaultStockfishPath})");
-        Console.WriteLine($"  --start-elo <n>         First round's UCI_Elo    (default: {StockfishMinElo})");
-        Console.WriteLine("  --elo-step <n>          Elo added per round      (default: 100)");
-        Console.WriteLine($"  --max-elo <n>           Last round's UCI_Elo     (default: {StockfishMaxElo})");
+        Console.WriteLine($"  --start-elo <n>         Where the ladder starts  (default: {StockfishMinElo})");
+        Console.WriteLine("  --elo-step <n>          Initial step size        (default: 100)");
+        Console.WriteLine("  --min-step <n>          Stop below this step     (default: 25)");
+        Console.WriteLine($"  --min-elo <n>           Lower bound              (default: {StockfishMinElo})");
+        Console.WriteLine($"  --max-elo <n>           Upper bound              (default: {StockfishMaxElo})");
         Console.WriteLine("  --games-per-round <n>   Games per round, even    (default: 10)");
         Console.WriteLine("  --time-ms <ms>          Move time per move       (default: 1000)");
+        Console.WriteLine("  --max-rounds <n>        Safety bound on rounds   (default: 20)");
         Console.WriteLine("  --out-dir <dir>         Sweep output directory   (default: elo-sweep)");
         Console.WriteLine("  --blunder <cp>          Blunder threshold        (default: 200)");
-        Console.WriteLine("  --refine                Bisect between the last passed and first failed level");
-        Console.WriteLine("  --refine-step <n>       Stop bisecting below this bracket width (default: 25)");
         Console.WriteLine("  --verbose / -v          Move-by-move engine output");
+        Console.WriteLine();
+        Console.WriteLine("  (--refine is accepted and ignored — the ladder always refines.");
+        Console.WriteLine("   --refine-step is an alias for --min-step.)");
         Console.WriteLine();
         Console.WriteLine("Examples:");
         Console.WriteLine("  dotnet run -- sweep");
-        Console.WriteLine("  dotnet run -- sweep --start-elo 1400 --elo-step 100 --games-per-round 10");
-        Console.WriteLine("  dotnet run -- sweep --start-elo 1320 --games-per-round 4 --time-ms 300 --refine");
+        Console.WriteLine("  dotnet run -- sweep --start-elo 1800 --elo-step 200 --games-per-round 20");
+        Console.WriteLine("  dotnet run -- sweep --start-elo 1600 --games-per-round 4 --time-ms 300 --min-step 50");
     }
 }

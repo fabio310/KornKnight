@@ -7,10 +7,17 @@ using ChessBot.MatchRunner;
 namespace ChessBot.EloEvaluator.Sweep;
 
 /// <summary>
-/// Plays rounds against a local UCI engine whose strength is capped via
-/// UCI_LimitStrength + UCI_Elo, raising the cap every round until ChessBot stops
-/// scoring above 50%. The games themselves are played by
-/// <see cref="MatchExecutor"/> — no game logic is duplicated here.
+/// Finds ChessBot's playing strength by binary-searching the opponent's UCI_Elo.
+///
+/// The ladder walks in the direction of the last result — win, climb; loss, drop —
+/// and halves its step every time the direction reverses, so the levels probed
+/// converge on the crossover point instead of marching past it:
+///
+///   1320 win  → +100 → 1420 win → +100 → 1520 loss → reverse, step 50
+///   1470 win  → +50  → 1520 …            (bracket 1470–1520, estimate 1495)
+///
+/// The opponent is capped via UCI_LimitStrength + UCI_Elo; the games themselves are
+/// played by <see cref="MatchExecutor"/> — no game logic is duplicated here.
 /// </summary>
 public sealed class SweepRunner
 {
@@ -29,7 +36,9 @@ public sealed class SweepRunner
             EnginePath    = _cfg.EnginePath,
             StartElo      = _cfg.StartElo,
             EloStep       = _cfg.EloStep,
+            MinStep       = _cfg.MinStep,
             MaxElo        = _cfg.MaxElo,
+            MinElo        = _cfg.MinElo,
             GamesPerRound = _cfg.GamesPerRound,
             MoveTimeMs    = _cfg.MoveTimeMs,
             OutDir        = Path.GetFullPath(_cfg.OutDir)
@@ -39,115 +48,114 @@ public sealed class SweepRunner
 
         PrintHeader(result);
 
-        int roundNumber = 0;
-        SweepRoundResult? firstFailed = null;
+        // ── Adaptive ladder ───────────────────────────────────────────────────
+        // Win  → climb by `step`. Lose → drop by `step`. Every time the direction
+        // reverses, the answer is bracketed more tightly, so the step is halved.
+        // The ladder stops once the step would fall below --min-step: at that point
+        // the highest level beaten and the lowest level failed are less than one
+        // step apart and the midpoint is the estimate.
+        int roundNumber   = 0;
+        int elo           = Math.Clamp(_cfg.StartElo, _cfg.MinElo, _cfg.MaxElo);
+        int step          = _cfg.EloStep;
+        int lastDirection = 0;              // +1 = climbing, -1 = dropping
         int? highestPassed = null;
-        int currentElo = _cfg.StartElo;
+        int? lowestFailed  = null;
+        SweepRoundResult? decidingRound = null;
 
-        // ── Linear sweep ──────────────────────────────────────────────────────
-        while (currentElo <= _cfg.MaxElo)
+        while (roundNumber < _cfg.MaxRounds)
         {
             ct.ThrowIfCancellationRequested();
 
-            var round = await PlayRoundAsync(++roundNumber, currentElo, isRefinement: false, result, ct);
+            var round = await PlayRoundAsync(++roundNumber, elo, step, result, ct);
             result.Rounds.Add(round);
 
-            if (!round.Passed)
+            int direction = round.Passed ? +1 : -1;
+
+            if (round.Passed)
             {
-                firstFailed = round;
-                break;
-            }
-
-            highestPassed = currentElo;
-
-            if (currentElo == _cfg.MaxElo)
-                break;
-
-            currentElo = Math.Min(currentElo + _cfg.EloStep, _cfg.MaxElo);
-        }
-
-        // ── Optional bisection between the last passed and the first failed level ──
-        if (_cfg.Refine && firstFailed is not null && highestPassed is int passed)
-        {
-            int lo = passed;             // known: ChessBot scores > 50%
-            int hi = firstFailed.StockfishElo;  // known: ChessBot scores <= 50%
-
-            while (hi - lo > _cfg.RefineStep)
-            {
-                ct.ThrowIfCancellationRequested();
-
-                int mid = lo + (hi - lo) / 2;
-                if (mid <= lo || mid >= hi)
-                    break;
-
-                var round = await PlayRoundAsync(++roundNumber, mid, isRefinement: true, result, ct);
-                result.Rounds.Add(round);
-
-                if (round.Passed)
-                {
-                    lo = mid;
-                    highestPassed = mid;
-                }
-                else
-                {
-                    hi = mid;
-                    firstFailed = round;
-                }
-            }
-        }
-
-        // ── Verdict ───────────────────────────────────────────────────────────
-        result.HighestPassedElo = highestPassed;
-        result.DurationSeconds  = sw.Elapsed.TotalSeconds;
-
-        if (firstFailed is null)
-        {
-            result.ReachedMaxElo = true;
-            result.EstimatedElo  = null;
-            var last = result.Rounds.LastOrDefault();
-            result.PerformanceElo = last?.EstimatedElo;
-            result.Verdict =
-                $"ChessBot still scored above 50% at the highest tested level " +
-                $"(Stockfish Elo {highestPassed ?? _cfg.MaxElo}). Its strength is at least " +
-                $"Stockfish Elo {highestPassed ?? _cfg.MaxElo} (UCI_Elo) — raise --max-elo to narrow it down.";
-            result.ReliabilityNote = last?.ReliabilityNote ?? string.Empty;
-        }
-        else
-        {
-            result.EstimatedElo   = firstFailed.StockfishElo;
-            result.PerformanceElo = firstFailed.EstimatedElo;
-            result.FailedAtStart  = highestPassed is null;
-
-            if (result.FailedAtStart)
-            {
-                result.Verdict =
-                    $"ChessBot's estimated strength ≈ Stockfish Elo {firstFailed.StockfishElo} (UCI_Elo) — " +
-                    $"it already failed the first level, so its true strength is at or below that. " +
-                    $"Round performance Elo: {firstFailed.EstimatedElo:F0}. Lower --start-elo to bracket it.";
+                if (highestPassed is null || elo > highestPassed) highestPassed = elo;
             }
             else
             {
-                result.Verdict =
-                    $"ChessBot's estimated strength ≈ Stockfish Elo {firstFailed.StockfishElo} (UCI_Elo) — " +
-                    $"it beat Stockfish up to Elo {highestPassed} and stopped scoring above 50% at " +
-                    $"Elo {firstFailed.StockfishElo}. Round performance Elo: {firstFailed.EstimatedElo:F0}.";
+                if (lowestFailed is null || elo < lowestFailed) { lowestFailed = elo; decidingRound = round; }
             }
 
-            result.ReliabilityNote = firstFailed.ReliabilityNote;
+            // Direction reversal ⇒ the answer is bracketed ⇒ search finer.
+            if (lastDirection != 0 && direction != lastDirection)
+            {
+                int halved = step / 2;
+                if (halved < _cfg.MinStep)
+                {
+                    result.StopReason =
+                        $"converged — step would fall below --min-step {_cfg.MinStep}";
+                    Console.WriteLine();
+                    Console.WriteLine($"    Ladder converged: step {step} → below --min-step {_cfg.MinStep}. Stopping.");
+                    break;
+                }
+
+                step = halved;
+                Console.WriteLine($"    Direction reversed → step halved to {step}.");
+            }
+
+            lastDirection = direction;
+
+            int next = Math.Clamp(elo + direction * step, _cfg.MinElo, _cfg.MaxElo);
+
+            if (next == elo)
+            {
+                // Clamped against the engine's own Elo range — cannot probe further.
+                if (direction > 0)
+                {
+                    result.ReachedMaxElo = true;
+                    result.StopReason    = $"reached the engine's maximum Elo ({_cfg.MaxElo})";
+                }
+                else
+                {
+                    result.ReachedMinElo = true;
+                    result.StopReason    = $"reached the engine's minimum Elo ({_cfg.MinElo})";
+                }
+                Console.WriteLine();
+                Console.WriteLine($"    {result.StopReason}. Stopping.");
+                break;
+            }
+
+            round.NextElo = next;
+            Console.WriteLine($"    Ladder: {elo} → {next}  (step ±{step})");
+            elo = next;
+
+            if (roundNumber >= _cfg.MaxRounds)
+                result.StopReason = $"hit --max-rounds {_cfg.MaxRounds}";
         }
+
+        if (string.IsNullOrEmpty(result.StopReason))
+            result.StopReason = $"hit --max-rounds {_cfg.MaxRounds}";
+
+        // ── Verdict ───────────────────────────────────────────────────────────
+        result.HighestPassedElo = highestPassed;
+        result.LowestFailedElo  = lowestFailed;
+        result.FinalStep        = step;
+        result.PerformanceElo   = decidingRound?.EstimatedElo;
+        result.DurationSeconds  = sw.Elapsed.TotalSeconds;
+        result.ReliabilityNote  = (decidingRound ?? result.Rounds.LastOrDefault())?.ReliabilityNote ?? string.Empty;
+
+        var verdict = SweepVerdict.Build(highestPassed, lowestFailed,
+                                         _cfg.GamesPerRound,
+                                         atEngineFloor: _cfg.MinElo <= SweepConfig.StockfishMinElo);
+        result.EstimatedElo = verdict.EstimatedElo;
+        result.BracketWidth = verdict.BracketWidth;
+        result.Verdict      = verdict.Verdict;
 
         return result;
     }
-
     // ── One round ─────────────────────────────────────────────────────────────
 
-    private async Task<SweepRoundResult> PlayRoundAsync(int roundNumber, int elo, bool isRefinement,
+    private async Task<SweepRoundResult> PlayRoundAsync(int roundNumber, int elo, int step,
                                                         SweepResult sweep, CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
 
         Console.WriteLine();
-        Console.WriteLine($"=== Round {roundNumber}: Stockfish Elo {elo} ==={(isRefinement ? "  [refinement]" : "")}");
+        Console.WriteLine($"=== Round {roundNumber}: Stockfish Elo {elo} ===  (step ±{step})");
 
         string roundDir = ResolveRoundDir(elo, sweep.RunId);
         Directory.CreateDirectory(roundDir);
@@ -178,7 +186,7 @@ public sealed class SweepRunner
         {
             RoundNumber          = roundNumber,
             StockfishElo         = elo,
-            IsRefinement         = isRefinement,
+            Step                 = step,
             Games                = stats.N,
             Wins                 = stats.Wins,
             Draws                = stats.Draws,
@@ -270,19 +278,25 @@ public sealed class SweepRunner
         Console.WriteLine("╚══════════════════════════════════════════════════════════════╝");
         Console.WriteLine();
         Console.WriteLine($"Opponent      : {r.EnginePath}");
-        Console.WriteLine($"Elo range     : {r.StartElo} → {r.MaxElo}  (step {r.EloStep})");
+        Console.WriteLine($"Start Elo     : {r.StartElo}   (bounds {r.MinElo}–{r.MaxElo})");
+        Console.WriteLine($"Step          : ±{r.EloStep}, halved on every direction change, " +
+                          $"down to ±{r.MinStep}");
         Console.WriteLine($"Games/round   : {r.GamesPerRound}  ({_cfg.GamesPerSide} per color)");
         Console.WriteLine($"Move time     : {r.MoveTimeMs}ms");
+        Console.WriteLine($"Max rounds    : {_cfg.MaxRounds}");
         Console.WriteLine($"Output dir    : {r.OutDir}");
-        if (_cfg.Refine)
-            Console.WriteLine($"Refinement    : on (bisect down to ±{_cfg.RefineStep} Elo)");
         Console.WriteLine();
-        Console.WriteLine("Stop condition: score rate ≤ 50% (EloDiff ≤ 0) or zero wins in a round.");
+        Console.WriteLine("Ladder        : win → climb by the step, loss → drop by the step.");
+        Console.WriteLine("                Each reversal halves the step until the bracket is");
+        Console.WriteLine($"                narrower than ±{r.MinStep}; the midpoint is the estimate.");
     }
 
     private static void PrintRoundResult(SweepRoundResult r)
     {
-        string verdict = r.Passed ? "continuing" : $"STOP — {r.StopReason}";
+        // Deliberately does not name the next level: the step may still be halved by the
+        // caller before the ladder moves, so announcing it here would print the wrong one.
+        string verdict = r.Passed ? "WIN — climbing" : $"LOSS — dropping ({r.StopReason})";
+
         Console.WriteLine();
         Console.WriteLine($"=== Round {r.RoundNumber}: Stockfish Elo {r.StockfishElo} === " +
                           $"Result: {r.Record} " +
