@@ -91,7 +91,7 @@ public partial class MainWindow : Window
         BtnCopyFen.Click    += OnCopyFen;
         BtnLoadFen.Click    += OnLoadFen;
         BtnEngineMove.Click += async (_, _) => await OnEngineMoveAsync();
-        BtnStopEngine.Click += (_, _) => _vm.StopEngine();
+        BtnAutoPlay.Click   += (_, _) => _vm.ToggleAutoPlay();
 
         BtnPromoQueen.Click  += (_, _) => ApplyPromotion(PieceType.Queen);
         BtnPromoRook.Click   += (_, _) => ApplyPromotion(PieceType.Rook);
@@ -99,9 +99,6 @@ public partial class MainWindow : Window
         BtnPromoKnight.Click += (_, _) => ApplyPromotion(PieceType.Knight);
         BtnPromoCancel.Click += (_, _) => CancelPromotion();
 
-        BtnApplyMove.Click += OnApplyMoveClicked;
-        TxtFrom.KeyDown += (_, e) => { if (e.Key == Key.Enter) TxtTo.Focus(); };
-        TxtTo.KeyDown   += (_, e) => { if (e.Key == Key.Enter) OnApplyMoveClicked(null!, null!); };
 
         BuildCanvasElements();
     }
@@ -419,6 +416,10 @@ public partial class MainWindow : Window
         }
 
         RefreshBoard();
+        if (_vm.AutoPlay)
+        {
+            _ = OnEngineMoveAsync();
+        }
     }
 
     // ── Click-to-move ────────────────────────────────────────────────────────
@@ -464,6 +465,10 @@ public partial class MainWindow : Window
         _pendingPromotions = null;
         if (move != default) _vm.ApplyMove(move);
         RefreshBoard();
+        if (_vm.AutoPlay)
+        {
+            _ = OnEngineMoveAsync();
+        }
     }
 
     private void CancelPromotion()
@@ -493,24 +498,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnApplyMoveClicked(object sender, RoutedEventArgs e)
-    {
-        string from = TxtFrom.Text.Trim();
-        string to   = TxtTo.Text.Trim();
-        TxtMoveError.Text = "";
-
-        if (!_vm.TryMoveBySquareName(from, to, out string err))
-        {
-            TxtMoveError.Text = err;
-        }
-        else
-        {
-            TxtFrom.Text = "";
-            TxtTo.Text   = "";
-            RefreshBoard();
-        }
-    }
-
     private void ShowMoveError(string msg) => TxtMoveError.Text = msg;
 
     private async Task OnEngineMoveAsync()
@@ -522,7 +509,6 @@ public partial class MainWindow : Window
     private void OnEngineThinkingChanged(bool thinking)
     {
         BtnEngineMove.IsEnabled = !thinking;
-        BtnStopEngine.IsEnabled = thinking;
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

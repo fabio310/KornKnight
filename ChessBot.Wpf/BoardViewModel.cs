@@ -21,6 +21,7 @@ public sealed class BoardViewModel : INotifyPropertyChanged, IDisposable
 
     // ── Board visual state ──────────────────────────────────────────────────────────────────────────
     private bool _isFlipped;
+    private bool _autoPlay = true;  // auto-play engine move after player move
     private Square? _selectedSquare;
     private IReadOnlyList<Move> _legalMovesFromSelected = Array.Empty<Move>();
     private Move? _lastMove;
@@ -52,6 +53,7 @@ public sealed class BoardViewModel : INotifyPropertyChanged, IDisposable
 
     public bool IsFlipped       => _isFlipped;
     public bool IsEngineThinking => _isEngineThinking;
+    public bool AutoPlay         => _autoPlay;
 
     // ── Public board queries ────────────────────────────────────────────────
 
@@ -263,6 +265,11 @@ public sealed class BoardViewModel : INotifyPropertyChanged, IDisposable
     {
         _isFlipped = !_isFlipped;
         RequestRepaint();
+    }
+
+    public void ToggleAutoPlay()
+    {
+        _autoPlay = !_autoPlay;
     }
 
     public string GetCurrentFen() => _engine.ExportFen();

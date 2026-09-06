@@ -45,9 +45,10 @@ internal class Searcher
     private readonly MoveGenerator        _moveGen;
     private readonly CheckDetector        _checkDetector;
 
-    // Per-ply pre-allocated move lists: _moveLists[ply] is cleared and reused at that ply.
-    // Safe because the search is single-threaded and each ply level uses its own slot.
-    private readonly List<Move>[]         _moveLists;
+    // Per-ply pre-allocated move buffers: _moveBuffers[ply] is a fixed-size array reused at that
+    // ply. Move generation writes into it and returns a count; recursive calls at ply+1 use a
+    // different slot, so the buffer's contents remain stable for the whole loop at this ply.
+    private readonly Move[][]             _moveBuffers;
 
     // Tracks the move played at each ply so the counter-move heuristic can be populated.
     private readonly Move[]               _lastMoveAtPly;
@@ -90,9 +91,9 @@ internal class Searcher
         _lastMoveAtPly  = new Move[MAX_PLY];
         _nullMoveAtPly  = new bool[MAX_PLY];
 
-        _moveLists = new List<Move>[MAX_PLY];
+        _moveBuffers = new Move[MAX_PLY][];
         for (int i = 0; i < MAX_PLY; i++)
-            _moveLists[i] = new List<Move>(64);
+            _moveBuffers[i] = new Move[MoveGenerator.MaxMoves];
     }
 
     // ── Public search entry point ─────────────────────────────────────────────
@@ -123,10 +124,10 @@ internal class Searcher
         // every depth re-deriving the same fixed mate/draw score while leaving
         // BestMove/IsCheckmate/IsStalemate unset (all false/default) — silently
         // wrong output for a terminal position.
-        var rootMoves = _moveLists[0];
-        _moveGen.GenerateLegalMovesInto(rootMoves);
+        var rootMoves = _moveBuffers[0];
+        _moveGen.GenerateLegalMovesInto(rootMoves, out int rootMoveCount);
 
-        if (rootMoves.Count == 0)
+        if (rootMoveCount == 0)
         {
             bool rootInCheck = _checkDetector.IsInCheck(_board.State.ActiveColor);
             _searchTimer.Stop();
@@ -290,7 +291,7 @@ internal class Searcher
 
         // ── Draw / horizon ────────────────────────────────────────────────
         if (_board.State.IsFiftyMoveRuleDraw || IsDrawByRepetition()) return 0;
-        if (ply >= MAX_PLY) return _evaluator.Evaluate(_board);
+        if (ply >= MAX_PLY) return _evaluator.EvaluateFast(_board);
 
         // ── Check detection ───────────────────────────────────────────────
         bool inCheck = _checkDetector.IsInCheck(_board.State.ActiveColor);
@@ -304,7 +305,7 @@ internal class Searcher
         // ── Null-move pruning ─────────────────────────────────────────────
         // Conditions: not in check, not a PV node, not already a null-move, sufficient depth,
         // and not in a likely zugzwang (we must have non-pawn material).
-        int staticEval = _evaluator.Evaluate(_board);
+        int staticEval = _evaluator.EvaluateFast(_board);
 
         // ── Futility pruning setup ────────────────────────────────────────
         // At depth 1-2, outside check / PV positions, quiet moves that cannot
@@ -330,26 +331,29 @@ internal class Searcher
         }
 
         // ── Generate and order moves (zero allocation) ────────────────────
-        var moves = _moveLists[ply];
-        _moveGen.GenerateLegalMovesInto(moves);
+        var moves = _moveBuffers[ply];
+        _moveGen.GenerateLegalMovesInto(moves, out int legalCount);
 
-        if (moves.Count == 0)
+        if (legalCount == 0)
             return inCheck ? -MATE_SCORE + ply : 0; // Checkmate or stalemate
 
         // Counter-move heuristic: pass the move made by the opponent at the previous ply
         Move lastOpponentMove = ply > 0 ? _lastMoveAtPly[ply - 1] : default;
-        _moveOrdering.OrderMoves(moves, ttMove, lastOpponentMove, ply);
+        _moveOrdering.OrderMoves(moves, legalCount, ttMove, lastOpponentMove, ply);
 
         int bestScore = -INFINITY;
         var bestMove  = moves[0];
         var ttFlag2   = TranspositionTable.ScoreFlag.UpperBound;
         int moveCount = 0;
 
-        foreach (var move in moves)
+        for (int moveIndex = 0; moveIndex < legalCount; moveIndex++)
         {
+            var move = moves[moveIndex];
             moveCount++;
 
-            bool isCapture   = (move.MoveType & MoveType.Capture)   != 0;
+            // En passant is a capture (MoveTypeExtensions.IsCapture covers it), so it is never
+            // treated as a quiet move for futility pruning / LMR / killer / history purposes.
+            bool isCapture   = move.MoveType.IsCapture();
             bool isPromotion = (move.MoveType & MoveType.Promotion) != 0;
             bool isQuiet     = !isCapture && !isPromotion;
 
@@ -456,7 +460,7 @@ internal class Searcher
         bool inCheck = _checkDetector.IsInCheck(_board.State.ActiveColor);
 
         // Stand-pat evaluation (only valid when not in check)
-        int standPat = _evaluator.Evaluate(_board);
+        int standPat = _evaluator.EvaluateFast(_board);
 
         if (!inCheck)
         {
@@ -466,36 +470,41 @@ internal class Searcher
 
         if (ply >= MAX_PLY - 1) return standPat;
 
-        // Generate all legal moves into the pre-allocated per-ply buffer (no allocation)
-        var allMoves = _moveLists[ply];
-        _moveGen.GenerateLegalMovesInto(allMoves);
+        // Generate moves into the pre-allocated per-ply buffer (no allocation). When not in check,
+        // only tactical moves (captures/en passant/promotions) are generated: quiet moves can never
+        // raise alpha above stand-pat here, so skipping their generation, legality-check, and
+        // ordering entirely avoids the wasted work of the old "generate all, order all, scan for
+        // tactical, skip quiet" approach. When in check, stand-pat is invalid and every legal
+        // evasion (quiet or not) must still be considered.
+        var moves = _moveBuffers[ply];
+        int count;
 
-        if (allMoves.Count == 0)
-            return inCheck ? -MATE_SCORE + ply : 0;
-
-        // Order moves in-place (no allocation) so captures/promotions sort first
-        _moveOrdering.OrderMoves(allMoves, default, ply);
-
-        // Quick early-exit when not in check and no tactical moves exist
-        if (!inCheck)
+        if (inCheck)
         {
-            bool hasTactical = false;
-            foreach (var m in allMoves)
-                if ((m.MoveType & MoveType.Capture) != 0 || (m.MoveType & MoveType.Promotion) != 0)
-                { hasTactical = true; break; }
-            if (!hasTactical) return standPat;
+            _moveGen.GenerateLegalMovesInto(moves, out count);
+
+            if (count == 0)
+                return -MATE_SCORE + ply; // Checkmated — no legal evasions
+        }
+        else
+        {
+            _moveGen.GenerateLegalTacticalMovesInto(moves, out count);
+
+            if (count == 0)
+                return standPat; // No captures/promotions left to consider
         }
 
-        foreach (var move in allMoves)
+        // Order moves in-place (no allocation) so the best captures/promotions are tried first
+        _moveOrdering.OrderMoves(moves, count, default, ply);
+
+        for (int mi = 0; mi < count; mi++)
         {
-            bool isTactical = (move.MoveType & MoveType.Capture)   != 0
-                           || (move.MoveType & MoveType.Promotion) != 0;
+            var move = moves[mi];
 
-            // When not in check only search tactical moves; skip quiet moves without allocation
-            if (!inCheck && !isTactical) continue;
-
-            // Delta pruning
-            if (!inCheck && (move.MoveType & MoveType.Capture) != 0)
+            // Delta pruning (captures only — a hopeless capture can't raise alpha).
+            // IsCapture() includes en passant; its victim is always a pawn (the target square
+            // itself is empty), so the material gain is computed explicitly below.
+            if (!inCheck && move.MoveType.IsCapture())
             {
                 Piece victim = _board.GetPiece(move.To);
                 if ((move.MoveType & MoveType.EnPassant) != 0)
@@ -556,15 +565,14 @@ internal class Searcher
 
     /// <summary>
     /// Detects a draw by threefold repetition via the position hash history.
-    /// Uses indexed List access (no ToArray() allocation) and iterates newest→oldest,
-    /// stopping at the first irreversible move (capture) to bound the search.
+    /// Uses indexed array access (no List<T>, no ToArray() allocation) and iterates
+    /// newest→oldest, stopping at the first irreversible move (capture) to bound the search.
     /// Zobrist hashes encode the active color, so only same-color-to-move positions
     /// can ever match, making the color check implicit.
     /// </summary>
     private bool IsDrawByRepetition()
     {
-        var history = _board.History; // List<T> – O(1) indexed access
-        int count   = history.Count;
+        int count = _board.HistoryCount; // preallocated array – O(1) indexed access
         if (count < 4) return false;
 
         ulong currentHash     = _board.ZobristHash;
@@ -575,9 +583,9 @@ internal class Searcher
         // positions (every 2 entries apart) can produce a hash match.
         for (int i = count - 1; i >= 0; i--)
         {
-            var (_, capturedPiece, _, hashBeforeMove) = history[i];
+            var entry = _board.GetHistoryEntry(i);
 
-            if (hashBeforeMove == currentHash)
+            if (entry.Hash == currentHash)
             {
                 repetitionCount++;
                 if (repetitionCount >= 2) // 3 identical positions (current + 2 in history)
@@ -585,7 +593,7 @@ internal class Searcher
             }
 
             // A capture is irreversible: positions before it cannot repeat the current one
-            if (capturedPiece.Type != PieceType.None)
+            if (entry.CapturedPiece.Type != PieceType.None)
                 break;
         }
 

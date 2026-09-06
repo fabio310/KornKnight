@@ -10,18 +10,6 @@ using ChessBot.Engine.Board;
 /// </summary>
 internal class Evaluator
 {
-    /// <summary>
-    /// Piece-Square Tables for all piece types, from White's perspective.
-    /// Index [0] = rank 1, [7] = rank 8 (White's side to Black's side).
-    /// File order: a-h (left to right).
-    /// </summary>
-    private int[][] _pstPawn;
-    private int[][] _pstKnight;
-    private int[][] _pstBishop;
-    private int[][] _pstRook;
-    private int[][] _pstQueen;
-    private int[][] _pstKing;
-
     // Cached CheckDetector reused across Evaluate() calls (see EvaluateThreats). The Evaluator
     // is always paired 1:1 with a single, persistent Board instance for its lifetime, so it is
     // safe to lazily bind this once instead of allocating a new CheckDetector on every node.
@@ -32,17 +20,6 @@ internal class Evaluator
     // allocates a new enumerator). Evaluate() runs at every leaf/quiescence node, so this
     // was the single hottest allocation in the engine. Max 32 pieces on a legal board.
     private readonly (Square sq, Piece p)[] _pieceBuffer = new (Square, Piece)[32];
-
-    public Evaluator()
-    {
-        _pstPawn = Array.Empty<int[]>();
-        _pstKnight = Array.Empty<int[]>();
-        _pstBishop = Array.Empty<int[]>();
-        _pstRook = Array.Empty<int[]>();
-        _pstQueen = Array.Empty<int[]>();
-        _pstKing = Array.Empty<int[]>();
-        InitializePieceTables();
-    }
 
     /// <summary>
     /// Evaluates the current position statically (without search).
@@ -71,16 +48,7 @@ internal class Evaluator
             // PST
             int rank = piece.Color == Color.White ? square.Rank : 7 - square.Rank;
             int file = piece.Color == Color.White ? square.File : 7 - square.File;
-            int[][] pst = piece.Type switch
-            {
-                PieceType.Pawn   => _pstPawn,
-                PieceType.Knight => _pstKnight,
-                PieceType.Bishop => _pstBishop,
-                PieceType.Rook   => _pstRook,
-                PieceType.Queen  => _pstQueen,
-                _                => _pstPawn
-            };
-            score += sign * pst[rank][file];
+            score += sign * PieceSquareTables.TableFor(piece.Type)[rank][file];
 
             // Track pawn files for structure evaluation
             if (piece.Type == PieceType.Pawn)
@@ -109,9 +77,43 @@ internal class Evaluator
     }
 
     /// <summary>
+    /// Fast static evaluation used on the search hot path (leaf, stand-pat, null-move staticEval).
+    /// Numerically identical to <see cref="Evaluate"/>, but the material, piece-square-table, and
+    /// pawn-file terms are read from the Board's incrementally maintained make/unmake eval state
+    /// instead of being recomputed by a full piece scan every node. The remaining terms
+    /// (hanging-piece threats, opening development, endgame king centrality) still require board
+    /// context and are computed the same way as <see cref="Evaluate"/>.
+    /// </summary>
+    public int EvaluateFast(Board board)
+    {
+        // The buffer is still needed for the threat pass (it scans non-pawn pieces for attacks).
+        int pieceCount = board.GetAllPiecesInto(_pieceBuffer);
+
+        // Material + PST come straight from the incremental White-positive accumulators.
+        int score = board.IncrementalMaterialScore + board.IncrementalPstScore;
+
+        // Pawn structure from the incrementally maintained per-file pawn counts.
+        score += EvaluatePawnStructureFromCounts(board.WhitePawnFileCounts, board.BlackPawnFileCounts);
+
+        // Threat detection: hanging pieces
+        score += EvaluateThreats(board, pieceCount);
+
+        // Opening development and king safety
+        score += EvaluateOpeningDevelopment(board);
+
+        // King safety (endgame centralization)
+        if (board.IncrementalTotalMaterial < 1000)
+            score += EvaluateKingCentrality(board);
+
+        // Negamax convention: return score relative to the side to move.
+        int sideSign = board.State.ActiveColor == Color.White ? 1 : -1;
+        return score * sideSign;
+    }
+
+    /// <summary>
     /// Evaluates pawn structure (doubled, isolated) from pre-computed file counts.
     /// </summary>
-    private static int EvaluatePawnStructureFromCounts(Span<int> whitePawnFiles, Span<int> blackPawnFiles)
+    private static int EvaluatePawnStructureFromCounts(ReadOnlySpan<int> whitePawnFiles, ReadOnlySpan<int> blackPawnFiles)
     {
         int score = 0;
 
@@ -193,24 +195,7 @@ internal class Evaluator
     /// Gets the PST value for a piece on a specific square.
     /// </summary>
     private int GetPieceSquareTableValue(Piece piece, Square square)
-    {
-        // For Black pieces, flip the square (rotate 180 degrees)
-        int rank = piece.Color == Color.White ? square.Rank : 7 - square.Rank;
-        int file = piece.Color == Color.White ? square.File : 7 - square.File;
-
-        int[][] pst = piece.Type switch
-        {
-            PieceType.Pawn => _pstPawn,
-            PieceType.Knight => _pstKnight,
-            PieceType.Bishop => _pstBishop,
-            PieceType.Rook => _pstRook,
-            PieceType.Queen => _pstQueen,
-            PieceType.King => _pstKing,
-            _ => _pstPawn  // Fallback
-        };
-
-        return pst[rank][file];
-    }
+        => PieceSquareTables.Value(piece.Color, piece.Type, square);
 
     /// <summary>
     /// Evaluates opening-phase development quality (moves 1–20):
@@ -290,6 +275,7 @@ internal class Evaluator
         return count;
     }
 
+    /// <summary>
     /// Bonus for king centralization in endgame.
     /// </summary>
     private int EvaluateKingCentrality(Board board)
@@ -362,90 +348,5 @@ internal class Evaluator
         }
 
         return score;
-    }
-
-    /// <summary>
-    /// Initializes Piece-Square Tables with standard values.
-    /// Tables are from White's perspective (rank 0 = bottom, rank 7 = top).
-    /// </summary>
-    private void InitializePieceTables()
-    {
-        // Pawn PST (pawns advance forward, prefer central files)
-        _pstPawn = new int[8][]
-        {
-            new int[] { 0, 0, 0, 0, 0, 0, 0, 0 },
-            new int[] { 5, 5, 5, 10, 10, 5, 5, 5 },
-            new int[] { 5, 5, 10, 20, 20, 10, 5, 5 },
-            new int[] { 5, 5, 10, 25, 25, 10, 5, 5 },
-            new int[] { 5, 5, 10, 20, 20, 10, 5, 5 },
-            new int[] { 5, 5, 5, 10, 10, 5, 5, 5 },
-            new int[] { 30, 30, 30, 30, 30, 30, 30, 30 },
-            new int[] { 0, 0, 0, 0, 0, 0, 0, 0 }
-        };
-
-        // Knight PST (centralize knights)
-        _pstKnight = new int[8][]
-        {
-            new int[] { -50, -40, -30, -30, -30, -30, -40, -50 },
-            new int[] { -40, -20, 0, 5, 5, 0, -20, -40 },
-            new int[] { -30, 5, 10, 15, 15, 10, 5, -30 },
-            new int[] { -30, 5, 15, 20, 20, 15, 5, -30 },
-            new int[] { -30, 5, 15, 20, 20, 15, 5, -30 },
-            new int[] { -30, 5, 10, 15, 15, 10, 5, -30 },
-            new int[] { -40, -20, 0, 5, 5, 0, -20, -40 },
-            new int[] { -50, -40, -30, -30, -30, -30, -40, -50 }
-        };
-
-        // Bishop PST (control center and long diagonals)
-        _pstBishop = new int[8][]
-        {
-            new int[] { -20, -10, -10, -10, -10, -10, -10, -20 },
-            new int[] { -10, 5, 5, 5, 5, 5, 5, -10 },
-            new int[] { -10, 5, 10, 10, 10, 10, 5, -10 },
-            new int[] { -10, 5, 10, 15, 15, 10, 5, -10 },
-            new int[] { -10, 5, 10, 15, 15, 10, 5, -10 },
-            new int[] { -10, 5, 10, 10, 10, 10, 5, -10 },
-            new int[] { -10, 5, 5, 5, 5, 5, 5, -10 },
-            new int[] { -20, -10, -10, -10, -10, -10, -10, -20 }
-        };
-
-        // Rook PST (control files, especially open files)
-        _pstRook = new int[8][]
-        {
-            new int[] { 0, 0, 0, 5, 5, 0, 0, 0 },
-            new int[] { 5, 10, 10, 10, 10, 10, 10, 5 },
-            new int[] { 5, 10, 10, 10, 10, 10, 10, 5 },
-            new int[] { 5, 10, 10, 10, 10, 10, 10, 5 },
-            new int[] { 5, 10, 10, 10, 10, 10, 10, 5 },
-            new int[] { 5, 10, 10, 10, 10, 10, 10, 5 },
-            new int[] { 5, 10, 10, 10, 10, 10, 10, 5 },
-            new int[] { 0, 0, 0, 5, 5, 0, 0, 0 }
-        };
-
-        // Queen PST (centralize slightly)
-        _pstQueen = new int[8][]
-        {
-            new int[] { -20, -10, -10, -5, -5, -10, -10, -20 },
-            new int[] { -10, 0, 5, 5, 5, 5, 0, -10 },
-            new int[] { -10, 5, 5, 5, 5, 5, 5, -10 },
-            new int[] { -5, 5, 5, 5, 5, 5, 5, -5 },
-            new int[] { -5, 5, 5, 5, 5, 5, 5, -5 },
-            new int[] { -10, 5, 5, 5, 5, 5, 5, -10 },
-            new int[] { -10, 0, 5, 5, 5, 5, 0, -10 },
-            new int[] { -20, -10, -10, -5, -5, -10, -10, -20 }
-        };
-
-        // King PST (keep safe in opening/middlegame, centralize in endgame)
-        _pstKing = new int[8][]
-        {
-            new int[] { 20, 30, 10, 0, 0, 10, 30, 20 },
-            new int[] { 20, 20, 0, 0, 0, 0, 20, 20 },
-            new int[] { -10, -20, -20, -20, -20, -20, -20, -10 },
-            new int[] { -20, -30, -30, -40, -40, -30, -30, -20 },
-            new int[] { -20, -30, -30, -40, -40, -30, -30, -20 },
-            new int[] { -10, -20, -20, -20, -20, -20, -20, -10 },
-            new int[] { 20, 20, 0, 0, 0, 0, 20, 20 },
-            new int[] { 20, 30, 10, 0, 0, 10, 30, 20 }
-        };
     }
 }
