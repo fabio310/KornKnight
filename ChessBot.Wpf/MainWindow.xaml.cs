@@ -91,6 +91,7 @@ public partial class MainWindow : Window
         BtnCopyFen.Click    += OnCopyFen;
         BtnLoadFen.Click    += OnLoadFen;
         BtnEngineMove.Click += async (_, _) => await OnEngineMoveAsync();
+        BtnAutoPlay.Click   += (_, _) => _vm.ToggleAutoPlay();
 
         BtnPromoQueen.Click  += (_, _) => ApplyPromotion(PieceType.Queen);
         BtnPromoRook.Click   += (_, _) => ApplyPromotion(PieceType.Rook);
@@ -415,7 +416,10 @@ public partial class MainWindow : Window
         }
 
         RefreshBoard();
-        _ = OnEngineMoveAsync();
+        if (_vm.AutoPlay)
+        {
+            _ = OnEngineMoveAsync();
+        }
     }
 
     // ── Click-to-move ────────────────────────────────────────────────────────
@@ -461,6 +465,10 @@ public partial class MainWindow : Window
         _pendingPromotions = null;
         if (move != default) _vm.ApplyMove(move);
         RefreshBoard();
+        if (_vm.AutoPlay)
+        {
+            _ = OnEngineMoveAsync();
+        }
     }
 
     private void CancelPromotion()

@@ -28,6 +28,21 @@
                 </Trigger>
             </Style.Triggers>
         </Style>
+        <Style x:Key="ToggleBtn" TargetType="ToggleButton" BasedOn="{StaticResource ToolBtn}">
+            <Setter Property="Background" Value="#333"/>
+            <Setter Property="Foreground" Value="#ddd"/>
+            <Setter Property="BorderBrush" Value="#555"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#555"/>
+                </Trigger>
+                <Trigger Property="IsChecked" Value="True">
+                    <Setter Property="Background" Value="#76b900"/>
+                    <Setter Property="BorderBrush" Value="#76b900"/>
+                    <Setter Property="Foreground" Value="#1a1a1a"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
         <Style x:Key="InfoHeader" TargetType="TextBlock">
             <Setter Property="Foreground" Value="#aaa"/>
             <Setter Property="FontSize" Value="11"/>
@@ -51,6 +66,7 @@
                 <Button x:Name="BtnFlip"       Content="Flip Board"  Style="{StaticResource ToolBtn}" Margin="2"/>
                 <Separator/>
                 <Button x:Name="BtnEngineMove" Content="Engine Move" Style="{StaticResource ToolBtn}" Margin="2" />
+                <ToggleButton x:Name="BtnAutoPlay" Content="Auto Play" Style="{StaticResource ToggleBtn}" Margin="2" IsChecked="True"/>
                 <Separator/>
                 <Button x:Name="BtnCopyFen"    Content="Copy FEN"    Style="{StaticResource ToolBtn}" Margin="2"/>
                 <Button x:Name="BtnLoadFen"    Content="Load FEN"    Style="{StaticResource ToolBtn}" Margin="2"/>
