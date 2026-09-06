@@ -46,6 +46,8 @@ public record MoveRecord
     public IReadOnlyList<string> RawUciLines { get; init; } = Array.Empty<string>();
 
     // ── Search-shape instrumentation (ChessBot moves only; 0 for external-engine moves) ──────
+    /// <summary>Main-search nodes only. <see cref="Nodes"/> is main + quiescence.</summary>
+    public long   MainNodes             { get; init; }
     public long   QNodes                { get; init; }
     public long   EvaluationCalls       { get; init; }
     public long   MovesGenerated        { get; init; }
@@ -60,7 +62,25 @@ public record MoveRecord
     public long   AspirationFailLow     { get; init; }
     public long   AspirationFailHigh    { get; init; }
     public long   RepetitionDraws       { get; init; }
-    public double EffectiveBranchingFactor { get; init; }
+    /// <summary>
+    /// Ratio of the last completed iteration's own node count to the previous one's — the
+    /// standard effective-branching-factor estimate. 0 when fewer than two iterations
+    /// completed. Replaces the former "EffectiveBranchingFactor", which raised the cumulative
+    /// node total (several completed iterations plus an unfinished one) to the power 1/depth
+    /// and had no branching-factor meaning.
+    /// </summary>
+    public double IterationNodeRatio    { get; init; }
+    /// <summary>Nodes spent by the last completed iteration alone.</summary>
+    public long   LastIterationNodes    { get; init; }
+    /// <summary>Nodes spent inside aspiration re-searches — the cost of too-narrow windows.</summary>
+    public long   AspirationRetryNodes  { get; init; }
+    /// <summary>Total plies removed by LMR (sum of reductions), not the count of reduced moves.</summary>
+    public long   LmrPliesSaved         { get; init; }
+    /// <summary>
+    /// True when the budget did not allow even depth 1 to finish, so the move is an
+    /// unevaluated legal fallback rather than a search result.
+    /// </summary>
+    public bool   IsUnsearchedFallbackMove { get; init; }
     public bool   UsedPartialRootResult { get; init; }
     public int    PartialDepth          { get; init; }
     public long   BetaCutoffsFirstMove  { get; init; }
@@ -162,7 +182,12 @@ public class GameRunner
             long   aspirationFailLow     = 0;
             long   aspirationFailHigh    = 0;
             long   repetitionDraws       = 0;
-            double effectiveBranchingFactor = 0;
+            double iterationNodeRatio    = 0;
+            long   mainNodes            = 0;
+            long   lastIterationNodes   = 0;
+            long   aspirationRetryNodes = 0;
+            long   lmrPliesSaved        = 0;
+            bool   isUnsearchedFallback = false;
             bool   usedPartialRootResult = false;
             int    partialDepth          = 0;
             long   betaCutoffsFirstMove  = 0;
@@ -217,7 +242,12 @@ public class GameRunner
                 aspirationFailLow      = searchResult.AspirationFailLow;
                 aspirationFailHigh     = searchResult.AspirationFailHigh;
                 repetitionDraws        = searchResult.RepetitionDraws;
-                effectiveBranchingFactor = searchResult.EffectiveBranchingFactor;
+                iterationNodeRatio     = searchResult.IterationNodeRatio;
+                mainNodes              = searchResult.MainNodes;
+                lastIterationNodes     = searchResult.LastIterationNodes;
+                aspirationRetryNodes   = searchResult.AspirationRetryNodes;
+                lmrPliesSaved          = searchResult.LmrPliesSaved;
+                isUnsearchedFallback   = searchResult.IsUnsearchedFallbackMove;
                 usedPartialRootResult  = searchResult.UsedPartialRootResult;
                 partialDepth           = searchResult.PartialDepth;
                 betaCutoffsFirstMove   = searchResult.BetaCutoffsFirstMove;
@@ -300,7 +330,12 @@ public class GameRunner
                 AspirationFailLow        = aspirationFailLow,
                 AspirationFailHigh       = aspirationFailHigh,
                 RepetitionDraws          = repetitionDraws,
-                EffectiveBranchingFactor = effectiveBranchingFactor,
+                IterationNodeRatio       = iterationNodeRatio,
+                MainNodes                = mainNodes,
+                LastIterationNodes       = lastIterationNodes,
+                AspirationRetryNodes     = aspirationRetryNodes,
+                LmrPliesSaved            = lmrPliesSaved,
+                IsUnsearchedFallbackMove = isUnsearchedFallback,
                 UsedPartialRootResult    = usedPartialRootResult,
                 PartialDepth             = partialDepth,
                 BetaCutoffsFirstMove     = betaCutoffsFirstMove,

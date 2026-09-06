@@ -35,6 +35,16 @@ internal class Searcher
     private int    _lmrFullMoves;
     private double _lmrTableBase;
     private double _lmrTableDivisor;
+    private bool   _useLegacyFlatLmr;
+    private bool   _inAspirationRetry;
+    private bool   _cancelledDuringAspirationRetry;
+
+    // Per-iteration and per-heuristic telemetry (see SearchResult for meanings).
+    private readonly List<long> _iterationNodes = new();
+    private long _aspirationRetryNodes;
+    private long _lmrPliesSaved;
+    private readonly long[] _lmrByDepth      = new long[SearchResult.LmrBucketCount];
+    private readonly long[] _lmrByMoveNumber = new long[SearchResult.LmrBucketCount];
 
     // Delta pruning in quiescence
     private const int DELTA_MARGIN   = 200; // centipawns
@@ -201,6 +211,11 @@ internal class Searcher
         _settings        = settings ?? new SearchSettings();
 
         // ── Controlled A/B override of the LMR schedule (see SearchSettings.LmrBaseOverride) ──
+        // UseLegacyFlatLmr reproduces the pre-table schedule exactly and takes precedence over
+        // the parametric overrides, so the current schedule can be compared against the
+        // implementation it actually replaced.
+        _useLegacyFlatLmr = _settings.UseLegacyFlatLmr;
+
         double wantBase    = _settings.LmrBaseOverride    ?? LMR_BASE_DEFAULT;
         double wantDivisor = _settings.LmrDivisorOverride ?? LMR_DIVISOR_DEFAULT;
         int    wantFullMoves = _settings.LmrFullMovesOverride ?? LMR_FULL_MOVES;
@@ -211,6 +226,15 @@ internal class Searcher
             _lmrTableDivisor = wantDivisor;
         }
         _lmrFullMoves = wantFullMoves;
+
+        _iterationNodes.Clear();
+        _iterationNodes.Add(0);          // index 0 unused; keeps depth == index
+        _aspirationRetryNodes = 0;
+        _inAspirationRetry    = false;
+        _cancelledDuringAspirationRetry = false;
+        _lmrPliesSaved        = 0;
+        Array.Clear(_lmrByDepth, 0, _lmrByDepth.Length);
+        Array.Clear(_lmrByMoveNumber, 0, _lmrByMoveNumber.Length);
 
         _nodesSearched   = 0;
         _qnodesSearched  = 0;
@@ -308,6 +332,8 @@ internal class Searcher
                     // accumulated during the aborted first attempt above, so state is reset
                     // again before every retry — not just once per depth.
                     _aspirationFailLow++;
+                    long retryStart = _nodesSearched + _qnodesSearched;
+                    _inAspirationRetry = true;
                     ResetRootPartialState();
                     alpha = prevScore - ASP_WINDOW * 4;
                     score = NegamaxSearch(0, depth, alpha, beta);
@@ -316,11 +342,15 @@ internal class Searcher
                         ResetRootPartialState();
                         score = NegamaxSearch(0, depth, -INFINITY, beta);
                     }
+                    _inAspirationRetry = false;
+                    _aspirationRetryNodes += (_nodesSearched + _qnodesSearched) - retryStart;
                 }
                 else if (!_cancelRequested && score >= beta)
                 {
                     // Fail-high: widen upper bound. Same reasoning as the fail-low branch above.
                     _aspirationFailHigh++;
+                    long retryStart = _nodesSearched + _qnodesSearched;
+                    _inAspirationRetry = true;
                     ResetRootPartialState();
                     beta = prevScore + ASP_WINDOW * 4;
                     score = NegamaxSearch(0, depth, alpha, beta);
@@ -329,11 +359,14 @@ internal class Searcher
                         ResetRootPartialState();
                         score = NegamaxSearch(0, depth, alpha, INFINITY);
                     }
+                    _inAspirationRetry = false;
+                    _aspirationRetryNodes += (_nodesSearched + _qnodesSearched) - retryStart;
                 }
             }
 
             if (_cancelRequested)
             {
+                if (_inAspirationRetry) _cancelledDuringAspirationRetry = true;
                 // The iteration was abandoned. DepthAchieved must stay at the last fully
                 // completed depth — reporting this unfinished iteration's depth as "achieved"
                 // would claim a depth that was never actually finished. The partial-iteration
@@ -373,6 +406,11 @@ internal class Searcher
             result.Evaluation    = score;
             result.DepthAchieved = depth;
             result.NodesSearched = _nodesSearched + _qnodesSearched;
+
+            // Cumulative node count at the moment this iteration completed. Only completed
+            // iterations are recorded, so a branching estimate never mixes in a partial one.
+            while (_iterationNodes.Count <= depth) _iterationNodes.Add(0);
+            _iterationNodes[depth] = _nodesSearched + _qnodesSearched;
 
             // Extract PV from triangular table
             result.PrincipalVariation.Clear();
@@ -415,10 +453,21 @@ internal class Searcher
         // and NPS (which divides by the *full* elapsed time) whenever the search was cut off
         // mid-iteration — i.e. on almost every timed move.
         result.NodesSearched  = _nodesSearched + _qnodesSearched;
+        result.MainNodes      = _nodesSearched;
         result.ElapsedTimeMs  = _searchTimer.ElapsedMilliseconds;
         result.NodesPerSecond = result.ElapsedTimeMs > 0
             ? result.NodesSearched / (result.ElapsedTimeMs / 1000.0) : 0;
         result.QNodesSearched = _qnodesSearched;
+
+        result.IterationNodes       = new List<long>(_iterationNodes);
+        result.LastIterationNodes   = _iterationNodes.Count >= 3
+            ? _iterationNodes[^1] - _iterationNodes[^2]
+            : (_iterationNodes.Count == 2 ? _iterationNodes[^1] : 0);
+        result.AspirationRetryNodes = _aspirationRetryNodes;
+        result.CancelledDuringAspirationRetry = _cancelledDuringAspirationRetry;
+        result.LmrPliesSaved        = _lmrPliesSaved;
+        result.LmrReductionsByDepth      = (long[])_lmrByDepth.Clone();
+        result.LmrReductionsByMoveNumber = (long[])_lmrByMoveNumber.Clone();
         result.SelDepth       = _selDepth;
         result.TTProbes       = _ttProbes;
         result.TTHits         = _ttHits;
@@ -600,18 +649,36 @@ internal class Searcher
             if (_settings.UseLmr
                 && !inCheck && depth >= LMR_MIN_DEPTH && moveCount > _lmrFullMoves && isQuiet)
             {
-                reduction = _lmrTable[Math.Min(depth, MAX_PLY - 1),
-                                      Math.Min(moveCount, LMR_MAX_MOVES - 1)];
+                if (_useLegacyFlatLmr)
+                {
+                    // The pre-table schedule, reproduced exactly: depth-independent, and with
+                    // no PV-node relief. Kept verbatim so an A/B run compares against the real
+                    // previous behaviour rather than a re-parameterised version of the new one.
+                    reduction = moveCount > 8 ? 2 : 1;
+                    reduction = Math.Clamp(reduction, 0, depth - 2);
+                }
+                else
+                {
+                    reduction = _lmrTable[Math.Min(depth, MAX_PLY - 1),
+                                          Math.Min(moveCount, LMR_MAX_MOVES - 1)];
 
-                // PV nodes carry the principal variation; reduce them one ply less so the
-                // main line keeps its accuracy while the rest of the tree is cut harder.
-                if (pvNode) reduction--;
+                    // PV nodes carry the principal variation; reduce them one ply less so the
+                    // main line keeps its accuracy while the rest of the tree is cut harder.
+                    if (pvNode) reduction--;
 
-                // Leave at least one real ply below the reduction: the null-window probe has
-                // to be a search, not a jump straight into quiescence, or the full-depth
-                // re-search that recovers accuracy is never triggered.
-                reduction = Math.Clamp(reduction, 0, depth - 2);
-                if (reduction > 0) _lmrReductions++;
+                    // Leave at least one real ply below the reduction: the null-window probe has
+                    // to be a search, not a jump straight into quiescence, or the full-depth
+                    // re-search that recovers accuracy is never triggered.
+                    reduction = Math.Clamp(reduction, 0, depth - 2);
+                }
+
+                if (reduction > 0)
+                {
+                    _lmrReductions++;
+                    _lmrPliesSaved += reduction;
+                    _lmrByDepth[Math.Min(depth, SearchResult.LmrBucketCount - 1)]++;
+                    _lmrByMoveNumber[Math.Min(moveCount, SearchResult.LmrBucketCount - 1)]++;
+                }
             }
 
             // Record for counter-move heuristic (child nodes read _lastMoveAtPly[ply])
