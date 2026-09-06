@@ -66,6 +66,28 @@ internal class Searcher
     private int _ttCutoffs;
     private int _ttStores;
 
+    // Search-shape profiling (see SearchResult for what each one means)
+    private long _evaluationCalls;
+    private long _movesGenerated;
+    private long _betaCutoffs;
+    private long _betaCutoffsFirstMove;
+    private long _nullMoveAttempts;
+    private long _nullMoveCutoffs;
+    private long _lmrReductions;
+    private long _lmrReSearches;
+    private long _futilitySkips;
+    private long _pvsReSearches;
+    private long _aspirationFailLow;
+    private long _aspirationFailHigh;
+    private long _repetitionDraws;
+
+    /// <summary>Static evaluation with a call counter, so evaluation cost is measurable.</summary>
+    private int EvaluateStatic()
+    {
+        _evaluationCalls++;
+        return _evaluator.EvaluateFast(_board);
+    }
+
     // ── Partial-iteration root results ────────────────────────────────────────
     // When an iterative-deepening pass runs out of time it is abandoned, but the root
     // moves it *did* finish are still valid: a partially searched depth N that has
@@ -77,6 +99,7 @@ internal class Searcher
     private int    _rootPartialScore;
     private readonly Move[] _rootPartialPv;
     private int    _rootPartialPvLength;
+
 
     // Triangular PV table: _pvTable[ply, ply..ply+len] stores the PV from ply
     private readonly Move[,] _pvTable;
@@ -108,6 +131,7 @@ internal class Searcher
             _moveBuffers[i] = new Move[MoveGenerator.MaxMoves];
 
         _rootPartialPv = new Move[MAX_PLY];
+
     }
 
     // ── Public search entry point ─────────────────────────────────────────────
@@ -125,6 +149,20 @@ internal class Searcher
         _ttHits          = 0;
         _ttCutoffs       = 0;
         _ttStores        = 0;
+
+        _evaluationCalls      = 0;
+        _movesGenerated       = 0;
+        _betaCutoffs          = 0;
+        _betaCutoffsFirstMove = 0;
+        _nullMoveAttempts     = 0;
+        _nullMoveCutoffs      = 0;
+        _lmrReductions        = 0;
+        _lmrReSearches        = 0;
+        _futilitySkips        = 0;
+        _pvsReSearches        = 0;
+        _aspirationFailLow    = 0;
+        _aspirationFailHigh   = 0;
+        _repetitionDraws      = 0;
 
         var result      = new SearchResult();
         int prevScore   = 0;
@@ -177,7 +215,7 @@ internal class Searcher
 
             int score;
 
-            if (depth <= 4)
+            if (depth <= 4 || !_settings.UseAspiration)
             {
                 // Full window for early depths — aspiration windows unreliable here
                 score = NegamaxSearch(0, depth, -INFINITY, INFINITY);
@@ -194,6 +232,7 @@ internal class Searcher
                 if (!_cancelRequested && score <= alpha)
                 {
                     // Fail-low: widen lower bound
+                    _aspirationFailLow++;
                     alpha = prevScore - ASP_WINDOW * 4;
                     score = NegamaxSearch(0, depth, alpha, beta);
                     if (!_cancelRequested && score <= alpha)
@@ -202,6 +241,7 @@ internal class Searcher
                 else if (!_cancelRequested && score >= beta)
                 {
                     // Fail-high: widen upper bound
+                    _aspirationFailHigh++;
                     beta = prevScore + ASP_WINDOW * 4;
                     score = NegamaxSearch(0, depth, alpha, beta);
                     if (!_cancelRequested && score >= beta)
@@ -273,6 +313,20 @@ internal class Searcher
         result.TTHits         = _ttHits;
         result.TTCutoffs      = _ttCutoffs;
         result.TTStores       = _ttStores;
+
+        result.EvaluationCalls       = _evaluationCalls;
+        result.MovesGenerated        = _movesGenerated;
+        result.BetaCutoffs           = _betaCutoffs;
+        result.BetaCutoffsFirstMove  = _betaCutoffsFirstMove;
+        result.NullMoveAttempts      = _nullMoveAttempts;
+        result.NullMoveCutoffs       = _nullMoveCutoffs;
+        result.LmrReductions         = _lmrReductions;
+        result.LmrReSearches         = _lmrReSearches;
+        result.FutilitySkips         = _futilitySkips;
+        result.PvsReSearches         = _pvsReSearches;
+        result.AspirationFailLow     = _aspirationFailLow;
+        result.AspirationFailHigh    = _aspirationFailHigh;
+        result.RepetitionDraws       = _repetitionDraws;
         result.HashFull       = _transpositionTable.GetFillPermille();
 
         return result;
@@ -287,6 +341,14 @@ internal class Searcher
 
         // Cancellation check (throttled to avoid stopwatch overhead on every node)
         if (_cancelRequested) return 0;
+        // Node budget is checked exactly, not every 2048 nodes, so a fixed-node search is
+        // reproducible down to the node count.
+        if (_settings.MaxNodes is long cap && _nodesSearched + _qnodesSearched > cap)
+        {
+            _cancelRequested = true;
+            return 0;
+        }
+
         if ((_nodesSearched & 2047) == 0 &&
             _searchTimer.ElapsedMilliseconds > (_settings.MaxTimeMs ?? 10_000))
         {
@@ -299,13 +361,19 @@ internal class Searcher
         // ── Transposition table lookup ─────────────────────────────────────
         // Use the board's incremental hash (O(1)) instead of recomputing from scratch (O(32)).
         ulong hash  = _board.ZobristHash;
-        _ttProbes++;
+        Move ttMove = default;
 
         // Always retrieve TT best move for ordering, even when the entry depth is too low for
         // a score cutoff. A shallow hit still provides an excellent first move to try.
-        Move ttMove = _transpositionTable.LookupBestMoveOnly(hash);
+        if (_settings.UseTranspositionTable)
+        {
+            _ttProbes++;
+            ttMove = _transpositionTable.LookupBestMoveOnly(hash);
+        }
 
-        var ttEntry = _transpositionTable.Lookup(hash, depth);
+        var ttEntry = _settings.UseTranspositionTable
+            ? _transpositionTable.Lookup(hash, depth)
+            : null;
         if (ttEntry.HasValue)
         {
             var (ttScore, ttFlag, ttBest, _) = ttEntry.Value;
@@ -333,33 +401,38 @@ internal class Searcher
         }
 
         // ── Draw / horizon ────────────────────────────────────────────────
-        if (_board.State.IsFiftyMoveRuleDraw || IsDrawByRepetition()) return 0;
-        if (ply >= MAX_PLY) return _evaluator.EvaluateFast(_board);
+        if (_board.State.IsFiftyMoveRuleDraw) return 0;
+        if (IsDrawByRepetition()) { _repetitionDraws++; return 0; }
+        if (ply >= MAX_PLY) return EvaluateStatic();
 
         // ── Check detection ───────────────────────────────────────────────
         bool inCheck = _checkDetector.IsInCheck(_board.State.ActiveColor);
 
         // Check extension: add 1 ply when in check to avoid missing short tactics
-        if (inCheck) depth++;
+        if (inCheck && _settings.UseCheckExtension) depth++;
 
         if (depth <= 0)
-            return QuiescenceSearch(ply, alpha, beta);
+            return _settings.UseQuiescence
+                ? QuiescenceSearch(ply, alpha, beta)
+                : EvaluateStatic();
 
         // ── Null-move pruning ─────────────────────────────────────────────
         // Conditions: not in check, not a PV node, not already a null-move, sufficient depth,
         // and not in a likely zugzwang (we must have non-pawn material).
-        int staticEval = _evaluator.EvaluateFast(_board);
+        int staticEval = EvaluateStatic();
 
         // ── Futility pruning setup ────────────────────────────────────────
         // At depth 1-2, outside check / PV positions, quiet moves that cannot
         // raise alpha even with a generous margin are skipped safely.
-        bool futilityActive = !inCheck && !pvNode && depth <= 2;
+        bool futilityActive = _settings.UseFutility && !inCheck && !pvNode && depth <= 2;
         int  futilityMargin = depth == 1 ? 200 : 450;
 
-        if (!inCheck && !pvNode && !_nullMoveAtPly[ply] && depth >= NMP_MIN_DEPTH
+        if (_settings.UseNullMove
+            && !inCheck && !pvNode && !_nullMoveAtPly[ply] && depth >= NMP_MIN_DEPTH
             && staticEval >= beta && HasNonPawnMaterial(_board.State.ActiveColor))
         {
             int R = depth >= 4 ? NMP_BASE_R : 2;
+            _nullMoveAttempts++;
 
             _board.MakeNullMove();
             _nullMoveAtPly[ply + 1] = true;
@@ -370,12 +443,16 @@ internal class Searcher
             if (_cancelRequested) return 0;
 
             if (nullScore >= beta)
+            {
+                _nullMoveCutoffs++;
                 return beta; // Null-move cutoff
+            }
         }
 
         // ── Generate and order moves (zero allocation) ────────────────────
         var moves = _moveBuffers[ply];
         _moveGen.GenerateLegalMovesInto(moves, out int legalCount);
+        _movesGenerated += legalCount;
 
         if (legalCount == 0)
             return inCheck ? -MATE_SCORE + ply : 0; // Checkmate or stalemate
@@ -402,14 +479,19 @@ internal class Searcher
 
             // ── Futility pruning ──────────────────────────────────────────
             if (futilityActive && isQuiet && moveCount > 1 && staticEval + futilityMargin <= alpha)
+            {
+                _futilitySkips++;
                 continue;
+            }
 
             // ── Late Move Reductions ──────────────────────────────────────
             int reduction = 0;
-            if (!inCheck && depth >= LMR_MIN_DEPTH && moveCount > LMR_FULL_MOVES && isQuiet)
+            if (_settings.UseLmr
+                && !inCheck && depth >= LMR_MIN_DEPTH && moveCount > LMR_FULL_MOVES && isQuiet)
             {
                 reduction = 1;
                 if (moveCount > 8) reduction = 2;
+                _lmrReductions++;
             }
 
             // Record for counter-move heuristic (child nodes read _lastMoveAtPly[ply])
@@ -428,7 +510,10 @@ internal class Searcher
                 score = -NegamaxSearch(ply + 1, depth - 1 - reduction, -alpha - 1, -alpha);
                 // If it raised alpha, re-search at full depth
                 if (!_cancelRequested && score > alpha)
+                {
+                    _lmrReSearches++;
                     score = -NegamaxSearch(ply + 1, depth - 1, -beta, -alpha);
+                }
             }
             else
             {
@@ -436,7 +521,10 @@ internal class Searcher
                 score = -NegamaxSearch(ply + 1, depth - 1, -alpha - 1, -alpha);
                 // Re-search with full window if this might be a better move in PV
                 if (!_cancelRequested && score > alpha && score < beta)
+                {
+                    _pvsReSearches++;
                     score = -NegamaxSearch(ply + 1, depth - 1, -beta, -alpha);
+                }
             }
 
             _board.UndoMove();
@@ -473,6 +561,9 @@ internal class Searcher
 
                     if (alpha >= beta)
                     {
+                        _betaCutoffs++;
+                        if (moveCount == 1) _betaCutoffsFirstMove++;
+
                         if (isQuiet)
                         {
                             _moveOrdering.RecordKillerMove(move, ply);
@@ -510,6 +601,12 @@ internal class Searcher
 
         if (_cancelRequested) return 0;
 
+        if (_settings.MaxNodes is long qcap && _nodesSearched + _qnodesSearched > qcap)
+        {
+            _cancelRequested = true;
+            return 0;
+        }
+
         // Quiescence has to honour the clock too. Without this the only time check is in
         // NegamaxSearch, so a capture-heavy qsearch entered just after the last check runs
         // unbounded — measured at 29% over the move budget in tactical positions, which is
@@ -525,7 +622,7 @@ internal class Searcher
         bool inCheck = _checkDetector.IsInCheck(_board.State.ActiveColor);
 
         // Stand-pat evaluation (only valid when not in check)
-        int standPat = _evaluator.EvaluateFast(_board);
+        int standPat = EvaluateStatic();
 
         if (!inCheck)
         {
@@ -547,6 +644,7 @@ internal class Searcher
         if (inCheck)
         {
             _moveGen.GenerateLegalMovesInto(moves, out count);
+            _movesGenerated += count;
 
             if (count == 0)
                 return -MATE_SCORE + ply; // Checkmated — no legal evasions
@@ -554,6 +652,7 @@ internal class Searcher
         else
         {
             _moveGen.GenerateLegalTacticalMovesInto(moves, out count);
+            _movesGenerated += count;
 
             if (count == 0)
                 return standPat; // No captures/promotions left to consider

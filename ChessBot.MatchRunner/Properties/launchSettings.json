@@ -2,7 +2,7 @@
   "profiles": {
     "ChessBot.MatchRunner": {
       "commandName": "Project",
-      "commandLineArgs": "--engine \"C:\\Tools\\stockfish\\stockfish-windows-x86-64-avx2.exe\" --time 2000 --games 20 --pgn-dir \"C:\\Users\\Fabio\\source\\repos\\Chess\\pgns\""
+      "commandLineArgs": "--engine \"C:\\Tools\\stockfish\\stockfish-windows-x86-64-avx2.exe\" `\r\n  --games 5 `\r\n  --time 1000 `\r\n  --pgn-dir \"C:\\Users\\Fabio\\source\\repos\\Chess\\matches\\stockfish-max\""
     }
   }
 }

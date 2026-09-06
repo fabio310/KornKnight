@@ -154,15 +154,28 @@ public class PositionAnalyzer
         w.WriteLine("=== Game Statistics ===");
         w.WriteLine($"  {"Metric",-28} {cbColor + " (ChessBot)",-22} {oppColor + " (Opponent)",-22}");
         w.WriteLine(new string('-', 75));
-        WriteStatRow(w, "Avg depth",
-            cbMoves.Count  > 0 ? cbMoves.Average(m => m.Depth)   : 0,
-            oppMoves.Count > 0 ? oppMoves.Average(m => m.Depth)  : 0, fmt: "F1");
-        WriteStatRow(w, "Avg seldepth",
-            cbMoves.Count  > 0 ? cbMoves.Average(m => m.SelDepth)  : 0,
-            oppMoves.Count > 0 ? oppMoves.Average(m => m.SelDepth) : 0, fmt: "F1");
-        WriteStatRow(w, "Avg score (cp)",
-            cbMoves.Count  > 0 ? cbMoves.Average(m => (double)m.ScoreCp)  : 0,
-            oppMoves.Count > 0 ? oppMoves.Average(m => (double)m.ScoreCp) : 0, fmt: "+F1;-F1;0");
+        // Forced-mate searches terminate at artificial depths (245 plies has been observed)
+        // and carry mate scores, not centipawns. Averaging either of those with normal
+        // searches produces a number that describes nothing, so mate-scored moves are
+        // excluded from the depth and score averages and counted on their own row.
+        var cbNormal  = cbMoves.Where(m => !IsMateScored(m)).ToList();
+        var oppNormal = oppMoves.Where(m => !IsMateScored(m)).ToList();
+
+        WriteStatRow(w, "Avg depth (non-mate)",
+            cbNormal.Count  > 0 ? cbNormal.Average(m => m.Depth)   : 0,
+            oppNormal.Count > 0 ? oppNormal.Average(m => m.Depth)  : 0, fmt: "F1");
+        WriteStatRow(w, "Median depth (non-mate)",
+            Median(cbNormal.Select(m => (double)m.Depth)),
+            Median(oppNormal.Select(m => (double)m.Depth)), fmt: "F1");
+        WriteStatRow(w, "Avg seldepth (non-mate)",
+            cbNormal.Count  > 0 ? cbNormal.Average(m => m.SelDepth)  : 0,
+            oppNormal.Count > 0 ? oppNormal.Average(m => m.SelDepth) : 0, fmt: "F1");
+        WriteStatRow(w, "Avg score (cp, non-mate)",
+            cbNormal.Count  > 0 ? cbNormal.Average(m => (double)m.ScoreCp)  : 0,
+            oppNormal.Count > 0 ? oppNormal.Average(m => (double)m.ScoreCp) : 0, fmt: "+0.0;-0.0;0.0");
+        WriteStatRow(w, "Mate-scored moves",
+            cbMoves.Count - cbNormal.Count,
+            oppMoves.Count - oppNormal.Count, fmt: "F0");
         WriteStatRow(w, "Avg nodes / move",
             cbMoves.Count  > 0 ? cbMoves.Average(m => (double)m.Nodes)  : 0,
             oppMoves.Count > 0 ? oppMoves.Average(m => (double)m.Nodes) : 0, fmt: "N0");
@@ -253,7 +266,8 @@ public class PositionAnalyzer
                 w.WriteLine($"  [{i + 1}]  Move {b.MoveNumber} ({(b.IsWhiteMove ? "White" : "Black")}): {b.Move}");
                 w.WriteLine($"       Score swing   : {b.SwingCp:+#;-#;0} cp");
                 w.WriteLine($"       Before move   : {b.ScoreBefore:+#;-#;0} cp  (ChessBot's evaluation)");
-                w.WriteLine($"       After response: {b.ScoreAfter:+#;-#;0} cp  (opponent's evaluation)");
+                w.WriteLine($"       Opponent eval of the position this move created: " +
+                            $"{b.ScoreAfter:+#;-#;0} cp  (opponent to move, before it replies)");
                 w.WriteLine($"       FEN before    : {b.Fen}");
                 if (rec != null)
                 {
@@ -288,5 +302,24 @@ public class PositionAnalyzer
     private static void WriteStatRow(StreamWriter w, string label, double cb, double opp, string fmt)
     {
         w.WriteLine($"  {label,-28} {cb.ToString(fmt),-22} {opp.ToString(fmt),-22}");
+    }
+
+    /// <summary>
+    /// True when a move's score is a mate score rather than a centipawn evaluation: either the
+    /// external engine reported "score mate N", or the internal engine returned a value in the
+    /// mate band (it encodes mate as ±100000 minus the ply). Such values are not centipawns and
+    /// must never be averaged with them.
+    /// </summary>
+    private static bool IsMateScored(MoveRecord m)
+        => m.ScoreMate.HasValue || Math.Abs(m.ScoreCp) >= MateScoreThreshold;
+
+    private const int MateScoreThreshold = 99_000;
+
+    private static double Median(IEnumerable<double> values)
+    {
+        var sorted = values.OrderBy(v => v).ToList();
+        if (sorted.Count == 0) return 0;
+        int mid = sorted.Count / 2;
+        return sorted.Count % 2 == 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2.0;
     }
 }

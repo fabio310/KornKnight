@@ -14,6 +14,7 @@ internal class Evaluator
     // is always paired 1:1 with a single, persistent Board instance for its lifetime, so it is
     // safe to lazily bind this once instead of allocating a new CheckDetector on every node.
     private CheckDetector? _threatDetector;
+    private Board?         _threatDetectorBoard;
 
     // Reusable buffer for Board.GetAllPiecesInto — avoids the per-call heap allocation that
     // Board.GetAllPieces() incurs (it's a `yield return` iterator, so every invocation
@@ -299,10 +300,17 @@ internal class Evaluator
     /// </summary>
     private int CalculateCentralityBonus(Square square)
     {
-        int distFromCenter = 3 - Math.Min(3, Math.Max(-3, square.File - 3)) +
-                            3 - Math.Min(3, Math.Max(-3, square.Rank - 3));
+        // Distance to the nearer edge on each axis: 0 on the rim, 3 on the four centre squares.
+        //
+        // The previous form computed `3 - clamp(File - 3)`, which yields 6 on file a and 0 on
+        // file h — a gradient towards the h8 corner rather than towards the centre. Because the
+        // same function scored both kings, mirroring a position changed the White-minus-Black
+        // difference, so the evaluation was not colour-symmetric and the engine judged the two
+        // colours differently in endgames (the only phase where this term is active).
+        int fileDist = Math.Min(square.File, 7 - square.File);
+        int rankDist = Math.Min(square.Rank, 7 - square.Rank);
 
-        return Math.Max(0, 3 - distFromCenter) * 3;  // ~9 bonus at exact center, ~0 at edges
+        return Math.Max(0, fileDist + rankDist - 3) * 3;  // 9 at the centre, 0 at the rim
     }
 
     /// <summary>
@@ -319,7 +327,18 @@ internal class Evaluator
         // Reuse a single CheckDetector per Evaluator instance instead of allocating a new
         // one on every Evaluate() call — Evaluate() runs at every leaf/quiescence node,
         // so this was a major per-node heap allocation in the hot path.
-        var cd = _threatDetector ??= new CheckDetector(board);
+        // The detector is cached to avoid a per-node allocation on the hot path, but it binds
+        // to the Board it was constructed with. Caching it unconditionally meant that calling
+        // the same Evaluator with a *different* Board silently kept reading the first one and
+        // returned threat scores for the wrong position. Rebinding when the board instance
+        // changes keeps the allocation saving (the search reuses one Board throughout) while
+        // removing the silent-wrong-answer case.
+        if (_threatDetector is null || !ReferenceEquals(_threatDetectorBoard, board))
+        {
+            _threatDetector      = new CheckDetector(board);
+            _threatDetectorBoard = board;
+        }
+        var cd = _threatDetector;
 
         for (int i = 0; i < pieceCount; i++)
         {
