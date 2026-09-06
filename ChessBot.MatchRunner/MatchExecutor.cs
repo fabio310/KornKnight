@@ -57,6 +57,11 @@ public static class MatchExecutor
         var outcome = new MatchOutcome { RunId = runId };
         var artifactFiles = new List<string>();
 
+        var allLossRecords       = new List<MoveLossAnalyzer.MoveLossRecord>();
+        var perGameLoss          = new Dictionary<int, List<MoveLossAnalyzer.MoveLossRecord>>();
+        var perGameDisagreements = new Dictionary<int, List<DisagreementDto>>();
+        ReferenceEngineDto? referenceEngineInfo = null;
+
         for (int game = 0; game < cfg.TotalGames; game++)
         {
             ct.ThrowIfCancellationRequested();
@@ -127,7 +132,38 @@ public static class MatchExecutor
                     referenceEngineOptions: cfg.ReferenceEngineOptions);
                 Console.WriteLine($"  Move-loss report written to: {lossPath}");
                 artifactFiles.Add(lossPath);
+
+                allLossRecords.AddRange(lossRecords);
+                perGameLoss[result.GameNumber] = lossRecords;
+
+                // Recorded once, from the engine that actually ran: identity, the options set
+                // for it, and the options it reported (including the defaults it was left at).
+                referenceEngineInfo ??= new ReferenceEngineDto
+                {
+                    Path            = cfg.ReferenceEnginePath,
+                    Name            = refEngine.EngineName,
+                    Depth           = cfg.ReferenceEngineDepth,
+                    Options         = cfg.ReferenceEngineOptions.ToDictionary(o => o.Name, o => o.Value),
+                    ReportedOptions = ParseReportedOptions(refEngine.HandshakeLines),
+                    Networks        = refEngine.HandshakeLines
+                        .Where(l => l.Contains("NNUE", StringComparison.OrdinalIgnoreCase) ||
+                                    l.Contains("network", StringComparison.OrdinalIgnoreCase))
+                        .ToList(),
+                };
             }
+
+            perGameDisagreements[result.GameNumber] = analysis.CrossEngineEvaluationDisagreements
+                .Select(d => new DisagreementDto
+                {
+                    MoveNumber  = d.MoveNumber,
+                    IsWhiteMove = d.IsWhiteMove,
+                    Move        = d.Move,
+                    Fen         = d.Fen,
+                    ScoreBefore = d.ScoreBefore,
+                    ScoreAfter  = d.ScoreAfter,
+                    SwingCp     = d.SwingCp,
+                })
+                .ToList();
         }
 
         string summaryPath = Path.Combine(cfg.PgnOutputDir, "match_summary.log");
@@ -136,8 +172,51 @@ public static class MatchExecutor
         artifactFiles.Add(summaryPath);
 
         // ── Versioned machine-readable result document ───────────────────────────
+        // Built as the authoritative record of the run: configuration, both game counts,
+        // engine identities, disagreements and move-loss results, so a consumer never has to
+        // scrape the human-readable log for anything.
         string resultJsonPath = Path.Combine(cfg.PgnOutputDir, "match_result.json");
-        MatchResultWriter.Write(outcome, resultJsonPath);
+
+        var document = MatchResultDocument.From(outcome);
+        document.RequestedGames       = cfg.TotalGames;
+        document.ColorImbalance       = cfg.ColorImbalance;
+        document.UsePartialRootResult = cfg.UsePartialRootResult;
+        document.EffectiveConfig      = cfg.Describe();
+        document.ReferenceEngine      = referenceEngineInfo;
+        document.Opponent = new OpponentEngineDto
+        {
+            Path         = cfg.ExternalEnginePath,
+            Name         = outcome.OpponentName,
+            LimitedToElo = cfg.EngineElo,
+            Options      = cfg.EngineOptions.ToDictionary(o => o.Name, o => o.Value),
+        };
+
+        foreach (var g in document.Games)
+        {
+            if (perGameDisagreements.TryGetValue(g.GameNumber, out var d)) g.Disagreements = d;
+            if (perGameLoss.TryGetValue(g.GameNumber, out var loss))
+            {
+                g.MoveLoss          = loss.Select(MoveLossRecordDto.From).ToList();
+                g.MoveLossAggregate = MoveLossAggregateDto.From(loss);
+            }
+        }
+
+        if (allLossRecords.Count > 0)
+            document.MoveLossAggregate = MoveLossAggregateDto.From(allLossRecords);
+
+        // Artifact references, relative to the output directory so they stay portable.
+        document.ArtifactFiles = artifactFiles
+            .Append(resultJsonPath)
+            .Append(Path.Combine(cfg.PgnOutputDir, "run_manifest.json"))
+            .Concat(outcome.Games.SelectMany(g => string.IsNullOrWhiteSpace(g.PgnPath)
+                ? Array.Empty<string>()
+                : new[] { g.PgnPath, Path.ChangeExtension(g.PgnPath, ".log") }))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(p => Path.GetFileName(p))
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .ToList();
+
+        MatchResultWriter.Write(document, resultJsonPath);
         artifactFiles.Add(resultJsonPath);
 
         // ── Run manifest (reproducibility metadata) ──────────────────────────────
@@ -158,6 +237,43 @@ public static class MatchExecutor
         outcome.ManifestPath = manifestPath;
 
         return outcome;
+    }
+
+    /// <summary>
+    /// Turns the engine's "option name X type spin default 1 min 1 max 1024" handshake lines
+    /// into name → default pairs, so a run records the options it left at their defaults rather
+    /// than only the ones it set explicitly.
+    /// </summary>
+    private static Dictionary<string, string> ParseReportedOptions(IReadOnlyList<string> handshakeLines)
+    {
+        var options = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string line in handshakeLines)
+        {
+            if (!line.StartsWith("option name ", StringComparison.OrdinalIgnoreCase)) continue;
+
+            int typeIdx = line.IndexOf(" type ", StringComparison.OrdinalIgnoreCase);
+            if (typeIdx < 0) continue;
+
+            string name = line["option name ".Length..typeIdx].Trim();
+
+            int defaultIdx = line.IndexOf(" default ", StringComparison.OrdinalIgnoreCase);
+            string value = "(no default reported)";
+            if (defaultIdx >= 0)
+            {
+                string rest = line[(defaultIdx + " default ".Length)..];
+                foreach (string terminator in new[] { " min ", " max ", " var " })
+                {
+                    int cut = rest.IndexOf(terminator, StringComparison.OrdinalIgnoreCase);
+                    if (cut >= 0) rest = rest[..cut];
+                }
+                value = rest.Trim();
+            }
+
+            options[name] = value;
+        }
+
+        return options;
     }
 
     private static void WriteSummary(string path, MatchOutcome outcome, MatchConfig cfg)

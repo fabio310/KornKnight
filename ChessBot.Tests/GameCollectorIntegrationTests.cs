@@ -1,5 +1,6 @@
 namespace ChessBot.Tests;
 
+using ChessBot.EloEvaluator.Models;
 using ChessBot.EloEvaluator.Parsing;
 using Xunit;
 
@@ -61,6 +62,50 @@ public class GameCollectorIntegrationTests : IDisposable
         1. e4 e5 0-1
         """;
 
+    /// <summary>
+    /// With a readable structured result present it is the authority, and the text artifacts in
+    /// the same directory — including the move-loss reports — are not parsed at all.
+    /// </summary>
+    [Fact]
+    public void Collect_PrefersStructuredResultOverTextArtifacts()
+    {
+        Write("game1_20260906_180828.log", GameLog(1, "White", "ChessBotLoss"));
+        Write("game1_20260906_180828.pgn", Pgn(1));
+        Write("game1_20260906_180828.moveloss.log", "=== Move-Loss Report ===\n");
+        Write("match_summary.log", "ChessBot Match Summary\n");
+
+        var outcome = new MatchRunner.MatchOutcome { OpponentName = "Stockfish 18", Losses = 2, RunId = "r" };
+        outcome.Games.Add(new MatchRunner.GameResult
+        { GameNumber = 1, ChessBotIsWhite = true,  Outcome = MatchRunner.GameOutcome.ChessBotLoss });
+        outcome.Games.Add(new MatchRunner.GameResult
+        { GameNumber = 2, ChessBotIsWhite = false, Outcome = MatchRunner.GameOutcome.Draw });
+        MatchRunner.MatchResultWriter.Write(outcome, Path.Combine(_dir, "match_result.json"));
+
+        var games = GameCollector.Collect(_dir, announceCounts: false);
+
+        Assert.Equal(2, games.Count);
+        Assert.All(games, g => Assert.Equal("json", g.SourceType));
+        Assert.Equal(new[] { 1, 2 }, games.Select(g => g.GameNumber).OrderBy(n => n));
+        Assert.Equal("White", games.Single(g => g.GameNumber == 1).ChessBotColor);
+        Assert.Equal(GameOutcomeKind.Draw, games.Single(g => g.GameNumber == 2).Outcome);
+    }
+
+    /// <summary>
+    /// A structured result declaring a newer schema must not be guessed at: the collector falls
+    /// back to text parsing rather than misreading fields it does not understand.
+    /// </summary>
+    [Fact]
+    public void Collect_FallsBackToTextWhenStructuredResultIsUnreadable()
+    {
+        Write("game1_20260906_180828.log", GameLog(1, "White", "ChessBotLoss"));
+        Write("match_result.json", "{\"SchemaVersion\":9999}");
+
+        var games = GameCollector.Collect(_dir, announceCounts: false);
+
+        Assert.Single(games);
+        Assert.Equal("log", games[0].SourceType);
+    }
+
     [Fact]
     public void Collect_MixedDirectory_CountsOnlyRealGamesExactlyOnce()
     {
@@ -80,7 +125,10 @@ public class GameCollectorIntegrationTests : IDisposable
         Write("some_unrelated.log", "nothing to do with chess\n");
         Write("build.log", "MSBuild output\n");
 
-        var games = GameCollector.Collect(_dir, verbose: false, announceCounts: false);
+        // Text-parsing path: this test is about which *files* are games, so the structured
+        // result is bypassed deliberately (its own preference is covered above).
+        var games = GameCollector.Collect(_dir, verbose: false, announceCounts: false,
+                                          preferStructuredResult: false);
 
         Assert.Equal(2, games.Count);
         Assert.Equal(new[] { 1, 2 }, games.Select(g => g.GameNumber).OrderBy(n => n));
@@ -104,10 +152,11 @@ public class GameCollectorIntegrationTests : IDisposable
         Write("game1_20260906_223000.log", GameLog(1, "White", "ChessBotWin"));    // current run
         Write("game2_20260906_223015.log", GameLog(2, "Black", "Draw"));           // current run
 
-        var all = GameCollector.Collect(_dir, announceCounts: false);
+        var all = GameCollector.Collect(_dir, announceCounts: false, preferStructuredResult: false);
         Assert.Equal(4, all.Count);   // without a run id, every game log is a game
 
-        var current = GameCollector.Collect(_dir, announceCounts: false, runId: "20260906_223");
+        var current = GameCollector.Collect(_dir, announceCounts: false, runId: "20260906_223",
+                                            preferStructuredResult: false);
         Assert.Equal(2, current.Count);
         Assert.All(current, g => Assert.Contains("2230", g.SourceFile));
     }
