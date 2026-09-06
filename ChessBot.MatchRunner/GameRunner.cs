@@ -76,6 +76,10 @@ public record MoveRecord
     public long   AspirationRetryNodes  { get; init; }
     /// <summary>Total plies removed by LMR (sum of reductions), not the count of reduced moves.</summary>
     public long   LmrPliesSaved         { get; init; }
+    /// <summary>LMR reductions bucketed by remaining depth (index = depth, capped).</summary>
+    public long[] LmrReductionsByDepth      { get; init; } = Array.Empty<long>();
+    /// <summary>LMR reductions bucketed by move number at the node (index = move number, capped).</summary>
+    public long[] LmrReductionsByMoveNumber { get; init; } = Array.Empty<long>();
     /// <summary>
     /// True when the budget did not allow even depth 1 to finish, so the move is an
     /// unevaluated legal fallback rather than a search result.
@@ -187,6 +191,8 @@ public class GameRunner
             long   lastIterationNodes   = 0;
             long   aspirationRetryNodes = 0;
             long   lmrPliesSaved        = 0;
+            long[] lmrByDepth           = Array.Empty<long>();
+            long[] lmrByMoveNumber      = Array.Empty<long>();
             bool   isUnsearchedFallback = false;
             bool   usedPartialRootResult = false;
             int    partialDepth          = 0;
@@ -247,6 +253,8 @@ public class GameRunner
                 lastIterationNodes     = searchResult.LastIterationNodes;
                 aspirationRetryNodes   = searchResult.AspirationRetryNodes;
                 lmrPliesSaved          = searchResult.LmrPliesSaved;
+                lmrByDepth             = searchResult.LmrReductionsByDepth;
+                lmrByMoveNumber        = searchResult.LmrReductionsByMoveNumber;
                 isUnsearchedFallback   = searchResult.IsUnsearchedFallbackMove;
                 usedPartialRootResult  = searchResult.UsedPartialRootResult;
                 partialDepth           = searchResult.PartialDepth;
@@ -335,6 +343,8 @@ public class GameRunner
                 LastIterationNodes       = lastIterationNodes,
                 AspirationRetryNodes     = aspirationRetryNodes,
                 LmrPliesSaved            = lmrPliesSaved,
+                LmrReductionsByDepth      = lmrByDepth,
+                LmrReductionsByMoveNumber = lmrByMoveNumber,
                 IsUnsearchedFallbackMove = isUnsearchedFallback,
                 UsedPartialRootResult    = usedPartialRootResult,
                 PartialDepth             = partialDepth,

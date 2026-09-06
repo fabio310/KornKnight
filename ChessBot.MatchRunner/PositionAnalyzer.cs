@@ -244,6 +244,14 @@ public class PositionAnalyzer
             w.WriteLine($"  Moves with a cancelled iteration: {cbMoves.Count(m => m.PartialDepth > 0)}");
             w.WriteLine($"  Moves using partial root result: {cbMoves.Count(m => m.UsedPartialRootResult)}");
             w.WriteLine($"  Unsearched fallback moves    : {cbMoves.Count(m => m.IsUnsearchedFallbackMove)}");
+
+            // Where the LMR schedule actually fires. A single reduction total says nothing about
+            // whether the schedule is too timid at high depth or too aggressive on early moves;
+            // these buckets are the minimum needed before tuning it from observed numbers.
+            WriteBucketRow(w, "  LMR reductions by depth      ",
+                GameResultDto.SumBuckets(cbMoves.Select(m => m.LmrReductionsByDepth)));
+            WriteBucketRow(w, "  LMR reductions by move no.   ",
+                GameResultDto.SumBuckets(cbMoves.Select(m => m.LmrReductionsByMoveNumber)));
         }
 
         // ── Move list ─────────────────────────────────────────────────────────
@@ -378,6 +386,26 @@ public class PositionAnalyzer
             foreach (var fen in analysis.RegressionFens)
                 w.WriteLine(fen);
         }
+    }
+
+    /// <summary>
+    /// Prints a bucket histogram as "index:count" pairs, skipping empty buckets so the line
+    /// stays readable, and stating the total.
+    /// </summary>
+    private static void WriteBucketRow(StreamWriter w, string label, long[] buckets)
+    {
+        if (buckets.Length == 0 || buckets.All(v => v == 0))
+        {
+            w.WriteLine($"{label}: (none)");
+            return;
+        }
+
+        var parts = buckets
+            .Select((count, index) => (index, count))
+            .Where(p => p.count > 0)
+            .Select(p => $"{p.index}:{p.count:N0}");
+
+        w.WriteLine($"{label}: total {buckets.Sum():N0}  [{string.Join("  ", parts)}]");
     }
 
     private static void WriteStatRow(StreamWriter w, string label, double cb, double opp, string fmt)
