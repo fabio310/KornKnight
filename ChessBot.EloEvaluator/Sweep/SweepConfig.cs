@@ -24,7 +24,8 @@ public sealed class SweepConfig
     public int    GamesPerRound { get; private set; } = 10;
     public int    MoveTimeMs   { get; private set; } = 1000;
     public string OutDir       { get; private set; } = "elo-sweep";
-    public int    BlunderThresholdCp { get; private set; } = 200;
+    /// <summary>Cross-engine evaluation disagreement threshold. Diagnostic only, never a loss.</summary>
+    public int    DisagreementThresholdCp { get; private set; } = 200;
     /// <summary>Move-by-move engine output during the games (off by default — sweeps are long).</summary>
     public bool   Verbose      { get; private set; }
     /// <summary>Ladder stops once halving would take the step below this (Elo).</summary>
@@ -74,8 +75,9 @@ public sealed class SweepConfig
                 case "--out" when i + 1 < args.Length:
                     cfg.OutDir = args[++i];
                     break;
-                case "--blunder" when i + 1 < args.Length:
-                    if (TryInt(args[++i], out int b)) cfg.BlunderThresholdCp = b;
+                case "--disagreement-threshold" when i + 1 < args.Length:
+                case "--blunder" when i + 1 < args.Length:   // legacy alias
+                    if (TryInt(args[++i], out int b)) cfg.DisagreementThresholdCp = b;
                     break;
                 case "--min-elo" when i + 1 < args.Length:
                     if (TryInt(args[++i], out int mn)) cfg.MinElo = mn;
@@ -198,7 +200,8 @@ public sealed class SweepConfig
         Console.WriteLine("  --time-ms <ms>          Move time per move       (default: 1000)");
         Console.WriteLine("  --max-rounds <n>        Safety bound on rounds   (default: 20)");
         Console.WriteLine("  --out-dir <dir>         Sweep output directory   (default: elo-sweep)");
-        Console.WriteLine("  --blunder <cp>          Blunder threshold        (default: 200)");
+        Console.WriteLine("  --disagreement-threshold <cp>  Cross-engine disagreement threshold (default: 200)");
+        Console.WriteLine("                          Diagnostic only, not a measured loss. Alias: --blunder");
         Console.WriteLine("  --verbose / -v          Move-by-move engine output");
         Console.WriteLine();
         Console.WriteLine("  (--refine is accepted and ignored — the ladder always refines.");

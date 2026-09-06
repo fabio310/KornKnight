@@ -29,8 +29,8 @@ public class GameAnalysis
 }
 
 /// <summary>
-/// Analyzes a completed game to detect blunders, eval swings,
-/// and produces FEN regression test candidates from bad positions.
+/// Analyzes a completed game to detect cross-engine evaluation disagreements and eval swings,
+/// and collects the positions involved as review candidates.
 /// </summary>
 public class PositionAnalyzer
 {
@@ -83,7 +83,7 @@ public class PositionAnalyzer
             // scoreAfter > 0 = the opponent engine thinks it is winning post-move.
             int swing = scoreBefore + scoreAfter; // both are "good for mover" so positive sum = disagreement
 
-            if (swing >= _cfg.BlunderThresholdCp)
+            if (swing >= _cfg.DisagreementThresholdCp)
             {
                 var disagreement = new CrossEngineEvaluationDisagreementRecord(
                     MoveNumber:  prev.MoveNumber,
@@ -122,7 +122,7 @@ public class PositionAnalyzer
                 continue;
 
             // Score collapse: previous score was clearly positive, now strongly negative
-            if (prev.ScoreCp > 50 && curr.ScoreCp > _cfg.BlunderThresholdCp)
+            if (prev.ScoreCp > 50 && curr.ScoreCp > _cfg.DisagreementThresholdCp)
             {
                 // The opponent now has a large advantage — something went wrong
                 if (!analysis.RegressionFens.Contains(prev.Fen))
@@ -134,8 +134,8 @@ public class PositionAnalyzer
     /// <summary>
     /// Writes a comprehensive game log to <paramref name="path"/>.
     /// Sections: header · game statistics · full move list (all metrics + raw UCI output) ·
-    /// blunder analysis · regression FENs.
-    /// Always written, even when there are no blunders.
+    /// cross-engine disagreement analysis · review-candidate FENs.
+    /// Always written, even when no disagreements were found.
     /// </summary>
     public void WriteGameLog(GameResult game, GameAnalysis analysis, string path)
     {
@@ -362,12 +362,18 @@ public class PositionAnalyzer
             }
         }
 
-        // ── Regression FENs ───────────────────────────────────────────────────
+        // ── Review candidates ─────────────────────────────────────────────────
+        // These positions come from cross-engine evaluation disagreements, which say only that
+        // two engines scored a position differently. That is a reason to look, not a confirmed
+        // mistake, so they are candidates for review rather than ready-made regression tests:
+        // turning one into a test asserts an expected move that nothing here has established.
         if (analysis.RegressionFens.Count > 0)
         {
             w.WriteLine();
-            w.WriteLine("=== Regression FENs ===");
-            w.WriteLine("# Paste into TacticalSearchTests.cs to create regression tests");
+            w.WriteLine("=== Review Candidate FENs ===");
+            w.WriteLine("# Positions where ChessBot's evaluation and the opponent's disagreed sharply.");
+            w.WriteLine("# Diagnostic leads only — verify with the reference-engine move-loss report");
+            w.WriteLine("# before promoting any of them into a regression test.");
             w.WriteLine();
             foreach (var fen in analysis.RegressionFens)
                 w.WriteLine(fen);

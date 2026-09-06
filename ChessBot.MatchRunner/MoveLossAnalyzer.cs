@@ -151,36 +151,58 @@ public static class MoveLossAnalyzer
         CancellationToken ct)
     {
         int retries = 0;
+        UciMoveResult best, played;
 
-        // Unrestricted: the reference engine's own opinion of the best move here.
-        var best = await AnalyzeWithHistoryAsync(referenceEngine, game.InitialFen, historyBeforeMove, depth, null, ct);
+        // A reference-engine failure must cost one sample, not the whole match: the remaining
+        // games and their artifacts are still worth producing.
+        try
+        {
+            // Unrestricted: the reference engine's own opinion of the best move here.
+            best = await AnalyzeWithHistoryAsync(referenceEngine, game.InitialFen, historyBeforeMove, depth, null, ct);
 
-        // Restricted to the move ChessBot actually played, so the score reflects the value
-        // of that specific move rather than of the position as a whole.
-        var played = await AnalyzeWithHistoryAsync(referenceEngine, game.InitialFen, historyBeforeMove, depth, move.UciMove, ct);
+            // Restricted to the move ChessBot actually played, so the score reflects the value
+            // of that specific move rather than of the position as a whole.
+            played = await AnalyzeWithHistoryAsync(referenceEngine, game.InitialFen, historyBeforeMove, depth, move.UciMove, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return MakeErrorRecord(move, retries, ex);
+        }
 
-        // ── Mate categorization first: mate scores are never mixed into centipawn aggregates ──
+        // ── Resolve bound scores BEFORE classifying the mate outcome ─────────────────────
+        // A bounded score is not a value, it is a one-sided constraint, and that applies to
+        // mate scores too: "mate in at most N" from a fail-high is not evidence of a forced
+        // mate. Classifying first turned such a bound into a final mate category that no later
+        // retry could revise. Both sides are always re-run at the same new depth — re-running
+        // only the bounded one compared an unrestricted score at one depth against a restricted
+        // score at another, which is not a comparison of the same position at all.
+        int extraDepth = 0;
+        try
+        {
+            while ((best.ScoreBound != "exact" || played.ScoreBound != "exact") && retries < maxRetries)
+            {
+                retries++;
+                extraDepth += 4;
+                int retryDepth = depth + extraDepth;
+
+                best   = await AnalyzeWithHistoryAsync(referenceEngine, game.InitialFen, historyBeforeMove, retryDepth, null, ct);
+                played = await AnalyzeWithHistoryAsync(referenceEngine, game.InitialFen, historyBeforeMove, retryDepth, move.UciMove, ct);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return MakeErrorRecord(move, retries, ex);
+        }
+
+        // ── Mate categorization, on resolved scores ──────────────────────────────────────
+        // Mate scores are never mixed into centipawn aggregates.
         var mateCategory = ClassifyMate(best, played);
         if (mateCategory != MateCategory.None)
-            return MakeMateRecord(move, best, played, mateCategory, retries, "mate category");
-
-        // ── Resolve bound scores by re-searching at increasing depth, up to maxRetries times.
-        // A bound is not exact and must not be treated as if it were: an upperbound on the
-        // played-move score could understate loss, and a lowerbound on the best-move score
-        // could understate it too — neither direction is safe to assume away.
-        int extraDepth = 0;
-        while ((best.ScoreBound != "exact" || played.ScoreBound != "exact") && retries < maxRetries)
         {
-            retries++;
-            extraDepth += 4;
-            if (best.ScoreBound != "exact")
-                best = await AnalyzeWithHistoryAsync(referenceEngine, game.InitialFen, historyBeforeMove, depth + extraDepth, null, ct);
-            if (played.ScoreBound != "exact")
-                played = await AnalyzeWithHistoryAsync(referenceEngine, game.InitialFen, historyBeforeMove, depth + extraDepth, move.UciMove, ct);
-
-            var remateCategory = ClassifyMate(best, played);
-            if (remateCategory != MateCategory.None)
-                return MakeMateRecord(move, best, played, remateCategory, retries, "mate category found on retry");
+            string label = best.ScoreBound == "exact" && played.ScoreBound == "exact"
+                ? "mate category"
+                : "mate category (from an unresolved bound — treat as provisional)";
+            return MakeMateRecord(move, best, played, mateCategory, retries, label);
         }
 
         if (best.ScoreBound != "exact" || played.ScoreBound != "exact")
@@ -202,8 +224,17 @@ public static class MoveLossAnalyzer
         {
             retries++;
             extraDepth += 4;
-            best   = await AnalyzeWithHistoryAsync(referenceEngine, game.InitialFen, historyBeforeMove, depth + extraDepth, null, ct);
-            played = await AnalyzeWithHistoryAsync(referenceEngine, game.InitialFen, historyBeforeMove, depth + extraDepth, move.UciMove, ct);
+            int retryDepth = depth + extraDepth;
+
+            try
+            {
+                best   = await AnalyzeWithHistoryAsync(referenceEngine, game.InitialFen, historyBeforeMove, retryDepth, null, ct);
+                played = await AnalyzeWithHistoryAsync(referenceEngine, game.InitialFen, historyBeforeMove, retryDepth, move.UciMove, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                return MakeErrorRecord(move, retries, ex);
+            }
 
             var remateCategory = ClassifyMate(best, played);
             if (remateCategory != MateCategory.None)
@@ -260,26 +291,64 @@ public static class MoveLossAnalyzer
     /// </summary>
     private static MateCategory ClassifyMate(UciMoveResult best, UciMoveResult played)
     {
-        bool bestIsMate   = best.ScoreMate.HasValue;
-        bool playedIsMate = played.ScoreMate.HasValue;
+        // Mate scores are side-to-move relative: positive = the mover delivers mate,
+        // negative = the mover is being mated.
+        int? b = best.ScoreMate;
+        int? p = played.ScoreMate;
 
-        if (!bestIsMate && !playedIsMate) return MateCategory.None;
+        if (b is null && p is null) return MateCategory.None;
 
-        // Best found a forced mate (positive = mating), played did not (or does not mate at
-        // all) — the played move missed a forced mate that was available.
-        if (bestIsMate && best.ScoreMate!.Value > 0 && (!playedIsMate || played.ScoreMate!.Value <= 0))
-            return MateCategory.MissedForcedMate;
+        if (b is int bm && p is int pm)
+        {
+            // Same side mating and the same distance: the played move is exactly as good as
+            // the best move. This used to fall through to MateDistanceChanged, reporting an
+            // identical outcome as a change.
+            if (bm == pm) return MateCategory.MateUnchanged;
 
-        // Played move itself gets mated (played.ScoreMate negative = getting mated).
-        if (playedIsMate && played.ScoreMate!.Value < 0)
-            return MateCategory.EnteredForcedMate;
+            // Both deliver mate, or both get mated, but at a different distance.
+            if (Math.Sign(bm) == Math.Sign(pm)) return MateCategory.MateDistanceChanged;
 
-        // Both mate scores, same side, but a different mate distance.
-        if (bestIsMate && playedIsMate && best.ScoreMate!.Value != played.ScoreMate!.Value)
-            return MateCategory.MateDistanceChanged;
+            // Unrestricted says the mover mates, the played move gets mated instead.
+            if (bm > 0 && pm < 0) return MateCategory.EnteredForcedMate;
 
-        return bestIsMate || playedIsMate ? MateCategory.MateDistanceChanged : MateCategory.None;
+            // Restricted claims a mate the unrestricted search did not find. A restricted
+            // search cannot legitimately beat the unrestricted one on the same position, so
+            // this is an analysis contradiction, not a move-quality statement.
+            return MateCategory.ContradictoryMate;
+        }
+
+        if (b is int bestMate)
+        {
+            // A mate was available and the played move does not mate at all.
+            if (bestMate > 0) return MateCategory.MissedForcedMate;
+
+            // Unrestricted says the mover is forcibly mated, yet the played move has an
+            // ordinary score — the two analyses disagree about whether mate is forced.
+            return MateCategory.EscapedForcedMate;
+        }
+
+        // Only the played move produced a mate score.
+        int playedMate = p!.Value;
+
+        // The played move walks into being mated.
+        if (playedMate < 0) return MateCategory.EnteredForcedMate;
+
+        // The restricted search mates while the unrestricted one did not find it: again a
+        // contradiction between the two searches rather than a property of the move.
+        return MateCategory.ContradictoryMate;
     }
+
+    /// <summary>
+    /// Records a per-position reference-engine failure. The sample is excluded from every
+    /// aggregate, but the match keeps producing artifacts.
+    /// </summary>
+    private static MoveLossRecord MakeErrorRecord(MoveRecord move, int retries, Exception ex)
+        => new(
+            move.MoveNumber, move.IsWhiteMove, move.UciMove, move.Fen,
+            null, null, "exact", null, null, "exact",
+            CentipawnLoss: null, Eligibility: SampleEligibility.AnalysisError, Mate: MateCategory.None,
+            RetriesUsed: retries,
+            IntervalNote: $"reference engine failed for this position: {ex.GetType().Name}: {ex.Message}");
 
     private static string DescribeBoundInterval(UciMoveResult best, UciMoveResult played)
     {

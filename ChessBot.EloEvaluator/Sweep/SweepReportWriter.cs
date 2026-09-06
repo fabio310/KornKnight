@@ -69,7 +69,7 @@ public sealed class SweepReportWriter
         // ── Rounds ────────────────────────────────────────────────────────────
         w.WriteLine("── Ladder ───────────────────────────────────────────────────────");
         w.WriteLine($"  {"#",-3} {"SF Elo",-7} {"Step",-6} {"Record",-10} {"Score",-7} {"ΔElo",-7} " +
-                    $"{"Perf",-7} {"±CI",-6} {"Depth",-6} {"Blndrs",-7} {"Time",-8} Result → next");
+                    $"{"Perf",-7} {"±CI",-6} {"Depth",-6} {"Disagr",-7} {"Time",-8} Result → next");
         w.WriteLine(new string('-', 108));
 
         foreach (var round in r.Rounds)
@@ -83,7 +83,7 @@ public sealed class SweepReportWriter
                 $"  {round.RoundNumber,-3} {round.StockfishElo,-7} {("±" + round.Step),-6} {round.Record,-10} " +
                 $"{round.ScoreRate,-7:P0} {round.EloDiff,-7:+0;-0;0} {perf,-7} " +
                 $"{round.ConfidenceInterval95,-6:F0} {depth,-6} " +
-                $"{round.Blunders,-7} {FormatDuration(round.DurationSeconds),-8} {verdict}");
+                $"{round.Disagreements,-7} {FormatDuration(round.DurationSeconds),-8} {verdict}");
         }
         w.WriteLine();
 

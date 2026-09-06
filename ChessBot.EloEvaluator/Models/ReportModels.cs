@@ -43,6 +43,7 @@ public sealed class EloReport
     // NOT a blunder or centipawn-loss measurement; see MoveLossAnalyzer for that.
     public CrossEngineDisagreementStats CrossEngineDisagreementStats { get; set; } = new();
 
+    [System.Text.Json.Serialization.JsonIgnore]
     [Obsolete("Use CrossEngineDisagreementStats.")]
     public BlunderStats BlunderStats { get; set; } = new();
 
@@ -79,8 +80,10 @@ public sealed class PhaseStats
     public int    CrossEngineDisagreements     { get; set; }
     public double CrossEngineDisagreementRate  { get; set; }  // disagreements per 10 ChessBot moves
 
+    [System.Text.Json.Serialization.JsonIgnore]
     [Obsolete("Use CrossEngineDisagreements.")]
     public int Blunders { get => CrossEngineDisagreements; set => CrossEngineDisagreements = value; }
+    [System.Text.Json.Serialization.JsonIgnore]
     [Obsolete("Use CrossEngineDisagreementRate.")]
     public double BlunderRate { get => CrossEngineDisagreementRate; set => CrossEngineDisagreementRate = value; }
 }
@@ -107,10 +110,13 @@ public sealed class CrossEngineDisagreementStats
     public double DisagreementRate      { get; set; }  // per 10 moves
     public int    GamesWithDisagreements { get; set; }
 
+    [System.Text.Json.Serialization.JsonIgnore]
     [Obsolete("Use TotalDisagreements.")]
     public int TotalBlunders { get => TotalDisagreements; set => TotalDisagreements = value; }
+    [System.Text.Json.Serialization.JsonIgnore]
     [Obsolete("Use DisagreementRate.")]
     public double BlunderRate { get => DisagreementRate; set => DisagreementRate = value; }
+    [System.Text.Json.Serialization.JsonIgnore]
     [Obsolete("Use GamesWithDisagreements.")]
     public int GamesWithBlunders { get => GamesWithDisagreements; set => GamesWithDisagreements = value; }
 }
@@ -138,6 +144,7 @@ public sealed class GameSummary
     public double?  PeakNps       { get; set; }
     /// <summary>Cross-engine evaluation disagreements for this game (not a blunder count).</summary>
     public int      CrossEngineDisagreements { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
     [Obsolete("Use CrossEngineDisagreements.")]
     public int      Blunders      { get => CrossEngineDisagreements; set => CrossEngineDisagreements = value; }
     public bool     IsValid       { get; set; }

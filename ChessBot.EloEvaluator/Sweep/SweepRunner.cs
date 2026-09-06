@@ -168,7 +168,7 @@ public sealed class SweepRunner
             MoveTimeMs         = _cfg.MoveTimeMs,
             GamesPerSide       = _cfg.GamesPerSide,
             PgnOutputDir       = roundDir,
-            BlunderThresholdCp = _cfg.BlunderThresholdCp,
+            DisagreementThresholdCp = _cfg.DisagreementThresholdCp,
             Verbose            = _cfg.Verbose,
             EngineElo          = elo
         };
@@ -210,7 +210,7 @@ public sealed class SweepRunner
         }
 
         // Run the normal report pipeline over the round directory so each level also
-        // gets the full .txt/.json/.csv report (depth, NPS, blunders, per-game table).
+        // gets the full .txt/.json/.csv report (depth, NPS, disagreements, per-game table).
         AttachRoundReport(round, roundDir, elo);
 
         PrintRoundResult(round);
@@ -261,7 +261,7 @@ public sealed class SweepRunner
 
             round.AvgDepth = report.EnginePerf.AvgDepth > 0 ? report.EnginePerf.AvgDepth : null;
             round.AvgNps   = report.EnginePerf.AvgNps   > 0 ? report.EnginePerf.AvgNps   : null;
-            round.Blunders = report.CrossEngineDisagreementStats.TotalDisagreements;
+            round.Disagreements = report.CrossEngineDisagreementStats.TotalDisagreements;
         }
         catch (Exception ex)
         {
