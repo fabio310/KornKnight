@@ -160,7 +160,9 @@ public sealed class SweepRunner
         string roundDir = ResolveRoundDir(elo, sweep.RunId);
         Directory.CreateDirectory(roundDir);
 
-        Console.WriteLine($"    {_cfg.GamesPerRound} games @ {_cfg.MoveTimeMs}ms/move → {roundDir}");
+        Console.WriteLine($"    {_cfg.GamesPerRound} games @ {_cfg.MoveTimeMs}ms/move" +
+                          (_cfg.Concurrency > 1 ? $", {_cfg.Concurrency} in parallel" : "") +
+                          $" → {roundDir}");
 
         var matchCfg = new MatchConfig
         {
@@ -170,7 +172,8 @@ public sealed class SweepRunner
             PgnOutputDir       = roundDir,
             DisagreementThresholdCp = _cfg.DisagreementThresholdCp,
             Verbose            = _cfg.Verbose,
-            EngineElo          = elo
+            EngineElo          = elo,
+            Concurrency        = _cfg.Concurrency
         };
 
         var outcome = await MatchExecutor.RunAsync(matchCfg, ct);

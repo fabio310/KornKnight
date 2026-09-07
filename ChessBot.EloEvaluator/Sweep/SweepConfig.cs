@@ -35,6 +35,22 @@ public sealed class SweepConfig
     /// <summary>Safety bound so a ladder that never converges still terminates.</summary>
     public int    MaxRounds    { get; private set; } = 20;
 
+    /// <summary>
+    /// Games of a round played at the same time. A round is a fixed number of independent
+    /// games, so playing them concurrently shortens a sweep close to linearly — which is the
+    /// difference between a ladder that gets run and one that does not.
+    ///
+    /// The games are timed, so concurrency costs both engines node rate: the round is still a
+    /// fair contest, but the Elo it reports is the Elo at that reduced speed, and ChessBot and
+    /// a strength-limited Stockfish need not lose the same amount. Pass <c>--concurrency 1</c>
+    /// for a number to compare against sweeps run at full speed. Defaults to the round's game
+    /// count, capped at half the logical processors.
+    /// </summary>
+    public int    Concurrency  { get; private set; }
+
+    /// <summary>True when the concurrency was chosen automatically rather than requested.</summary>
+    public bool   ConcurrencyIsDefault { get; private set; } = true;
+
     /// <summary>Games per side handed to MatchConfig (which plays 2× that many).</summary>
     public int GamesPerSide => GamesPerRound / 2;
 
@@ -92,6 +108,13 @@ public sealed class SweepConfig
                 case "--min-step" when i + 1 < args.Length:
                 case "--refine-step" when i + 1 < args.Length:
                     if (TryInt(args[++i], out int rs)) cfg.MinStep = rs;
+                    break;
+                case "--concurrency" when i + 1 < args.Length:
+                    if (TryInt(args[++i], out int cc))
+                    {
+                        cfg.Concurrency = Math.Max(1, cc);
+                        cfg.ConcurrencyIsDefault = false;
+                    }
                     break;
                 case "--verbose":
                 case "-v":
@@ -153,6 +176,18 @@ public sealed class SweepConfig
             return null;
         }
 
+        // Default: play the whole round at once where the machine can take it. Half the logical
+        // processors keeps the box usable and stays at or below the physical cores on a typical
+        // hyper-threaded CPU; each game also drives an opponent process of its own.
+        if (cfg.ConcurrencyIsDefault)
+            cfg.Concurrency = Math.Clamp(cfg.GamesPerRound, 1, Math.Max(1, Environment.ProcessorCount / 2));
+
+        if (cfg.Concurrency > 1)
+            Console.WriteLine($"NOTE: playing {cfg.Concurrency} games of each round in parallel. " +
+                              $"Concurrent timed games leave both engines less CPU per move, so the " +
+                              $"Elo reported is the Elo at that speed; use --concurrency 1 to compare " +
+                              $"against full-speed sweeps.");
+
         if (cfg.MinStep > cfg.EloStep)
         {
             Console.Error.WriteLine($"ERROR: --min-step ({cfg.MinStep}) must not exceed " +
@@ -197,6 +232,11 @@ public sealed class SweepConfig
         Console.WriteLine($"  --min-elo <n>           Lower bound              (default: {StockfishMinElo})");
         Console.WriteLine($"  --max-elo <n>           Upper bound              (default: {StockfishMaxElo})");
         Console.WriteLine("  --games-per-round <n>   Games per round, even    (default: 10)");
+        Console.WriteLine("  --concurrency <n>       Games played in parallel (default: the round's game");
+        Console.WriteLine("                          count, capped at half the logical processors). Timed");
+        Console.WriteLine("                          games under concurrency get less CPU each, so the");
+        Console.WriteLine("                          Elo reported is the Elo at that speed. Use 1 to");
+        Console.WriteLine("                          compare against sweeps run at full speed.");
         Console.WriteLine("  --time-ms <ms>          Move time per move       (default: 1000)");
         Console.WriteLine("  --max-rounds <n>        Safety bound on rounds   (default: 20)");
         Console.WriteLine("  --out-dir <dir>         Sweep output directory   (default: elo-sweep)");

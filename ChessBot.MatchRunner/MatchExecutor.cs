@@ -39,6 +39,141 @@ public sealed class MatchOutcome
 /// </summary>
 public static class MatchExecutor
 {
+    /// <summary>
+    /// Everything one game produces. Collected per game rather than written into shared state,
+    /// so games can run concurrently and still be aggregated in a fixed order.
+    /// </summary>
+    private sealed class GameRunOutcome
+    {
+        public required GameResult Result { get; init; }
+        public required string OpponentName { get; init; }
+        public required List<string> ArtifactFiles { get; init; }
+        public required List<DisagreementDto> Disagreements { get; init; }
+
+        /// <summary>Null when no reference engine was configured.</summary>
+        public List<MoveLossAnalyzer.MoveLossRecord>? LossRecords { get; init; }
+        public ReferenceEngineDto? ReferenceEngine { get; init; }
+
+        /// <summary>
+        /// The game's console output, buffered rather than written as it happens: concurrent
+        /// games would otherwise interleave their lines into an unreadable transcript.
+        /// </summary>
+        public required string ConsoleOutput { get; init; }
+    }
+
+    /// <summary>
+    /// Plays one game and runs the per-game analysis. Touches no shared state: its opponent
+    /// process, its engine and its output files all belong to this game alone.
+    /// </summary>
+    private static async Task<GameRunOutcome> PlayAndAnalyzeGameAsync(
+        int gameIndex, MatchConfig cfg, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        var log = new System.Text.StringBuilder();
+        var artifactFiles = new List<string>();
+
+        bool chessBotIsWhite = (gameIndex % 2 == 0);
+        string colorLabel = chessBotIsWhite ? "White" : "Black";
+        log.AppendLine();
+        log.AppendLine($"--- Game {gameIndex + 1}: ChessBot plays {colorLabel} ---");
+
+        GameResult result;
+        string opponentName;
+        using (var uci = new UciAdapter(cfg.ExternalEnginePath))
+        {
+            await uci.InitializeAsync(ct);
+            await cfg.ApplyEngineOptionsAsync(uci, ct);
+            opponentName = uci.EngineName;
+
+            var runner = new GameRunner(uci, cfg);
+            result = await runner.PlayGameAsync(chessBotIsWhite, gameIndex + 1, ct);
+        }
+
+        log.AppendLine($"Game {gameIndex + 1} result: {result.Outcome}  ({result.Moves.Count} moves)");
+
+        var analyzer = new PositionAnalyzer(cfg);
+        var analysis = analyzer.Analyze(result);
+
+        // Always write the per-game log alongside the PGN
+        string logFile = Path.ChangeExtension(result.PgnPath, ".log");
+        analyzer.WriteGameLog(result, analysis, logFile);
+        log.AppendLine($"  Log written to: {logFile}");
+
+        if (analysis.CrossEngineEvaluationDisagreements.Count > 0)
+        {
+            log.AppendLine($"  Cross-engine eval disagreements found: {analysis.CrossEngineEvaluationDisagreements.Count}");
+            foreach (var b in analysis.CrossEngineEvaluationDisagreements)
+                log.AppendLine($"    Move {b.MoveNumber}: {b.Move} swing {b.SwingCp:+#;-#;0}cp — FEN: {b.Fen}");
+        }
+
+        // ── Real move-loss analysis (outside the timed game) ────────────────────
+        // Runs after the game has fully completed, using a separate reference-engine
+        // process (normally Stockfish), so it can never affect move-time budgets.
+        List<MoveLossAnalyzer.MoveLossRecord>? lossRecords = null;
+        ReferenceEngineDto? referenceEngine = null;
+
+        if (!string.IsNullOrWhiteSpace(cfg.ReferenceEnginePath))
+        {
+            using var refEngine = new UciAdapter(cfg.ReferenceEnginePath);
+            await refEngine.InitializeAsync(ct);
+
+            foreach (var opt in cfg.ReferenceEngineOptions)
+                await refEngine.SetOptionAsync(opt.Name, opt.Value);
+            if (cfg.ReferenceEngineOptions.Count > 0)
+                await refEngine.SyncAsync(ct: ct);
+
+            lossRecords = await MoveLossAnalyzer.AnalyzeGameAsync(
+                result, refEngine, cfg.ReferenceEngineDepth, cfg.MoveLossMaxRetries, ct);
+
+            string lossPath = Path.ChangeExtension(result.PgnPath, ".moveloss.log");
+            MoveLossAnalyzer.WriteReport(
+                result, lossRecords, lossPath,
+                referenceEngineName: refEngine.EngineName,
+                referenceEngineDepth: cfg.ReferenceEngineDepth,
+                referenceEngineOptions: cfg.ReferenceEngineOptions);
+            log.AppendLine($"  Move-loss report written to: {lossPath}");
+            artifactFiles.Add(lossPath);
+
+            // Recorded from the engine that actually ran: identity, the options set for it, and
+            // the options it reported (including the defaults it was left at).
+            referenceEngine = new ReferenceEngineDto
+            {
+                Path            = cfg.ReferenceEnginePath,
+                Name            = refEngine.EngineName,
+                Depth           = cfg.ReferenceEngineDepth,
+                Options         = cfg.ReferenceEngineOptions.ToDictionary(o => o.Name, o => o.Value),
+                ReportedOptions = ParseReportedOptions(refEngine.HandshakeLines),
+                Networks        = refEngine.HandshakeLines
+                    .Where(l => l.Contains("NNUE", StringComparison.OrdinalIgnoreCase) ||
+                                l.Contains("network", StringComparison.OrdinalIgnoreCase))
+                    .ToList(),
+            };
+        }
+
+        return new GameRunOutcome
+        {
+            Result        = result,
+            OpponentName  = opponentName,
+            ArtifactFiles = artifactFiles,
+            LossRecords   = lossRecords,
+            ReferenceEngine = referenceEngine,
+            ConsoleOutput = log.ToString(),
+            Disagreements = analysis.CrossEngineEvaluationDisagreements
+                .Select(d => new DisagreementDto
+                {
+                    MoveNumber  = d.MoveNumber,
+                    IsWhiteMove = d.IsWhiteMove,
+                    Move        = d.Move,
+                    Fen         = d.Fen,
+                    ScoreBefore = d.ScoreBefore,
+                    ScoreAfter  = d.ScoreAfter,
+                    SwingCp     = d.SwingCp,
+                })
+                .ToList(),
+        };
+    }
+
     public static async Task<MatchOutcome> RunAsync(
         MatchConfig cfg, CancellationToken ct = default, IEnumerable<string>? commandLineArgs = null)
     {
@@ -62,108 +197,73 @@ public static class MatchExecutor
         var perGameDisagreements = new Dictionary<int, List<DisagreementDto>>();
         ReferenceEngineDto? referenceEngineInfo = null;
 
-        for (int game = 0; game < cfg.TotalGames; game++)
+        // ── Play the games ────────────────────────────────────────────────────
+        // Games are independent — each spawns its own opponent process and its own ChessEngine —
+        // so they are played concurrently when cfg.Concurrency allows it. Everything a game
+        // produces is collected per game and folded in game order afterwards, so the summary,
+        // the result document and the manifest are identical whatever order the games finish in.
+        int concurrency = Math.Max(1, cfg.Concurrency);
+        var completed = new GameRunOutcome?[cfg.TotalGames];
+
+        if (concurrency > 1)
+            Console.WriteLine($"Playing {cfg.TotalGames} games, {concurrency} at a time.");
+
+        var consoleLock = new object();
+
+        using (var gate = new SemaphoreSlim(concurrency))
         {
-            ct.ThrowIfCancellationRequested();
+            var running = new List<Task>(cfg.TotalGames);
 
-            bool chessBotIsWhite = (game % 2 == 0);
-            string colorLabel = chessBotIsWhite ? "White" : "Black";
-            Console.WriteLine();
-            Console.WriteLine($"--- Game {game + 1}: ChessBot plays {colorLabel} ---");
-
-            GameResult result;
-            using (var uci = new UciAdapter(cfg.ExternalEnginePath))
+            for (int game = 0; game < cfg.TotalGames; game++)
             {
-                await uci.InitializeAsync(ct);
-                await cfg.ApplyEngineOptionsAsync(uci, ct);
-                outcome.OpponentName = uci.EngineName;
+                int index = game;
+                running.Add(Task.Run(async () =>
+                {
+                    await gate.WaitAsync(ct);
+                    try
+                    {
+                        var played = await PlayAndAnalyzeGameAsync(index, cfg, ct);
+                        completed[index] = played;
 
-                var runner = new GameRunner(uci, cfg);
-                result = await runner.PlayGameAsync(chessBotIsWhite, game + 1, ct);
+                        // Printed as each game finishes rather than at the end, so a long match
+                        // shows progress. Whole blocks are written under the lock, so concurrent
+                        // games never interleave their lines.
+                        lock (consoleLock) Console.Write(played.ConsoleOutput);
+                    }
+                    finally
+                    {
+                        gate.Release();
+                    }
+                }, ct));
             }
 
-            outcome.Games.Add(result);
+            await Task.WhenAll(running);
+        }
 
-            switch (result.Outcome)
+        foreach (var game in completed)
+        {
+            if (game is null) continue;   // only reachable if the run was cancelled
+
+            outcome.Games.Add(game.Result);
+            outcome.OpponentName = game.OpponentName;
+
+            switch (game.Result.Outcome)
             {
                 case GameOutcome.ChessBotWin:  outcome.Wins++;   break;
                 case GameOutcome.ChessBotLoss: outcome.Losses++; break;
                 default:                       outcome.Draws++;  break;
             }
 
-            Console.WriteLine($"Game {game + 1} result: {result.Outcome}  ({result.Moves.Count} moves)");
+            artifactFiles.AddRange(game.ArtifactFiles);
+            perGameDisagreements[game.Result.GameNumber] = game.Disagreements;
 
-            var analyzer = new PositionAnalyzer(cfg);
-            var analysis = analyzer.Analyze(result);
-
-            // Always write the per-game log alongside the PGN
-            string logFile = Path.ChangeExtension(result.PgnPath, ".log");
-            analyzer.WriteGameLog(result, analysis, logFile);
-            Console.WriteLine($"  Log written to: {logFile}");
-
-            if (analysis.CrossEngineEvaluationDisagreements.Count > 0)
+            if (game.LossRecords is not null)
             {
-                Console.WriteLine($"  Cross-engine eval disagreements found: {analysis.CrossEngineEvaluationDisagreements.Count}");
-                foreach (var b in analysis.CrossEngineEvaluationDisagreements)
-                    Console.WriteLine($"    Move {b.MoveNumber}: {b.Move} swing {b.SwingCp:+#;-#;0}cp — FEN: {b.Fen}");
+                allLossRecords.AddRange(game.LossRecords);
+                perGameLoss[game.Result.GameNumber] = game.LossRecords;
             }
 
-            // ── Real move-loss analysis (outside the timed game) ────────────────────
-            // Runs after the game has fully completed, using a separate reference-engine
-            // process (normally Stockfish), so it can never affect move-time budgets.
-            if (!string.IsNullOrWhiteSpace(cfg.ReferenceEnginePath))
-            {
-                using var refEngine = new UciAdapter(cfg.ReferenceEnginePath);
-                await refEngine.InitializeAsync(ct);
-
-                foreach (var opt in cfg.ReferenceEngineOptions)
-                    await refEngine.SetOptionAsync(opt.Name, opt.Value);
-                if (cfg.ReferenceEngineOptions.Count > 0)
-                    await refEngine.SyncAsync(ct: ct);
-
-                var lossRecords = await MoveLossAnalyzer.AnalyzeGameAsync(
-                    result, refEngine, cfg.ReferenceEngineDepth, cfg.MoveLossMaxRetries, ct);
-
-                string lossPath = Path.ChangeExtension(result.PgnPath, ".moveloss.log");
-                MoveLossAnalyzer.WriteReport(
-                    result, lossRecords, lossPath,
-                    referenceEngineName: refEngine.EngineName,
-                    referenceEngineDepth: cfg.ReferenceEngineDepth,
-                    referenceEngineOptions: cfg.ReferenceEngineOptions);
-                Console.WriteLine($"  Move-loss report written to: {lossPath}");
-                artifactFiles.Add(lossPath);
-
-                allLossRecords.AddRange(lossRecords);
-                perGameLoss[result.GameNumber] = lossRecords;
-
-                // Recorded once, from the engine that actually ran: identity, the options set
-                // for it, and the options it reported (including the defaults it was left at).
-                referenceEngineInfo ??= new ReferenceEngineDto
-                {
-                    Path            = cfg.ReferenceEnginePath,
-                    Name            = refEngine.EngineName,
-                    Depth           = cfg.ReferenceEngineDepth,
-                    Options         = cfg.ReferenceEngineOptions.ToDictionary(o => o.Name, o => o.Value),
-                    ReportedOptions = ParseReportedOptions(refEngine.HandshakeLines),
-                    Networks        = refEngine.HandshakeLines
-                        .Where(l => l.Contains("NNUE", StringComparison.OrdinalIgnoreCase) ||
-                                    l.Contains("network", StringComparison.OrdinalIgnoreCase))
-                        .ToList(),
-                };
-            }
-
-            perGameDisagreements[result.GameNumber] = analysis.CrossEngineEvaluationDisagreements
-                .Select(d => new DisagreementDto
-                {
-                    MoveNumber  = d.MoveNumber,
-                    IsWhiteMove = d.IsWhiteMove,
-                    Move        = d.Move,
-                    Fen         = d.Fen,
-                    ScoreBefore = d.ScoreBefore,
-                    ScoreAfter  = d.ScoreAfter,
-                    SwingCp     = d.SwingCp,
-                })
-                .ToList();
+            referenceEngineInfo ??= game.ReferenceEngine;
         }
 
         string summaryPath = Path.Combine(cfg.PgnOutputDir, "match_summary.log");

@@ -122,6 +122,22 @@ public class SearchSettings
     public bool UseCheckExtension { get; set; } = true;
 
     /// <summary>
+    /// The evaluator's hanging-piece term: a penalty of half its value for every attacked,
+    /// undefended non-pawn piece.
+    ///
+    /// Kept switchable because the term is doubtful on two counts. Quiescence search already
+    /// resolves hanging material, so the penalty double-counts what the search finds anyway,
+    /// and it does so in the static evaluation — which null-move and futility pruning compare
+    /// directly against beta, so the noise propagates into pruning decisions rather than
+    /// staying in the leaf score. It is also the most expensive term in the program: up to two
+    /// ray-based <c>IsSquareAttackedBy</c> calls per non-pawn piece, at every node, since the
+    /// static evaluation runs throughout the tree and not only at leaves.
+    ///
+    /// Defaults to true (current behaviour); the default only changes if a measurement says so.
+    /// </summary>
+    public bool UseThreatEval { get; set; } = true;
+
+    /// <summary>
     /// Invoked once per *completed* iterative-deepening iteration — never per node — so a
     /// protocol layer (UCI "info depth ...") can report progress without the search having to
     /// know that a protocol exists. Null by default: no callback, no cost, and the search tree

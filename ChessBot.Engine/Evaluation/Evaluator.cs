@@ -26,7 +26,15 @@ internal class Evaluator
     /// Evaluates the current position statically (without search).
     /// Positive score favors White; negative favors Black.
     /// </summary>
-    public int Evaluate(Board board)
+    /// <param name="board">Position to evaluate.</param>
+    /// <param name="useThreatEval">
+    /// Include the hanging-piece term (see <see cref="EvaluateThreats"/>). Defaults to true so
+    /// that every existing caller keeps the behaviour it had; the search passes
+    /// <c>SearchSettings.UseThreatEval</c> so the term can be measured rather than assumed.
+    /// It must be passed identically to <see cref="Evaluate"/> and <see cref="EvaluateFast"/>,
+    /// which are required to return the same score for the same position.
+    /// </param>
+    public int Evaluate(Board board, bool useThreatEval = true)
     {
         int score = 0;
         int totalMaterial = 0;
@@ -63,7 +71,8 @@ internal class Evaluator
         score += EvaluatePawnStructureFromCounts(whitePawnFiles, blackPawnFiles);
 
         // Threat detection: hanging pieces
-        score += EvaluateThreats(board, pieceCount);
+        if (useThreatEval)
+            score += EvaluateThreats(board, pieceCount);
 
         // Opening development and king safety
         score += EvaluateOpeningDevelopment(board);
@@ -85,10 +94,13 @@ internal class Evaluator
     /// (hanging-piece threats, opening development, endgame king centrality) still require board
     /// context and are computed the same way as <see cref="Evaluate"/>.
     /// </summary>
-    public int EvaluateFast(Board board)
+    /// <param name="board">Position to evaluate.</param>
+    /// <param name="useThreatEval">See <see cref="Evaluate"/>; must match what that call is given.</param>
+    public int EvaluateFast(Board board, bool useThreatEval = true)
     {
-        // The buffer is still needed for the threat pass (it scans non-pawn pieces for attacks).
-        int pieceCount = board.GetAllPiecesInto(_pieceBuffer);
+        // Only the threat pass needs the piece list; with the term off, the whole board scan
+        // goes away too, which is most of what disabling it saves.
+        int pieceCount = useThreatEval ? board.GetAllPiecesInto(_pieceBuffer) : 0;
 
         // Material + PST come straight from the incremental White-positive accumulators.
         int score = board.IncrementalMaterialScore + board.IncrementalPstScore;
@@ -97,7 +109,8 @@ internal class Evaluator
         score += EvaluatePawnStructureFromCounts(board.WhitePawnFileCounts, board.BlackPawnFileCounts);
 
         // Threat detection: hanging pieces
-        score += EvaluateThreats(board, pieceCount);
+        if (useThreatEval)
+            score += EvaluateThreats(board, pieceCount);
 
         // Opening development and king safety
         score += EvaluateOpeningDevelopment(board);

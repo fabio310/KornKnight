@@ -89,6 +89,46 @@ dotnet run --project ChessBot.MatchRunner -- --engine <path-to-uci-engine> [--ti
 dotnet run --project ChessBot.EloEvaluator -- --pgn-dir pgns --out-dir elo-reports
 ```
 
+### A/B harness
+
+`ChessBot.MatchRunner --ab-harness` compares two search configurations under identical
+conditions, without an external engine. Modes: `partial-root`, `lmr`, `threat-eval`.
+
+```powershell
+# Search-shape comparison at a fixed node budget (reproducible; isolates decisions)
+dotnet run -c Release --project ChessBot.MatchRunner -- --ab-harness --ab-mode threat-eval `
+  --ab-corpus-size 400 --ab-depth 12 --ab-nodes 200000
+
+# Same corpus at a fixed time budget — the only way a cheaper evaluation shows up as depth
+dotnet run -c Release --project ChessBot.MatchRunner -- --ab-harness --ab-mode threat-eval `
+  --ab-corpus-size 400 --ab-depth 30 --ab-time 500
+
+# Head-to-head games between the two configurations (both colours per opening)
+dotnet run -c Release --project ChessBot.MatchRunner -- --ab-harness --ab-mode threat-eval `
+  --ab-games 200 --ab-game-ms 100 --ab-concurrency 10
+```
+
+Games are independent and run in parallel by default (half the logical processors); the two
+colour-reversed games of an opening always run together on one worker. `--ab-concurrency 1`
+measures at full machine speed, which matters for timed games: concurrent games leave each
+engine less CPU per millisecond.
+
+The same applies to real matches and to the Elo sweep, whose rounds are independent games:
+
+```powershell
+dotnet run -c Release --project ChessBot.MatchRunner -- --engine <path> --games 20 --concurrency 8
+dotnet run -c Release --project ChessBot.EloEvaluator -- sweep --games-per-round 2 --concurrency 2
+```
+
+A match defaults to `--concurrency 1`; a sweep defaults to playing its round in parallel
+(capped at half the logical processors) and says so, because a sweep is long and its rounds
+are small. In both, timed games under concurrency report strength at that reduced speed.
+
+A node budget makes runs reproducible but gives an expensive evaluation its cost back for
+free; a time budget charges for it. Both readings are needed, and each report states which
+budget produced it. Verdicts stay INCONCLUSIVE unless games or a reference engine
+adjudicate — node counts and depth alone never establish a strength change.
+
 `Chess.slnx` at the repo root is currently empty and not used for building; use `ChessBot.sln`.
 
 ## License
