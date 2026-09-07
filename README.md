@@ -13,7 +13,7 @@ The solution (`ChessBot.sln`) contains six projects:
 | `ChessBot.Uci` | console app (net8.0) | UCI front end: drives `ChessBot.Engine` over stdin/stdout so the engine can be run by any UCI host (cutechess-cli, Arena, lichess-bot). |
 | `ChessBot.MatchRunner` | console app (net8.0) | Plays automated games between `ChessBot.Engine` and an external UCI engine (e.g. Stockfish) for regression/strength testing, writes PGNs, flags cross-engine evaluation disagreements, and (with `--reference-engine`) measures Stockfish-referenced move loss.  |
 | `ChessBot.EloEvaluator` | console app (net8.0) | Reads the logs/PGNs produced by `ChessBot.MatchRunner` and computes Elo ratings and comparison reports. |
-| `ChessBot.Tests` | xUnit test project (net8.0) | Perft, move generation, FEN, evaluation, search, Zobrist hashing, and tactical/regression tests (~10 test files). |
+| `ChessBot.Tests` | xUnit test project (net8.0) | Perft, move generation, FEN, evaluation, search, UCI protocol, Zobrist hashing, and tactical/regression tests. Deep perft runs are marked `Category=Slow`. |
 
 ### ChessBot.Engine
 
@@ -21,7 +21,7 @@ The solution (`ChessBot.sln`) contains six projects:
 - **Move generation** (`Board/MoveGenerator.cs`): generates fully legal moves directly in one pass (no pseudo-legal filtering step), using bitboards internally for checkers/pins/attacked squares. Handles check evasion, pins, castling, en passant (including the discovered-check edge case).
 - **Search** (`Search/Searcher.cs`): negamax with alpha-beta pruning, iterative deepening, a transposition table, quiescence search, null-move pruning, late move reductions, aspiration windows, and check extensions. Move ordering via TT move → PV move → MVV-LVA/SEE captures → killer moves → history/counter-move heuristics.
 - **Evaluation** (`Evaluation/Evaluator.cs`): material, piece-square tables, pawn structure, hanging-piece/threat detection, development and endgame king centralization; both a full recompute path and an incremental fast path used during search.
-- **API**: `ChessEngine` is the public, thread-safe facade — `LoadFen`/`ExportFen`, `GetLegalMoves`, `MakeMove`/`UndoMove`, `FindBestMove`, `Evaluate`, `RunPerft`, `NewGame`. The engine core itself does not speak UCI; `ChessBot.Uci` wraps this API in the protocol, and `ChessBot.MatchRunner` uses UCI only to talk to an *external* opponent engine.
+- **API**: `ChessEngine` is the public, thread-safe facade — `LoadFen`/`ExportFen`, `GetLegalMoves`, `MakeMove`/`UndoMove`, `FindBestMove`, `Evaluate`, `RunPerft`/`RunPerftDivide`, `NewGame`. The engine core itself does not speak UCI; `ChessBot.Uci` wraps this API in the protocol, and `ChessBot.MatchRunner` uses UCI only to talk to an *external* opponent engine.
 
 ### ChessBot.Uci
 
@@ -45,12 +45,40 @@ cutechess-cli -engine cmd=ChessBot.Uci/bin/Release/net8.0/ChessBot.Uci.exe `
               -each proto=uci tc=10+0.1 -games 10
 ```
 
+### Move-generation correctness (perft)
+
+`ChessBot.Tests/PerftTests.cs` runs the six standard positions from
+[chessprogramming.org](https://www.chessprogramming.org/Perft_Results). Depths 1–4 are in the
+fast set; depth 5 (and depth 6 for the start position, position 3 and Kiwipete) carry
+`[Trait("Category", "Slow")]`, and the eight-billion-node Kiwipete depth 6 additionally carries
+`Category=VerySlow`. All counts are exact; the deepest are:
+
+| Position | Depth | Nodes | Release time |
+|---|---:|---:|---:|
+| Start position | 6 | 119,060,324 | 2.1 s |
+| Kiwipete | 5 | 193,690,690 | 2.1 s |
+| Kiwipete | 6 | 8,031,647,685 | 103 s |
+| Position 3 | 6 | 11,030,083 | 0.3 s |
+| Position 4 (and mirrored) | 5 | 15,833,292 | 0.2 s |
+| Position 5 | 5 | 89,941,194 | 1.0 s |
+| Position 6 | 5 | 164,075,551 | 1.9 s |
+
+`ChessEngine.RunPerftDivide(depth)` splits a perft by root move (`e2e4: 8902`), which is how a
+mismatch is localised: diff the divide against a reference engine to find the root move whose
+subtree diverges, play it, and repeat until a single position is left.
+
 ## Building and running
 
 ```powershell
 dotnet build ChessBot.sln
 
 dotnet test ChessBot.Tests
+
+# Fast set only — skips the deep perft runs (recommended for the inner loop)
+dotnet test ChessBot.Tests --filter "Category!=Slow"
+
+# Everything except the eight-billion-node Kiwipete depth-6 run
+dotnet test ChessBot.Tests --filter "Category!=VerySlow"
 
 dotnet run --project ChessBot.Wpf
 
