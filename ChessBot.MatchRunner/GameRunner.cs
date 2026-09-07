@@ -44,6 +44,56 @@ public record MoveRecord
     public required string Pv             { get; init; }
     // ── Raw engine output (external engine only) ─────────────────────────────
     public IReadOnlyList<string> RawUciLines { get; init; } = Array.Empty<string>();
+
+    // ── Search-shape instrumentation (ChessBot moves only; 0 for external-engine moves) ──────
+    /// <summary>Main-search nodes only. <see cref="Nodes"/> is main + quiescence.</summary>
+    public long   MainNodes             { get; init; }
+    public long   QNodes                { get; init; }
+    public long   EvaluationCalls       { get; init; }
+    public long   MovesGenerated        { get; init; }
+    public long   BetaCutoffs           { get; init; }
+    public double FirstMoveCutoffRate   { get; init; }
+    public long   NullMoveAttempts      { get; init; }
+    public long   NullMoveCutoffs       { get; init; }
+    public long   LmrReductions         { get; init; }
+    public long   LmrReSearches         { get; init; }
+    public long   FutilitySkips         { get; init; }
+    public long   PvsReSearches         { get; init; }
+    public long   AspirationFailLow     { get; init; }
+    public long   AspirationFailHigh    { get; init; }
+    public long   RepetitionDraws       { get; init; }
+    /// <summary>
+    /// Ratio of the last completed iteration's own node count to the previous one's — the
+    /// standard effective-branching-factor estimate. 0 when fewer than two iterations
+    /// completed. Replaces the former "EffectiveBranchingFactor", which raised the cumulative
+    /// node total (several completed iterations plus an unfinished one) to the power 1/depth
+    /// and had no branching-factor meaning.
+    /// </summary>
+    public double IterationNodeRatio    { get; init; }
+    /// <summary>Nodes spent by the last completed iteration alone.</summary>
+    public long   LastIterationNodes    { get; init; }
+    /// <summary>Nodes spent inside aspiration re-searches — the cost of too-narrow windows.</summary>
+    public long   AspirationRetryNodes  { get; init; }
+    /// <summary>Total plies removed by LMR (sum of reductions), not the count of reduced moves.</summary>
+    public long   LmrPliesSaved         { get; init; }
+    /// <summary>LMR reductions bucketed by remaining depth (index = depth, capped).</summary>
+    public long[] LmrReductionsByDepth      { get; init; } = Array.Empty<long>();
+    /// <summary>LMR reductions bucketed by move number at the node (index = move number, capped).</summary>
+    public long[] LmrReductionsByMoveNumber { get; init; } = Array.Empty<long>();
+    /// <summary>
+    /// True when the budget did not allow even depth 1 to finish, so the move is an
+    /// unevaluated legal fallback rather than a search result.
+    /// </summary>
+    public bool   IsUnsearchedFallbackMove { get; init; }
+    public bool   UsedPartialRootResult { get; init; }
+    public int    PartialDepth          { get; init; }
+    public long   BetaCutoffsFirstMove  { get; init; }
+    // ── Partial-root coverage (reported for every cancelled iteration, even when the
+    //    partial candidate itself was not selected as the reported move) ───────────────────
+    public int    RootMovesCompleted    { get; init; }
+    public int    RootMoveCount         { get; init; }
+    public double RootCoveragePercent   { get; init; }
+    public bool   PartialScoreIsExact   { get; init; }
 }
 
 /// <summary>
@@ -122,14 +172,45 @@ public class GameRunner
             long   elapsedMs  = 0;
             IReadOnlyList<string> rawLines = Array.Empty<string>();
 
+            long   qNodes                = 0;
+            long   evaluationCalls       = 0;
+            long   movesGenerated        = 0;
+            long   betaCutoffs           = 0;
+            double firstMoveCutoffRate   = 0;
+            long   nullMoveAttempts      = 0;
+            long   nullMoveCutoffs       = 0;
+            long   lmrReductions         = 0;
+            long   lmrReSearches         = 0;
+            long   futilitySkips         = 0;
+            long   pvsReSearches         = 0;
+            long   aspirationFailLow     = 0;
+            long   aspirationFailHigh    = 0;
+            long   repetitionDraws       = 0;
+            double iterationNodeRatio    = 0;
+            long   mainNodes            = 0;
+            long   lastIterationNodes   = 0;
+            long   aspirationRetryNodes = 0;
+            long   lmrPliesSaved        = 0;
+            long[] lmrByDepth           = Array.Empty<long>();
+            long[] lmrByMoveNumber      = Array.Empty<long>();
+            bool   isUnsearchedFallback = false;
+            bool   usedPartialRootResult = false;
+            int    partialDepth          = 0;
+            long   betaCutoffsFirstMove  = 0;
+            int    rootMovesCompleted    = 0;
+            int    rootMoveCount         = 0;
+            double rootCoveragePercent   = 0;
+            bool   partialScoreIsExact   = false;
+
             if (chessBotMoves)
             {
                 // ChessBot's turn
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 var settings = new SearchSettings
                 {
-                    MaxTimeMs = _cfg.MoveTimeMs,
-                    Verbose   = false
+                    MaxTimeMs             = _cfg.MoveTimeMs,
+                    Verbose               = false,
+                    UsePartialRootResult  = _cfg.UsePartialRootResult
                 };
                 var searchResult = chessBotEngine.FindBestMove(settings, ct);
                 sw.Stop();
@@ -152,6 +233,36 @@ public class GameRunner
                 pv        = string.Join(' ', searchResult.PrincipalVariation.Select(m => m.ToString()));
                 elapsedMs = sw.ElapsedMilliseconds;
                 rawLines  = Array.Empty<string>();
+
+                qNodes                 = searchResult.QNodesSearched;
+                evaluationCalls        = searchResult.EvaluationCalls;
+                movesGenerated         = searchResult.MovesGenerated;
+                betaCutoffs            = searchResult.BetaCutoffs;
+                firstMoveCutoffRate    = searchResult.FirstMoveCutoffRate;
+                nullMoveAttempts       = searchResult.NullMoveAttempts;
+                nullMoveCutoffs        = searchResult.NullMoveCutoffs;
+                lmrReductions          = searchResult.LmrReductions;
+                lmrReSearches          = searchResult.LmrReSearches;
+                futilitySkips          = searchResult.FutilitySkips;
+                pvsReSearches          = searchResult.PvsReSearches;
+                aspirationFailLow      = searchResult.AspirationFailLow;
+                aspirationFailHigh     = searchResult.AspirationFailHigh;
+                repetitionDraws        = searchResult.RepetitionDraws;
+                iterationNodeRatio     = searchResult.IterationNodeRatio;
+                mainNodes              = searchResult.MainNodes;
+                lastIterationNodes     = searchResult.LastIterationNodes;
+                aspirationRetryNodes   = searchResult.AspirationRetryNodes;
+                lmrPliesSaved          = searchResult.LmrPliesSaved;
+                lmrByDepth             = searchResult.LmrReductionsByDepth;
+                lmrByMoveNumber        = searchResult.LmrReductionsByMoveNumber;
+                isUnsearchedFallback   = searchResult.IsUnsearchedFallbackMove;
+                usedPartialRootResult  = searchResult.UsedPartialRootResult;
+                partialDepth           = searchResult.PartialDepth;
+                betaCutoffsFirstMove   = searchResult.BetaCutoffsFirstMove;
+                rootMovesCompleted     = searchResult.RootMovesCompleted;
+                rootMoveCount          = searchResult.RootMoveCount;
+                rootCoveragePercent    = searchResult.RootCoveragePercent;
+                partialScoreIsExact    = searchResult.PartialScoreIsExact;
 
                 if (_cfg.Verbose)
                     Console.WriteLine($"  {(whiteToMove ? "W" : "B")} move {moveNumber,-3}: {uciMove,-8} " +
@@ -213,6 +324,35 @@ public class GameRunner
                 Pv             = pv,
                 ElapsedMs      = elapsedMs,
                 RawUciLines    = rawLines,
+                QNodes                   = qNodes,
+                EvaluationCalls          = evaluationCalls,
+                MovesGenerated           = movesGenerated,
+                BetaCutoffs              = betaCutoffs,
+                FirstMoveCutoffRate      = firstMoveCutoffRate,
+                NullMoveAttempts         = nullMoveAttempts,
+                NullMoveCutoffs          = nullMoveCutoffs,
+                LmrReductions            = lmrReductions,
+                LmrReSearches            = lmrReSearches,
+                FutilitySkips            = futilitySkips,
+                PvsReSearches            = pvsReSearches,
+                AspirationFailLow        = aspirationFailLow,
+                AspirationFailHigh       = aspirationFailHigh,
+                RepetitionDraws          = repetitionDraws,
+                IterationNodeRatio       = iterationNodeRatio,
+                MainNodes                = mainNodes,
+                LastIterationNodes       = lastIterationNodes,
+                AspirationRetryNodes     = aspirationRetryNodes,
+                LmrPliesSaved            = lmrPliesSaved,
+                LmrReductionsByDepth      = lmrByDepth,
+                LmrReductionsByMoveNumber = lmrByMoveNumber,
+                IsUnsearchedFallbackMove = isUnsearchedFallback,
+                UsedPartialRootResult    = usedPartialRootResult,
+                PartialDepth             = partialDepth,
+                BetaCutoffsFirstMove     = betaCutoffsFirstMove,
+                RootMovesCompleted       = rootMovesCompleted,
+                RootMoveCount            = rootMoveCount,
+                RootCoveragePercent      = rootCoveragePercent,
+                PartialScoreIsExact      = partialScoreIsExact,
             });
 
             // Apply move to both ChessBot board and move history

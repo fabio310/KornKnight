@@ -1,16 +1,21 @@
 namespace ChessBot.MatchRunner;
 
 /// <summary>
-/// A detected blunder in a game.
+/// A detected cross-engine evaluation disagreement: ChessBot's own pre-move score plus the
+/// opponent's post-move score summed together. This mixes two different engines' evaluations
+/// from two different searches and is NOT a measurement of centipawn loss — it only flags that
+/// the two engines disagreed sharply about the resulting position. Never call this a "blunder".
+/// Real move-loss must be computed by analysing the same position with the same engine twice
+/// (see <see cref="MoveLossAnalyzer"/>).
 /// </summary>
-public record BlunderRecord(
+public record CrossEngineEvaluationDisagreementRecord(
     int    MoveNumber,
     bool   IsWhiteMove,
     string Move,
     string Fen,          // FEN before the move
-    int    ScoreBefore,  // engine score before the move (side-to-move positive)
-    int    ScoreAfter,   // engine score after the move (side-to-move positive, flipped)
-    int    SwingCp);     // positive = blunder hurt the mover
+    int    ScoreBefore,  // ChessBot's own score before the move (side-to-move positive)
+    int    ScoreAfter,   // opponent's score after the move (side-to-move positive, flipped)
+    int    SwingCp);     // positive = the two engines' evaluations disagree in ChessBot's disfavor
 
 /// <summary>
 /// Result of game analysis.
@@ -18,14 +23,14 @@ public record BlunderRecord(
 public class GameAnalysis
 {
     public int GameNumber      { get; init; }
-    public List<BlunderRecord> Blunders { get; } = new();
-    public BlunderRecord? FirstMajorSwing { get; set; }
+    public List<CrossEngineEvaluationDisagreementRecord> CrossEngineEvaluationDisagreements { get; } = new();
+    public CrossEngineEvaluationDisagreementRecord? FirstMajorSwing { get; set; }
     public List<string> RegressionFens   { get; } = new();
 }
 
 /// <summary>
-/// Analyzes a completed game to detect blunders, eval swings,
-/// and produces FEN regression test candidates from bad positions.
+/// Analyzes a completed game to detect cross-engine evaluation disagreements and eval swings,
+/// and collects the positions involved as review candidates.
 /// </summary>
 public class PositionAnalyzer
 {
@@ -37,9 +42,12 @@ public class PositionAnalyzer
     }
 
     /// <summary>
-    /// Analyzes a game record to find blunders and first major eval swings.
-    /// Uses the stored ScoreCp values from each move.
-    /// A "blunder" is when the score swings significantly against the mover.
+    /// Analyzes a game record to find cross-engine evaluation disagreements and first major eval
+    /// swings. Uses the stored ScoreCp values from each move. This is a cheap same-game heuristic,
+    /// NOT a centipawn-loss measurement: it mixes ChessBot's own score with the opponent engine's
+    /// score from a different search, so it is renamed CrossEngineEvaluationDisagreement and must
+    /// never be reported as a blunder or as move loss. For real move loss, see
+    /// <see cref="MoveLossAnalyzer"/>, which re-analyzes the position with one engine twice.
     /// </summary>
     public GameAnalysis Analyze(GameResult game)
     {
@@ -47,8 +55,8 @@ public class PositionAnalyzer
         if (game.Moves.Count < 2) return analysis;
 
         // We track the score from each mover's perspective.
-        // A blunder is when a player's position deteriorates sharply after their move
-        // (i.e., the opponent's score right after is much higher than expected).
+        // A disagreement is flagged when a player's position appears to deteriorate sharply
+        // after their move (i.e., the opponent's score right after is much higher than expected).
 
         for (int i = 1; i < game.Moves.Count; i++)
         {
@@ -57,25 +65,27 @@ public class PositionAnalyzer
 
             // Score convention in SearchResult: positive = good for side-to-move.
             // After White's move, it's Black to move. Black's score is the negative of White's advantage.
-            // A big positive scoreCp for the opponent after your move = you blundered.
+            // A big positive scoreCp for the opponent after your move = disagreement flag for ChessBot.
 
-            // Detect when ChessBot blundered: previous move was ChessBot's, current score is bad
+            // Detect when ChessBot's move looks bad in hindsight: previous move was ChessBot's,
+            // current (opponent-engine) score is bad for ChessBot.
             bool prevWasChessBot = (prev.IsWhiteMove == game.ChessBotIsWhite);
             if (!prevWasChessBot) continue;
 
-            // The score before ChessBot's move (from ChessBot's perspective)
+            // The score before ChessBot's move (from ChessBot's own engine, ChessBot's perspective)
             int scoreBefore = prev.ScoreCp;
-            // After ChessBot's move, the opponent responds; curr.ScoreCp is from opponent's view
-            // A big positive curr score = bad for ChessBot
+            // After ChessBot's move, the opponent responds; curr.ScoreCp is from the opponent
+            // engine's view. A big positive curr score = looks bad for ChessBot.
             int scoreAfter = curr.ScoreCp;
 
-            // Swing: how much did ChessBot's position deteriorate?
-            // scoreBefore > 0 = ChessBot was winning, scoreAfter > 0 = opponent is winning
-            int swing = scoreBefore + scoreAfter; // both are "good for mover" so positive sum = position flipped
+            // Swing: how much did the two engines' assessments of ChessBot's position disagree?
+            // scoreBefore > 0 = ChessBot's own engine thought it was winning,
+            // scoreAfter > 0 = the opponent engine thinks it is winning post-move.
+            int swing = scoreBefore + scoreAfter; // both are "good for mover" so positive sum = disagreement
 
-            if (swing >= _cfg.BlunderThresholdCp)
+            if (swing >= _cfg.DisagreementThresholdCp)
             {
-                var blunder = new BlunderRecord(
+                var disagreement = new CrossEngineEvaluationDisagreementRecord(
                     MoveNumber:  prev.MoveNumber,
                     IsWhiteMove: prev.IsWhiteMove,
                     Move:        prev.UciMove,
@@ -84,11 +94,11 @@ public class PositionAnalyzer
                     ScoreAfter:  scoreAfter,
                     SwingCp:     swing);
 
-                analysis.Blunders.Add(blunder);
+                analysis.CrossEngineEvaluationDisagreements.Add(disagreement);
                 analysis.RegressionFens.Add(prev.Fen);
 
                 if (analysis.FirstMajorSwing is null && swing >= _cfg.FirstSwingThresholdCp)
-                    analysis.FirstMajorSwing = blunder;
+                    analysis.FirstMajorSwing = disagreement;
             }
         }
 
@@ -107,12 +117,12 @@ public class PositionAnalyzer
             var prev = game.Moves[i - 1];
             var curr = game.Moves[i];
 
-            // Skip already-logged blunders
-            if (analysis.Blunders.Any(b => b.MoveNumber == prev.MoveNumber && b.IsWhiteMove == prev.IsWhiteMove))
+            // Skip already-logged disagreements
+            if (analysis.CrossEngineEvaluationDisagreements.Any(b => b.MoveNumber == prev.MoveNumber && b.IsWhiteMove == prev.IsWhiteMove))
                 continue;
 
             // Score collapse: previous score was clearly positive, now strongly negative
-            if (prev.ScoreCp > 50 && curr.ScoreCp > _cfg.BlunderThresholdCp)
+            if (prev.ScoreCp > 50 && curr.ScoreCp > _cfg.DisagreementThresholdCp)
             {
                 // The opponent now has a large advantage — something went wrong
                 if (!analysis.RegressionFens.Contains(prev.Fen))
@@ -124,8 +134,8 @@ public class PositionAnalyzer
     /// <summary>
     /// Writes a comprehensive game log to <paramref name="path"/>.
     /// Sections: header · game statistics · full move list (all metrics + raw UCI output) ·
-    /// blunder analysis · regression FENs.
-    /// Always written, even when there are no blunders.
+    /// cross-engine disagreement analysis · review-candidate FENs.
+    /// Always written, even when no disagreements were found.
     /// </summary>
     public void WriteGameLog(GameResult game, GameAnalysis analysis, string path)
     {
@@ -154,15 +164,28 @@ public class PositionAnalyzer
         w.WriteLine("=== Game Statistics ===");
         w.WriteLine($"  {"Metric",-28} {cbColor + " (ChessBot)",-22} {oppColor + " (Opponent)",-22}");
         w.WriteLine(new string('-', 75));
-        WriteStatRow(w, "Avg depth",
-            cbMoves.Count  > 0 ? cbMoves.Average(m => m.Depth)   : 0,
-            oppMoves.Count > 0 ? oppMoves.Average(m => m.Depth)  : 0, fmt: "F1");
-        WriteStatRow(w, "Avg seldepth",
-            cbMoves.Count  > 0 ? cbMoves.Average(m => m.SelDepth)  : 0,
-            oppMoves.Count > 0 ? oppMoves.Average(m => m.SelDepth) : 0, fmt: "F1");
-        WriteStatRow(w, "Avg score (cp)",
-            cbMoves.Count  > 0 ? cbMoves.Average(m => (double)m.ScoreCp)  : 0,
-            oppMoves.Count > 0 ? oppMoves.Average(m => (double)m.ScoreCp) : 0, fmt: "+F1;-F1;0");
+        // Forced-mate searches terminate at artificial depths (245 plies has been observed)
+        // and carry mate scores, not centipawns. Averaging either of those with normal
+        // searches produces a number that describes nothing, so mate-scored moves are
+        // excluded from the depth and score averages and counted on their own row.
+        var cbNormal  = cbMoves.Where(m => !IsMateScored(m)).ToList();
+        var oppNormal = oppMoves.Where(m => !IsMateScored(m)).ToList();
+
+        WriteStatRow(w, "Avg depth (non-mate)",
+            cbNormal.Count  > 0 ? cbNormal.Average(m => m.Depth)   : 0,
+            oppNormal.Count > 0 ? oppNormal.Average(m => m.Depth)  : 0, fmt: "F1");
+        WriteStatRow(w, "Median depth (non-mate)",
+            Median(cbNormal.Select(m => (double)m.Depth)),
+            Median(oppNormal.Select(m => (double)m.Depth)), fmt: "F1");
+        WriteStatRow(w, "Avg seldepth (non-mate)",
+            cbNormal.Count  > 0 ? cbNormal.Average(m => m.SelDepth)  : 0,
+            oppNormal.Count > 0 ? oppNormal.Average(m => m.SelDepth) : 0, fmt: "F1");
+        WriteStatRow(w, "Avg score (cp, non-mate)",
+            cbNormal.Count  > 0 ? cbNormal.Average(m => (double)m.ScoreCp)  : 0,
+            oppNormal.Count > 0 ? oppNormal.Average(m => (double)m.ScoreCp) : 0, fmt: "+0.0;-0.0;0.0");
+        WriteStatRow(w, "Mate-scored moves",
+            cbMoves.Count - cbNormal.Count,
+            oppMoves.Count - oppNormal.Count, fmt: "F0");
         WriteStatRow(w, "Avg nodes / move",
             cbMoves.Count  > 0 ? cbMoves.Average(m => (double)m.Nodes)  : 0,
             oppMoves.Count > 0 ? oppMoves.Average(m => (double)m.Nodes) : 0, fmt: "N0");
@@ -187,7 +210,49 @@ public class PositionAnalyzer
         WriteStatRow(w, "Total TB hits",
             cbMoves.Sum(m => (double)m.TbHits),
             oppMoves.Sum(m => (double)m.TbHits), fmt: "N0");
-        w.WriteLine($"  {"Blunders detected",-28} {analysis.Blunders.Count(b => b.IsWhiteMove == game.ChessBotIsWhite),-22} {analysis.Blunders.Count(b => b.IsWhiteMove != game.ChessBotIsWhite),-22}");
+        w.WriteLine($"  {"Cross-engine eval disagreements",-28} {analysis.CrossEngineEvaluationDisagreements.Count(b => b.IsWhiteMove == game.ChessBotIsWhite),-22} {analysis.CrossEngineEvaluationDisagreements.Count(b => b.IsWhiteMove != game.ChessBotIsWhite),-22}");
+
+        // ── Search-shape instrumentation (ChessBot only — the external engine doesn't expose this) ──
+        if (cbMoves.Count > 0)
+        {
+            w.WriteLine();
+            w.WriteLine("=== ChessBot Search-Shape Instrumentation ===");
+            w.WriteLine($"  Total qnodes                 : {cbMoves.Sum(m => m.QNodes):N0}");
+            w.WriteLine($"  Total evaluation calls       : {cbMoves.Sum(m => m.EvaluationCalls):N0}");
+            w.WriteLine($"  Total moves generated        : {cbMoves.Sum(m => m.MovesGenerated):N0}");
+            w.WriteLine($"  Total beta cutoffs           : {cbMoves.Sum(m => m.BetaCutoffs):N0}");
+            {
+                long totalBetaCutoffs = cbMoves.Sum(m => m.BetaCutoffs);
+                long totalFirstMoveCutoffs = cbMoves.Sum(m => m.BetaCutoffsFirstMove);
+                double firstMoveCutoffRate = totalBetaCutoffs > 0 ? (double)totalFirstMoveCutoffs / totalBetaCutoffs : 0;
+                w.WriteLine($"  First-move cutoff rate (total/total): {firstMoveCutoffRate:P1}  ({totalFirstMoveCutoffs:N0} / {totalBetaCutoffs:N0})");
+            }
+            w.WriteLine($"  Null-move attempts/cutoffs   : {cbMoves.Sum(m => m.NullMoveAttempts):N0} / {cbMoves.Sum(m => m.NullMoveCutoffs):N0}");
+            w.WriteLine($"  LMR reductions/re-searches   : {cbMoves.Sum(m => m.LmrReductions):N0} / {cbMoves.Sum(m => m.LmrReSearches):N0}");
+            w.WriteLine($"  Futility skips               : {cbMoves.Sum(m => m.FutilitySkips):N0}");
+            w.WriteLine($"  PVS re-searches              : {cbMoves.Sum(m => m.PvsReSearches):N0}");
+            w.WriteLine($"  Aspiration fail-low/fail-high: {cbMoves.Sum(m => m.AspirationFailLow):N0} / {cbMoves.Sum(m => m.AspirationFailHigh):N0}");
+            w.WriteLine($"  Repetition draws             : {cbMoves.Sum(m => m.RepetitionDraws):N0}");
+            w.WriteLine($"  Aspiration retry nodes       : {cbMoves.Sum(m => m.AspirationRetryNodes):N0}");
+            w.WriteLine($"  LMR plies saved              : {cbMoves.Sum(m => m.LmrPliesSaved):N0}");
+            // Ratio of the last completed iteration's own nodes to the previous iteration's,
+            // averaged over moves where two iterations completed. This is not the old
+            // nodes^(1/depth) figure, which mixed cumulative iterations with a partial one.
+            var ratios = cbMoves.Where(m => m.IterationNodeRatio > 0).Select(m => m.IterationNodeRatio).ToList();
+            w.WriteLine($"  Iteration node ratio (per-move avg, {ratios.Count} moves): " +
+                        $"{(ratios.Count > 0 ? ratios.Average() : 0):F2}");
+            w.WriteLine($"  Moves with a cancelled iteration: {cbMoves.Count(m => m.PartialDepth > 0)}");
+            w.WriteLine($"  Moves using partial root result: {cbMoves.Count(m => m.UsedPartialRootResult)}");
+            w.WriteLine($"  Unsearched fallback moves    : {cbMoves.Count(m => m.IsUnsearchedFallbackMove)}");
+
+            // Where the LMR schedule actually fires. A single reduction total says nothing about
+            // whether the schedule is too timid at high depth or too aggressive on early moves;
+            // these buckets are the minimum needed before tuning it from observed numbers.
+            WriteBucketRow(w, "  LMR reductions by depth      ",
+                GameResultDto.SumBuckets(cbMoves.Select(m => m.LmrReductionsByDepth)));
+            WriteBucketRow(w, "  LMR reductions by move no.   ",
+                GameResultDto.SumBuckets(cbMoves.Select(m => m.LmrReductionsByMoveNumber)));
+        }
 
         // ── Move list ─────────────────────────────────────────────────────────
         w.WriteLine();
@@ -225,6 +290,34 @@ public class PositionAnalyzer
             // FEN
             w.WriteLine($"  FEN before  : {m.Fen}");
 
+            // Instrumentation (ChessBot moves only)
+            if (m.IsChessBotMove)
+            {
+                w.WriteLine($"  Search shape: qnodes {m.QNodes:N0}  evalCalls {m.EvaluationCalls:N0}  movesGen {m.MovesGenerated:N0}");
+                w.WriteLine($"  Cutoffs     : beta {m.BetaCutoffs:N0} (firstMove {m.FirstMoveCutoffRate:P1})  nullMove {m.NullMoveAttempts:N0}/{m.NullMoveCutoffs:N0}");
+                w.WriteLine($"  Reductions  : LMR {m.LmrReductions:N0}/{m.LmrReSearches:N0} re-search  futilitySkips {m.FutilitySkips:N0}  PVS re-search {m.PvsReSearches:N0}");
+                w.WriteLine($"  Aspiration  : failLow {m.AspirationFailLow:N0}  failHigh {m.AspirationFailHigh:N0}  " +
+                            $"retryNodes {m.AspirationRetryNodes:N0}  repetitionDraws {m.RepetitionDraws:N0}  " +
+                            $"iterNodeRatio {m.IterationNodeRatio:F2}");
+                w.WriteLine($"  Nodes       : main {m.MainNodes:N0}  q {m.QNodes:N0}  total {m.Nodes:N0}  " +
+                            $"lastIteration {m.LastIterationNodes:N0}");
+
+                // Partial-iteration facts are reported whenever an iteration was cancelled, not
+                // only when its candidate was selected: root coverage explains how much of the
+                // deeper iteration was actually seen regardless of which move was reported.
+                if (m.PartialDepth > 0)
+                {
+                    string selection = m.UsedPartialRootResult
+                        ? $"selected (score {(m.PartialScoreIsExact ? "exact" : "lower bound")})"
+                        : "not selected";
+                    w.WriteLine($"  Partial     : depth {m.PartialDepth} cancelled, completed depth {m.Depth}, " +
+                                $"root coverage {m.RootMovesCompleted}/{m.RootMoveCount} " +
+                                $"({m.RootCoveragePercent:F1}%), {selection}");
+                }
+                if (m.IsUnsearchedFallbackMove)
+                    w.WriteLine("  Fallback    : budget too small for depth 1 — move is an unevaluated legal fallback");
+            }
+
             // Raw UCI info lines (external engine only)
             if (m.RawUciLines.Count > 0)
             {
@@ -234,18 +327,21 @@ public class PositionAnalyzer
             }
         }
 
-        // ── Blunder analysis ──────────────────────────────────────────────────
+        // ── Cross-engine evaluation disagreements ─────────────────────────────
         w.WriteLine();
-        if (analysis.Blunders.Count == 0)
+        if (analysis.CrossEngineEvaluationDisagreements.Count == 0)
         {
-            w.WriteLine("=== Blunder Analysis: no blunders detected ===");
+            w.WriteLine("=== Cross-Engine Evaluation Disagreement Analysis: none detected ===");
         }
         else
         {
-            w.WriteLine($"=== Blunder Analysis ({analysis.Blunders.Count} blunder(s)) ===");
-            for (int i = 0; i < analysis.Blunders.Count; i++)
+            w.WriteLine($"=== Cross-Engine Evaluation Disagreement Analysis ({analysis.CrossEngineEvaluationDisagreements.Count} found) ===");
+            w.WriteLine("NOTE: this compares ChessBot's own pre-move score with the opponent engine's");
+            w.WriteLine("post-move score — two different engines, two different searches. It is NOT a");
+            w.WriteLine("centipawn-loss / blunder measurement. See MoveLossAnalyzer output for that.");
+            for (int i = 0; i < analysis.CrossEngineEvaluationDisagreements.Count; i++)
             {
-                var b   = analysis.Blunders[i];
+                var b   = analysis.CrossEngineEvaluationDisagreements[i];
                 var rec = game.Moves.FirstOrDefault(
                     m => m.MoveNumber == b.MoveNumber && m.IsWhiteMove == b.IsWhiteMove);
 
@@ -253,7 +349,8 @@ public class PositionAnalyzer
                 w.WriteLine($"  [{i + 1}]  Move {b.MoveNumber} ({(b.IsWhiteMove ? "White" : "Black")}): {b.Move}");
                 w.WriteLine($"       Score swing   : {b.SwingCp:+#;-#;0} cp");
                 w.WriteLine($"       Before move   : {b.ScoreBefore:+#;-#;0} cp  (ChessBot's evaluation)");
-                w.WriteLine($"       After response: {b.ScoreAfter:+#;-#;0} cp  (opponent's evaluation)");
+                w.WriteLine($"       Opponent eval of the position this move created: " +
+                            $"{b.ScoreAfter:+#;-#;0} cp  (opponent to move, before it replies)");
                 w.WriteLine($"       FEN before    : {b.Fen}");
                 if (rec != null)
                 {
@@ -273,20 +370,65 @@ public class PositionAnalyzer
             }
         }
 
-        // ── Regression FENs ───────────────────────────────────────────────────
+        // ── Review candidates ─────────────────────────────────────────────────
+        // These positions come from cross-engine evaluation disagreements, which say only that
+        // two engines scored a position differently. That is a reason to look, not a confirmed
+        // mistake, so they are candidates for review rather than ready-made regression tests:
+        // turning one into a test asserts an expected move that nothing here has established.
         if (analysis.RegressionFens.Count > 0)
         {
             w.WriteLine();
-            w.WriteLine("=== Regression FENs ===");
-            w.WriteLine("# Paste into TacticalSearchTests.cs to create regression tests");
+            w.WriteLine("=== Review Candidate FENs ===");
+            w.WriteLine("# Positions where ChessBot's evaluation and the opponent's disagreed sharply.");
+            w.WriteLine("# Diagnostic leads only — verify with the reference-engine move-loss report");
+            w.WriteLine("# before promoting any of them into a regression test.");
             w.WriteLine();
             foreach (var fen in analysis.RegressionFens)
                 w.WriteLine(fen);
         }
     }
 
+    /// <summary>
+    /// Prints a bucket histogram as "index:count" pairs, skipping empty buckets so the line
+    /// stays readable, and stating the total.
+    /// </summary>
+    private static void WriteBucketRow(StreamWriter w, string label, long[] buckets)
+    {
+        if (buckets.Length == 0 || buckets.All(v => v == 0))
+        {
+            w.WriteLine($"{label}: (none)");
+            return;
+        }
+
+        var parts = buckets
+            .Select((count, index) => (index, count))
+            .Where(p => p.count > 0)
+            .Select(p => $"{p.index}:{p.count:N0}");
+
+        w.WriteLine($"{label}: total {buckets.Sum():N0}  [{string.Join("  ", parts)}]");
+    }
+
     private static void WriteStatRow(StreamWriter w, string label, double cb, double opp, string fmt)
     {
         w.WriteLine($"  {label,-28} {cb.ToString(fmt),-22} {opp.ToString(fmt),-22}");
+    }
+
+    /// <summary>
+    /// True when a move's score is a mate score rather than a centipawn evaluation: either the
+    /// external engine reported "score mate N", or the internal engine returned a value in the
+    /// mate band (it encodes mate as ±100000 minus the ply). Such values are not centipawns and
+    /// must never be averaged with them.
+    /// </summary>
+    private static bool IsMateScored(MoveRecord m)
+        => m.ScoreMate.HasValue || Math.Abs(m.ScoreCp) >= MateScoreThreshold;
+
+    private const int MateScoreThreshold = 99_000;
+
+    private static double Median(IEnumerable<double> values)
+    {
+        var sorted = values.OrderBy(v => v).ToList();
+        if (sorted.Count == 0) return 0;
+        int mid = sorted.Count / 2;
+        return sorted.Count % 2 == 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2.0;
     }
 }

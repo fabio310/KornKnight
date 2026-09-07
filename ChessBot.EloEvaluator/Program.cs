@@ -1,11 +1,44 @@
 using ChessBot.EloEvaluator;
 using ChessBot.EloEvaluator.Analysis;
-using ChessBot.EloEvaluator.Models;
 using ChessBot.EloEvaluator.Parsing;
 using ChessBot.EloEvaluator.Reporting;
+using ChessBot.EloEvaluator.Sweep;
 using System.Text;
 
 Console.OutputEncoding = Encoding.UTF8;
+
+// ── sweep subcommand ─────────────────────────────────────────────────────────
+if (args.Length > 0 && args[0].Equals("sweep", StringComparison.OrdinalIgnoreCase))
+{
+    string[] sweepArgs = args[1..];
+
+    if (sweepArgs.Any(a => a is "--help" or "-h"))
+    {
+        SweepConfig.PrintUsage();
+        return 0;
+    }
+
+    var sweepCfg = SweepConfig.Parse(sweepArgs);
+    if (sweepCfg is null)
+    {
+        Console.WriteLine();
+        SweepConfig.PrintUsage();
+        return 1;
+    }
+
+    var sweepResult = await new SweepRunner(sweepCfg).RunAsync();
+
+    var sweepPaths = new SweepReportWriter(sweepCfg.OutDir).Write(sweepResult);
+
+    Console.WriteLine();
+    SweepReportWriter.PrintToConsole(sweepResult);
+
+    Console.WriteLine($"Sweep report saved to: {Path.GetFullPath(sweepCfg.OutDir)}");
+    foreach (var p in sweepPaths)
+        Console.WriteLine($"  {Path.GetFileName(p)}");
+
+    return 0;
+}
 
 var cfg = EvaluatorConfig.Parse(args);
 
@@ -34,66 +67,8 @@ if (!Directory.Exists(cfg.PgnDir))
 
 Directory.CreateDirectory(cfg.OutDir);
 
-// ── Discover files ────────────────────────────────────────────────────────────
-var logFiles = Directory.GetFiles(cfg.PgnDir, "*.log")
-    .Where(f => !Path.GetFileName(f).Equals("match_summary.log",
-        StringComparison.OrdinalIgnoreCase))
-    .OrderBy(f => f)
-    .ToArray();
-
-var pgnFiles = Directory.GetFiles(cfg.PgnDir, "*.pgn")
-    .OrderBy(f => f)
-    .ToArray();
-
-Console.WriteLine($"Found {logFiles.Length} game log(s) and {pgnFiles.Length} PGN file(s).");
-Console.WriteLine();
-
-// ── Parse log files ───────────────────────────────────────────────────────────
-var games = new List<ParsedGame>();
-var logGameKeys = new HashSet<string>();
-
-foreach (var logFile in logFiles)
-{
-    if (cfg.Verbose)
-        Console.WriteLine($"  [log] {Path.GetFileName(logFile)}");
-
-    var g = LogFileParser.Parse(logFile);
-    games.Add(g);
-
-    // Build a dedup key using date + game number to avoid double-counting
-    // when both a .log and a .pgn file exist for the same game
-    string key = BuildGameKey(g);
-    logGameKeys.Add(key);
-
-    if (cfg.Verbose)
-        Console.WriteLine($"        → game {g.GameNumber}  {g.ChessBotColor}  {g.Outcome}  " +
-                          $"{g.TotalPlies} plies  depth={g.CbAvgDepth?.ToString("F1") ?? "n/a"}  " +
-                          $"NPS={g.CbAvgNps?.ToString("N0") ?? "n/a"}");
-}
-
-// ── Parse PGN files (skip games already covered by a log file) ────────────────
-foreach (var pgnFile in pgnFiles)
-{
-    if (cfg.Verbose)
-        Console.WriteLine($"  [pgn] {Path.GetFileName(pgnFile)}");
-
-    var pgnGames = PgnFileParser.ParseAll(pgnFile);
-    foreach (var g in pgnGames)
-    {
-        string key = BuildGameKey(g);
-        if (!logGameKeys.Contains(key))
-        {
-            games.Add(g);
-            if (cfg.Verbose)
-                Console.WriteLine($"        → game {g.GameNumber}  {g.ChessBotColor}  {g.Outcome}  " +
-                                  $"{g.TotalPlies} plies  (PGN only — no log)");
-        }
-        else if (cfg.Verbose)
-        {
-            Console.WriteLine($"        → game {g.GameNumber} skipped (log file already parsed)");
-        }
-    }
-}
+// ── Discover and parse games (logs first, PGNs only where no log exists) ─────
+var games = GameCollector.Collect(cfg.PgnDir, cfg.Verbose);
 
 if (games.Count == 0)
 {
@@ -125,7 +100,3 @@ foreach (var p in paths)
     Console.WriteLine($"  {Path.GetFileName(p)}");
 
 return 0;
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-static string BuildGameKey(ParsedGame g)
-    => $"{g.Date?.ToString("yyyyMMdd") ?? "nodate"}_{g.GameNumber}";

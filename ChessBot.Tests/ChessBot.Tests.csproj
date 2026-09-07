@@ -21,6 +21,9 @@
 
   <ItemGroup>
 	<ProjectReference Include="..\ChessBot.Engine\ChessBot.Engine.csproj" />
+	<ProjectReference Include="..\ChessBot.MatchRunner\ChessBot.MatchRunner.csproj" />
+	<ProjectReference Include="..\ChessBot.Uci\ChessBot.Uci.csproj" />
+	<ProjectReference Include="..\ChessBot.EloEvaluator\ChessBot.EloEvaluator.csproj" />
   </ItemGroup>
 
 </Project>

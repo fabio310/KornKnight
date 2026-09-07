@@ -91,7 +91,14 @@ public partial class MainWindow : Window
         BtnCopyFen.Click    += OnCopyFen;
         BtnLoadFen.Click    += OnLoadFen;
         BtnEngineMove.Click += async (_, _) => await OnEngineMoveAsync();
-        BtnAutoPlay.Click   += (_, _) => _vm.ToggleAutoPlay();
+        BtnAutoPlay.Click   += (_, _) =>
+        {
+            _vm.SetAutoPlay(BtnAutoPlay.IsChecked == true);
+
+            // Turning auto-play on while it is already the engine's turn should not wait for
+            // the next player move to take effect.
+            if (_vm.AutoPlay) _ = OnEngineMoveAsync();
+        };
 
         BtnPromoQueen.Click  += (_, _) => ApplyPromotion(PieceType.Queen);
         BtnPromoRook.Click   += (_, _) => ApplyPromotion(PieceType.Rook);
@@ -432,8 +439,13 @@ public partial class MainWindow : Window
             ShowPromotionPanel();
             return;
         }
-        _vm.OnSquareClicked(squareIndex);
+        bool moved = _vm.OnSquareClicked(squareIndex);
         RefreshBoard();
+
+        // Click-to-move is a third way to complete a move, alongside drag-drop and the
+        // promotion picker — it has to trigger the engine reply just like they do.
+        if (moved && _vm.AutoPlay)
+            _ = OnEngineMoveAsync();
     }
 
     private bool IsPromotionTarget(Square toSq, out Move[] promos)

@@ -15,8 +15,10 @@ using System.Diagnostics;
 internal class Searcher
 {
     // ── Constants ─────────────────────────────────────────────────────────────
-    private const int MATE_SCORE     = 100_000;
-    private const int MAX_PLY        = 64;
+    // Shared with SearchScores so a protocol layer can decode mate scores without duplicating
+    // the encoding; MAX_PLY doubles as the ply distance a mate score can carry.
+    private const int MATE_SCORE     = SearchScores.Mate;
+    private const int MAX_PLY        = SearchScores.MateDistanceLimit;
     private const int INFINITY       = MATE_SCORE + 1;
 
     // Null-move pruning
@@ -26,6 +28,25 @@ internal class Searcher
     // Late Move Reduction
     private const int LMR_MIN_DEPTH  = 3;
     private const int LMR_FULL_MOVES = 4;   // search first N moves at full depth before reducing
+    private const int LMR_MAX_MOVES  = 64;  // move-count axis of the reduction table
+    private const double LMR_BASE_DEFAULT    = 0.75;
+    private const double LMR_DIVISOR_DEFAULT = 2.25;
+
+    // Current LMR schedule in effect (rebuilt only when SearchSettings overrides differ from
+    // the values the table was last built with — see Search() and BuildLmrTable above).
+    private int    _lmrFullMoves;
+    private double _lmrTableBase;
+    private double _lmrTableDivisor;
+    private bool   _useLegacyFlatLmr;
+    private bool   _inAspirationRetry;
+    private bool   _cancelledDuringAspirationRetry;
+
+    // Per-iteration and per-heuristic telemetry (see SearchResult for meanings).
+    private readonly List<long> _iterationNodes = new();
+    private long _aspirationRetryNodes;
+    private long _lmrPliesSaved;
+    private readonly long[] _lmrByDepth      = new long[SearchResult.LmrBucketCount];
+    private readonly long[] _lmrByMoveNumber = new long[SearchResult.LmrBucketCount];
 
     // Delta pruning in quiescence
     private const int DELTA_MARGIN   = 200; // centipawns
@@ -59,12 +80,89 @@ internal class Searcher
     private Stopwatch      _searchTimer = null!;
     private SearchSettings _settings    = null!;
 
+    // The caller's cancellation token, kept as a field so the node loop can observe it. Checking
+    // it only between iterations (as the iterative-deepening loop does) is not enough for a UCI
+    // "stop": an unbounded iteration would then run to completion before noticing, which for
+    // "go infinite" means never. It is read inside the existing throttled (every 2048 nodes)
+    // check, so the hot path gains nothing per node.
+    private CancellationToken _ct;
+
+    // Reused across iterations so progress reporting costs no allocation (see SearchProgress).
+    private readonly SearchProgress _progress = new();
+
     // Diagnostics
     private int _selDepth;
     private int _ttProbes;
     private int _ttHits;
     private int _ttCutoffs;
     private int _ttStores;
+
+    // Search-shape profiling (see SearchResult for what each one means)
+    private long _evaluationCalls;
+    private long _movesGenerated;
+    private long _betaCutoffs;
+    private long _betaCutoffsFirstMove;
+    private long _nullMoveAttempts;
+    private long _nullMoveCutoffs;
+    private long _lmrReductions;
+    private long _lmrReSearches;
+    private long _futilitySkips;
+    private long _pvsReSearches;
+    private long _aspirationFailLow;
+    private long _aspirationFailHigh;
+    private long _repetitionDraws;
+
+    /// <summary>Static evaluation with a call counter, so evaluation cost is measurable.</summary>
+    private int EvaluateStatic()
+    {
+        _evaluationCalls++;
+        return _evaluator.EvaluateFast(_board, _settings.UseThreatEval,
+                                       _settings.UseGamePhaseDevelopment, _settings.UseTaperedEval);
+    }
+
+    // ── Partial-iteration root results ────────────────────────────────────────
+    // When an iterative-deepening pass runs out of time it is abandoned, but the root
+    // moves it *did* finish are still valid: a partially searched depth N that has
+    // examined the best few moves usually beats a completed depth N-1. These fields
+    // capture the best root move of the iteration currently in progress, recorded only
+    // when a root move actually raises alpha (so the score is a real improvement rather
+    // than a fail-low bound). Reset at the start of every depth iteration.
+    private Move   _rootPartialMove;
+    private int    _rootPartialScore;
+    private readonly Move[] _rootPartialPv;
+    private int    _rootPartialPvLength;
+
+    // True when _rootPartialScore is an exact value (the move was the new best and did not
+    // itself trigger a beta cutoff at the root). False means the score is only a lower bound
+    // (the root move raised alpha and then immediately failed high against the *current*
+    // aspiration window) — the true value could be higher. Kept separate from ScoreBound
+    // strings used elsewhere because this is specifically about the *partial* root candidate.
+    private bool   _rootPartialIsExact;
+
+    // Number of root moves that finished searching in the iteration currently in progress —
+    // separate from the partial best-move fields above because it must be reported even when
+    // no root move ever raised alpha (i.e. every root move so far failed low).
+    private int    _rootMovesCompleted;
+    private int    _rootMoveCount;
+
+    /// <summary>
+    /// Resets all partial-root-candidate and root-coverage state. Must be called before
+    /// *every* root search attempt — including each aspiration-window retry within the same
+    /// iterative-deepening depth — so that a cancellation during e.g. the fail-high re-search
+    /// cannot report a candidate or coverage count left over from the fail-low attempt that
+    /// preceded it in the same depth.
+    /// </summary>
+    private void ResetRootPartialState()
+    {
+        _rootPartialMove     = default;
+        _rootPartialScore     = -INFINITY;
+        _rootPartialPvLength = 0;
+        _rootPartialIsExact  = false;
+        _rootMovesCompleted  = 0;
+    }
+
+    /// <summary>Precomputed LMR reductions indexed by [depth, moveNumber]; built in the constructor.</summary>
+    private readonly int[,] _lmrTable;
 
     // Triangular PV table: _pvTable[ply, ply..ply+len] stores the PV from ply
     private readonly Move[,] _pvTable;
@@ -94,13 +192,76 @@ internal class Searcher
         _moveBuffers = new Move[MAX_PLY][];
         for (int i = 0; i < MAX_PLY; i++)
             _moveBuffers[i] = new Move[MoveGenerator.MaxMoves];
+
+        _rootPartialPv = new Move[MAX_PLY];
+
+        // ── Late Move Reduction table ─────────────────────────────────────────
+        // R = 0.75 + ln(depth)·ln(moveNumber) / 2.25, the standard logarithmic schedule.
+        //
+        // The previous flat rule (reduce 1, or 2 past move 8) reduced the same amount at
+        // depth 4 as at depth 12, which is where the tree is widest. Profiling the 203-position
+        // regression corpus showed only 0.7% of reduced searches ever needed a full-depth
+        // re-search — reductions were so timid they almost never changed an outcome, so the
+        // nodes they saved were nodes that could have bought depth instead.
+        _lmrTable = new int[MAX_PLY, LMR_MAX_MOVES];
+        BuildLmrTable(LMR_BASE_DEFAULT, LMR_DIVISOR_DEFAULT);
+        _lmrFullMoves = LMR_FULL_MOVES;
+        _lmrTableBase = LMR_BASE_DEFAULT;
+        _lmrTableDivisor = LMR_DIVISOR_DEFAULT;
+    }
+
+    private void BuildLmrTable(double lmrBase, double lmrDivisor)
+    {
+        for (int d = 1; d < MAX_PLY; d++)
+            for (int m = 1; m < LMR_MAX_MOVES; m++)
+                _lmrTable[d, m] = (int)(lmrBase + Math.Log(d) * Math.Log(m) / lmrDivisor);
     }
 
     // ── Public search entry point ─────────────────────────────────────────────
 
+    /// <summary>
+    /// Discards everything learned from previous positions: the transposition table and the
+    /// killer/history/counter-move tables. Needed when the engine is handed an unrelated game
+    /// (UCI "ucinewgame"), where carrying scores over from the previous game's tree is at best
+    /// noise and at worst a wrong cutoff from a same-hash position reached by a different path.
+    /// </summary>
+    internal void ClearTables()
+    {
+        _transpositionTable.Clear();
+        _moveOrdering.Clear();
+    }
+
     public SearchResult Search(SearchSettings settings, CancellationToken ct = default)
     {
         _settings        = settings ?? new SearchSettings();
+        _ct              = ct;
+
+        // ── Controlled A/B override of the LMR schedule (see SearchSettings.LmrBaseOverride) ──
+        // UseLegacyFlatLmr reproduces the pre-table schedule exactly and takes precedence over
+        // the parametric overrides, so the current schedule can be compared against the
+        // implementation it actually replaced.
+        _useLegacyFlatLmr = _settings.UseLegacyFlatLmr;
+
+        double wantBase    = _settings.LmrBaseOverride    ?? LMR_BASE_DEFAULT;
+        double wantDivisor = _settings.LmrDivisorOverride ?? LMR_DIVISOR_DEFAULT;
+        int    wantFullMoves = _settings.LmrFullMovesOverride ?? LMR_FULL_MOVES;
+        if (wantBase != _lmrTableBase || wantDivisor != _lmrTableDivisor)
+        {
+            BuildLmrTable(wantBase, wantDivisor);
+            _lmrTableBase    = wantBase;
+            _lmrTableDivisor = wantDivisor;
+        }
+        _lmrFullMoves = wantFullMoves;
+
+        _iterationNodes.Clear();
+        _iterationNodes.Add(0);          // index 0 unused; keeps depth == index
+        _aspirationRetryNodes = 0;
+        _inAspirationRetry    = false;
+        _cancelledDuringAspirationRetry = false;
+        _lmrPliesSaved        = 0;
+        Array.Clear(_lmrByDepth, 0, _lmrByDepth.Length);
+        Array.Clear(_lmrByMoveNumber, 0, _lmrByMoveNumber.Length);
+
         _nodesSearched   = 0;
         _qnodesSearched  = 0;
         _cancelRequested = false;
@@ -111,6 +272,20 @@ internal class Searcher
         _ttHits          = 0;
         _ttCutoffs       = 0;
         _ttStores        = 0;
+
+        _evaluationCalls      = 0;
+        _movesGenerated       = 0;
+        _betaCutoffs          = 0;
+        _betaCutoffsFirstMove = 0;
+        _nullMoveAttempts     = 0;
+        _nullMoveCutoffs      = 0;
+        _lmrReductions        = 0;
+        _lmrReSearches        = 0;
+        _futilitySkips        = 0;
+        _pvsReSearches        = 0;
+        _aspirationFailLow    = 0;
+        _aspirationFailHigh   = 0;
+        _repetitionDraws      = 0;
 
         var result      = new SearchResult();
         int prevScore   = 0;
@@ -156,9 +331,13 @@ internal class Searcher
 
             Array.Clear(_pvLength, 0, _pvLength.Length);
 
+            // Discard any partial root result from the previous iteration/attempt.
+            ResetRootPartialState();
+            _rootMoveCount = rootMoveCount;
+
             int score;
 
-            if (depth <= 4)
+            if (depth <= 4 || !_settings.UseAspiration)
             {
                 // Full window for early depths — aspiration windows unreliable here
                 score = NegamaxSearch(0, depth, -INFINITY, INFINITY);
@@ -174,28 +353,90 @@ internal class Searcher
 
                 if (!_cancelRequested && score <= alpha)
                 {
-                    // Fail-low: widen lower bound
+                    // Fail-low: widen lower bound. A cancellation partway through *this*
+                    // re-search must not report a root candidate/coverage count that was
+                    // accumulated during the aborted first attempt above, so state is reset
+                    // again before every retry — not just once per depth.
+                    _aspirationFailLow++;
+                    long retryStart = _nodesSearched + _qnodesSearched;
+                    _inAspirationRetry = true;
+                    ResetRootPartialState();
                     alpha = prevScore - ASP_WINDOW * 4;
                     score = NegamaxSearch(0, depth, alpha, beta);
                     if (!_cancelRequested && score <= alpha)
+                    {
+                        ResetRootPartialState();
                         score = NegamaxSearch(0, depth, -INFINITY, beta);
+                    }
+                    _inAspirationRetry = false;
+                    _aspirationRetryNodes += (_nodesSearched + _qnodesSearched) - retryStart;
                 }
                 else if (!_cancelRequested && score >= beta)
                 {
-                    // Fail-high: widen upper bound
+                    // Fail-high: widen upper bound. Same reasoning as the fail-low branch above.
+                    _aspirationFailHigh++;
+                    long retryStart = _nodesSearched + _qnodesSearched;
+                    _inAspirationRetry = true;
+                    ResetRootPartialState();
                     beta = prevScore + ASP_WINDOW * 4;
                     score = NegamaxSearch(0, depth, alpha, beta);
                     if (!_cancelRequested && score >= beta)
+                    {
+                        ResetRootPartialState();
                         score = NegamaxSearch(0, depth, alpha, INFINITY);
+                    }
+                    _inAspirationRetry = false;
+                    _aspirationRetryNodes += (_nodesSearched + _qnodesSearched) - retryStart;
                 }
             }
 
-            if (_cancelRequested) break;
+            if (_cancelRequested)
+            {
+                if (_inAspirationRetry) _cancelledDuringAspirationRetry = true;
+                // The iteration was abandoned. DepthAchieved must stay at the last fully
+                // completed depth — reporting this unfinished iteration's depth as "achieved"
+                // would claim a depth that was never actually finished. The partial-iteration
+                // depth and how many root moves it completed are reported separately. These
+                // values always belong to the specific aspiration attempt that was in flight
+                // when cancellation happened, since state is reset before every attempt above.
+                result.PartialDepth        = depth;
+                result.RootMovesCompleted  = _rootMovesCompleted;
+                result.RootMoveCount       = _rootMoveCount;
+                result.RootCoveragePercent = _rootMoveCount > 0
+                    ? 100.0 * _rootMovesCompleted / _rootMoveCount : 0;
+
+                // If enabled, and the iteration already found a root move that beats the
+                // previous (completed) iteration's score, that move can replace the completed
+                // iteration's answer. A fail-low re-search cannot get here: its scores never
+                // exceed prevScore. This is a heuristic substitution — the partial score and
+                // the completed score come from different depths and not every root move was
+                // searched at the partial depth, so it must remain independently switchable.
+                if (_settings.UsePartialRootResult &&
+                    result.DepthAchieved > 0 &&
+                    _rootPartialMove != default &&
+                    _rootPartialScore > prevScore)
+                {
+                    result.BestMove              = _rootPartialMove;
+                    result.Evaluation            = _rootPartialScore;
+                    result.UsedPartialRootResult = true;
+                    result.PartialScoreIsExact   = _rootPartialIsExact;
+
+                    result.PrincipalVariation.Clear();
+                    for (int i = 0; i < _rootPartialPvLength; i++)
+                        result.PrincipalVariation.Add(_rootPartialPv[i]);
+                }
+                break;
+            }
 
             prevScore            = score;
             result.Evaluation    = score;
             result.DepthAchieved = depth;
             result.NodesSearched = _nodesSearched + _qnodesSearched;
+
+            // Cumulative node count at the moment this iteration completed. Only completed
+            // iterations are recorded, so a branching estimate never mixes in a partial one.
+            while (_iterationNodes.Count <= depth) _iterationNodes.Add(0);
+            _iterationNodes[depth] = _nodesSearched + _qnodesSearched;
 
             // Extract PV from triangular table
             result.PrincipalVariation.Clear();
@@ -204,6 +445,22 @@ internal class Searcher
 
             if (_pvLength[0] > 0)
                 result.BestMove = _pvTable[0, 0];
+
+            // Report the finished iteration before deciding whether to start another one, so a
+            // search that stops on the time cap below has still published its deepest result.
+            if (_settings.OnIterationComplete is { } onIterationComplete)
+            {
+                _progress.Depth     = depth;
+                _progress.SelDepth  = Math.Max(_selDepth, depth);
+                _progress.Score     = score;
+                _progress.Nodes     = _nodesSearched + _qnodesSearched;
+                _progress.ElapsedMs = _searchTimer.ElapsedMilliseconds;
+                _progress.PvBuffer.Clear();
+                for (int i = 0; i < _pvLength[0]; i++)
+                    _progress.PvBuffer.Add(_pvTable[0, i]);
+
+                onIterationComplete(_progress);
+            }
 
             if (_settings.Verbose)
             {
@@ -220,16 +477,58 @@ internal class Searcher
             if (Math.Abs(score) >= MATE_SCORE - MAX_PLY) break;
         }
 
+        // Extremely small node/time budgets can expire before even depth 1 completes and
+        // before UsePartialRootResult ever finds a root move that raises alpha, leaving
+        // BestMove at its default value. A legal move must still be returned — fall back to
+        // the first move produced by move ordering (root move 0) and flag this explicitly so
+        // callers never mistake it for an evaluated result.
+        if (result.BestMove == default)
+        {
+            result.BestMove                = rootMoves[0];
+            result.IsUnsearchedFallbackMove = true;
+        }
+
         _searchTimer.Stop();
+
+        // Count every node visited, including those in an iteration that was abandoned on
+        // time. Assigning this only on completed iterations understated both the node count
+        // and NPS (which divides by the *full* elapsed time) whenever the search was cut off
+        // mid-iteration — i.e. on almost every timed move.
+        result.NodesSearched  = _nodesSearched + _qnodesSearched;
+        result.MainNodes      = _nodesSearched;
         result.ElapsedTimeMs  = _searchTimer.ElapsedMilliseconds;
         result.NodesPerSecond = result.ElapsedTimeMs > 0
             ? result.NodesSearched / (result.ElapsedTimeMs / 1000.0) : 0;
         result.QNodesSearched = _qnodesSearched;
+
+        result.IterationNodes       = new List<long>(_iterationNodes);
+        result.LastIterationNodes   = _iterationNodes.Count >= 3
+            ? _iterationNodes[^1] - _iterationNodes[^2]
+            : (_iterationNodes.Count == 2 ? _iterationNodes[^1] : 0);
+        result.AspirationRetryNodes = _aspirationRetryNodes;
+        result.CancelledDuringAspirationRetry = _cancelledDuringAspirationRetry;
+        result.LmrPliesSaved        = _lmrPliesSaved;
+        result.LmrReductionsByDepth      = (long[])_lmrByDepth.Clone();
+        result.LmrReductionsByMoveNumber = (long[])_lmrByMoveNumber.Clone();
         result.SelDepth       = _selDepth;
         result.TTProbes       = _ttProbes;
         result.TTHits         = _ttHits;
         result.TTCutoffs      = _ttCutoffs;
         result.TTStores       = _ttStores;
+
+        result.EvaluationCalls       = _evaluationCalls;
+        result.MovesGenerated        = _movesGenerated;
+        result.BetaCutoffs           = _betaCutoffs;
+        result.BetaCutoffsFirstMove  = _betaCutoffsFirstMove;
+        result.NullMoveAttempts      = _nullMoveAttempts;
+        result.NullMoveCutoffs       = _nullMoveCutoffs;
+        result.LmrReductions         = _lmrReductions;
+        result.LmrReSearches         = _lmrReSearches;
+        result.FutilitySkips         = _futilitySkips;
+        result.PvsReSearches         = _pvsReSearches;
+        result.AspirationFailLow     = _aspirationFailLow;
+        result.AspirationFailHigh    = _aspirationFailHigh;
+        result.RepetitionDraws       = _repetitionDraws;
         result.HashFull       = _transpositionTable.GetFillPermille();
 
         return result;
@@ -244,8 +543,19 @@ internal class Searcher
 
         // Cancellation check (throttled to avoid stopwatch overhead on every node)
         if (_cancelRequested) return 0;
+        // Node budget is checked exactly, not every 2048 nodes, so a fixed-node search is
+        // reproducible down to the node count.
+        if (_settings.MaxNodes is long cap && _nodesSearched + _qnodesSearched > cap)
+        {
+            _cancelRequested = true;
+            return 0;
+        }
+
+        // Clock and caller cancellation share the same throttle: both are external stop
+        // conditions that only need to be noticed promptly, not exactly.
         if ((_nodesSearched & 2047) == 0 &&
-            _searchTimer.ElapsedMilliseconds > (_settings.MaxTimeMs ?? 10_000))
+            (_ct.IsCancellationRequested ||
+             _searchTimer.ElapsedMilliseconds > (_settings.MaxTimeMs ?? 10_000)))
         {
             _cancelRequested = true;
             return 0;
@@ -256,13 +566,19 @@ internal class Searcher
         // ── Transposition table lookup ─────────────────────────────────────
         // Use the board's incremental hash (O(1)) instead of recomputing from scratch (O(32)).
         ulong hash  = _board.ZobristHash;
-        _ttProbes++;
+        Move ttMove = default;
 
         // Always retrieve TT best move for ordering, even when the entry depth is too low for
         // a score cutoff. A shallow hit still provides an excellent first move to try.
-        Move ttMove = _transpositionTable.LookupBestMoveOnly(hash);
+        if (_settings.UseTranspositionTable)
+        {
+            _ttProbes++;
+            ttMove = _transpositionTable.LookupBestMoveOnly(hash);
+        }
 
-        var ttEntry = _transpositionTable.Lookup(hash, depth);
+        var ttEntry = _settings.UseTranspositionTable
+            ? _transpositionTable.Lookup(hash, depth)
+            : null;
         if (ttEntry.HasValue)
         {
             var (ttScore, ttFlag, ttBest, _) = ttEntry.Value;
@@ -290,33 +606,38 @@ internal class Searcher
         }
 
         // ── Draw / horizon ────────────────────────────────────────────────
-        if (_board.State.IsFiftyMoveRuleDraw || IsDrawByRepetition()) return 0;
-        if (ply >= MAX_PLY) return _evaluator.EvaluateFast(_board);
+        if (_board.State.IsFiftyMoveRuleDraw) return 0;
+        if (IsDrawByRepetition()) { _repetitionDraws++; return 0; }
+        if (ply >= MAX_PLY) return EvaluateStatic();
 
         // ── Check detection ───────────────────────────────────────────────
         bool inCheck = _checkDetector.IsInCheck(_board.State.ActiveColor);
 
         // Check extension: add 1 ply when in check to avoid missing short tactics
-        if (inCheck) depth++;
+        if (inCheck && _settings.UseCheckExtension) depth++;
 
         if (depth <= 0)
-            return QuiescenceSearch(ply, alpha, beta);
+            return _settings.UseQuiescence
+                ? QuiescenceSearch(ply, alpha, beta)
+                : EvaluateStatic();
 
         // ── Null-move pruning ─────────────────────────────────────────────
         // Conditions: not in check, not a PV node, not already a null-move, sufficient depth,
         // and not in a likely zugzwang (we must have non-pawn material).
-        int staticEval = _evaluator.EvaluateFast(_board);
+        int staticEval = EvaluateStatic();
 
         // ── Futility pruning setup ────────────────────────────────────────
         // At depth 1-2, outside check / PV positions, quiet moves that cannot
         // raise alpha even with a generous margin are skipped safely.
-        bool futilityActive = !inCheck && !pvNode && depth <= 2;
+        bool futilityActive = _settings.UseFutility && !inCheck && !pvNode && depth <= 2;
         int  futilityMargin = depth == 1 ? 200 : 450;
 
-        if (!inCheck && !pvNode && !_nullMoveAtPly[ply] && depth >= NMP_MIN_DEPTH
+        if (_settings.UseNullMove
+            && !inCheck && !pvNode && !_nullMoveAtPly[ply] && depth >= NMP_MIN_DEPTH
             && staticEval >= beta && HasNonPawnMaterial(_board.State.ActiveColor))
         {
             int R = depth >= 4 ? NMP_BASE_R : 2;
+            _nullMoveAttempts++;
 
             _board.MakeNullMove();
             _nullMoveAtPly[ply + 1] = true;
@@ -327,12 +648,16 @@ internal class Searcher
             if (_cancelRequested) return 0;
 
             if (nullScore >= beta)
+            {
+                _nullMoveCutoffs++;
                 return beta; // Null-move cutoff
+            }
         }
 
         // ── Generate and order moves (zero allocation) ────────────────────
         var moves = _moveBuffers[ply];
         _moveGen.GenerateLegalMovesInto(moves, out int legalCount);
+        _movesGenerated += legalCount;
 
         if (legalCount == 0)
             return inCheck ? -MATE_SCORE + ply : 0; // Checkmate or stalemate
@@ -359,14 +684,46 @@ internal class Searcher
 
             // ── Futility pruning ──────────────────────────────────────────
             if (futilityActive && isQuiet && moveCount > 1 && staticEval + futilityMargin <= alpha)
+            {
+                _futilitySkips++;
                 continue;
+            }
 
             // ── Late Move Reductions ──────────────────────────────────────
             int reduction = 0;
-            if (!inCheck && depth >= LMR_MIN_DEPTH && moveCount > LMR_FULL_MOVES && isQuiet)
+            if (_settings.UseLmr
+                && !inCheck && depth >= LMR_MIN_DEPTH && moveCount > _lmrFullMoves && isQuiet)
             {
-                reduction = 1;
-                if (moveCount > 8) reduction = 2;
+                if (_useLegacyFlatLmr)
+                {
+                    // The pre-table schedule, reproduced exactly: depth-independent, and with
+                    // no PV-node relief. Kept verbatim so an A/B run compares against the real
+                    // previous behaviour rather than a re-parameterised version of the new one.
+                    reduction = moveCount > 8 ? 2 : 1;
+                    reduction = Math.Clamp(reduction, 0, depth - 2);
+                }
+                else
+                {
+                    reduction = _lmrTable[Math.Min(depth, MAX_PLY - 1),
+                                          Math.Min(moveCount, LMR_MAX_MOVES - 1)];
+
+                    // PV nodes carry the principal variation; reduce them one ply less so the
+                    // main line keeps its accuracy while the rest of the tree is cut harder.
+                    if (pvNode) reduction--;
+
+                    // Leave at least one real ply below the reduction: the null-window probe has
+                    // to be a search, not a jump straight into quiescence, or the full-depth
+                    // re-search that recovers accuracy is never triggered.
+                    reduction = Math.Clamp(reduction, 0, depth - 2);
+                }
+
+                if (reduction > 0)
+                {
+                    _lmrReductions++;
+                    _lmrPliesSaved += reduction;
+                    _lmrByDepth[Math.Min(depth, SearchResult.LmrBucketCount - 1)]++;
+                    _lmrByMoveNumber[Math.Min(moveCount, SearchResult.LmrBucketCount - 1)]++;
+                }
             }
 
             // Record for counter-move heuristic (child nodes read _lastMoveAtPly[ply])
@@ -385,7 +742,10 @@ internal class Searcher
                 score = -NegamaxSearch(ply + 1, depth - 1 - reduction, -alpha - 1, -alpha);
                 // If it raised alpha, re-search at full depth
                 if (!_cancelRequested && score > alpha)
+                {
+                    _lmrReSearches++;
                     score = -NegamaxSearch(ply + 1, depth - 1, -beta, -alpha);
+                }
             }
             else
             {
@@ -393,12 +753,18 @@ internal class Searcher
                 score = -NegamaxSearch(ply + 1, depth - 1, -alpha - 1, -alpha);
                 // Re-search with full window if this might be a better move in PV
                 if (!_cancelRequested && score > alpha && score < beta)
+                {
+                    _pvsReSearches++;
                     score = -NegamaxSearch(ply + 1, depth - 1, -beta, -alpha);
+                }
             }
 
             _board.UndoMove();
 
             if (_cancelRequested) return 0;
+
+            // A root move has now fully completed its search at this depth.
+            if (ply == 0) _rootMovesCompleted = moveCount;
 
             if (score > bestScore)
             {
@@ -417,8 +783,23 @@ internal class Searcher
                     alpha   = score;
                     ttFlag2 = TranspositionTable.ScoreFlag.Exact;
 
+                    // Root move that raised alpha: remember it so the iteration is still
+                    // worth something if we run out of time before finishing it.
+                    if (ply == 0)
+                    {
+                        _rootPartialMove     = move;
+                        _rootPartialScore    = score;
+                        _rootPartialPvLength = _pvLength[0];
+                        _rootPartialIsExact  = true;
+                        for (int i = 0; i < _rootPartialPvLength; i++)
+                            _rootPartialPv[i] = _pvTable[0, i];
+                    }
+
                     if (alpha >= beta)
                     {
+                        _betaCutoffs++;
+                        if (moveCount == 1) _betaCutoffsFirstMove++;
+
                         if (isQuiet)
                         {
                             _moveOrdering.RecordKillerMove(move, ply);
@@ -429,6 +810,12 @@ internal class Searcher
                                 _moveOrdering.RecordCounterMove(_lastMoveAtPly[ply - 1], move);
                         }
                         ttFlag2 = TranspositionTable.ScoreFlag.LowerBound;
+
+                        // The root move that just triggered a beta cutoff is only known to be
+                        // *at least* this good against the current aspiration window — the
+                        // window was too narrow to prove an exact value, so the partial
+                        // candidate captured above must be flagged as a bound, not exact.
+                        if (ply == 0) _rootPartialIsExact = false;
                         break;
                     }
                 }
@@ -456,11 +843,29 @@ internal class Searcher
 
         if (_cancelRequested) return 0;
 
+        if (_settings.MaxNodes is long qcap && _nodesSearched + _qnodesSearched > qcap)
+        {
+            _cancelRequested = true;
+            return 0;
+        }
+
+        // Quiescence has to honour the clock too. Without this the only time check is in
+        // NegamaxSearch, so a capture-heavy qsearch entered just after the last check runs
+        // unbounded — measured at 29% over the move budget in tactical positions, which is
+        // a flag risk under a real clock.
+        if ((_qnodesSearched & 2047) == 0 &&
+            (_ct.IsCancellationRequested ||
+             _searchTimer.ElapsedMilliseconds > (_settings.MaxTimeMs ?? 10_000)))
+        {
+            _cancelRequested = true;
+            return 0;
+        }
+
         // Check detection (cached instance – no allocation)
         bool inCheck = _checkDetector.IsInCheck(_board.State.ActiveColor);
 
         // Stand-pat evaluation (only valid when not in check)
-        int standPat = _evaluator.EvaluateFast(_board);
+        int standPat = EvaluateStatic();
 
         if (!inCheck)
         {
@@ -482,6 +887,7 @@ internal class Searcher
         if (inCheck)
         {
             _moveGen.GenerateLegalMovesInto(moves, out count);
+            _movesGenerated += count;
 
             if (count == 0)
                 return -MATE_SCORE + ply; // Checkmated — no legal evasions
@@ -489,6 +895,7 @@ internal class Searcher
         else
         {
             _moveGen.GenerateLegalTacticalMovesInto(moves, out count);
+            _movesGenerated += count;
 
             if (count == 0)
                 return standPat; // No captures/promotions left to consider
