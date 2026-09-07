@@ -138,6 +138,24 @@ public class SearchSettings
     public bool UseThreatEval { get; set; } = true;
 
     /// <summary>
+    /// Derive the opening-development term's weight from the material on the board instead of
+    /// from the move number.
+    ///
+    /// The move-number form makes the evaluation depend on something the position does not
+    /// contain. The Zobrist hash carries no move number, so transposition entries hold scores
+    /// that were only valid at the move number they were stored at; inside a tree that crosses
+    /// move 20 the score improves by up to 100 cp purely because plies elapsed, which pays the
+    /// engine to shuffle rather than develop; and the same position reached by a longer route
+    /// evaluates differently from itself.
+    ///
+    /// The phase form scales the term by the 24-point material phase, so it fades out smoothly
+    /// and depends only on the position.
+    ///
+    /// Defaults to false (current behaviour); the default only changes if a measurement says so.
+    /// </summary>
+    public bool UseGamePhaseDevelopment { get; set; }
+
+    /// <summary>
     /// Invoked once per *completed* iterative-deepening iteration — never per node — so a
     /// protocol layer (UCI "info depth ...") can report progress without the search having to
     /// know that a protocol exists. Null by default: no callback, no cost, and the search tree
