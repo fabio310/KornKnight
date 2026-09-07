@@ -34,10 +34,16 @@ internal class Evaluator
     /// It must be passed identically to <see cref="Evaluate"/> and <see cref="EvaluateFast"/>,
     /// which are required to return the same score for the same position.
     /// </param>
-    public int Evaluate(Board board, bool useThreatEval = true)
+    /// <param name="useGamePhaseDevelopment">
+    /// Scale the opening-development term by the material game phase instead of gating it on the
+    /// move number (see <see cref="EvaluateOpeningDevelopment"/>). Defaults to false, which is
+    /// the current behaviour.
+    /// </param>
+    public int Evaluate(Board board, bool useThreatEval = true, bool useGamePhaseDevelopment = false)
     {
         int score = 0;
         int totalMaterial = 0;
+        int phase = 0;
 
         // Single-pass over all pieces: material + PST + pawn file counts
         Span<int> whitePawnFiles = stackalloc int[8];
@@ -47,6 +53,12 @@ internal class Evaluator
         for (int i = 0; i < pieceCount; i++)
         {
             var (square, piece) = _pieceBuffer[i];
+
+            // Phase counts every piece, so it accumulates before the king is skipped — the same
+            // definition the Board's incremental accumulator maintains, which is what lets
+            // EvaluateFast reproduce this score exactly.
+            phase += GamePhase.WeightFor(piece.Type);
+
             if (piece.Type == PieceType.King) continue;
 
             int matVal = piece.Type.MaterialValue();
@@ -75,7 +87,7 @@ internal class Evaluator
             score += EvaluateThreats(board, pieceCount);
 
         // Opening development and king safety
-        score += EvaluateOpeningDevelopment(board);
+        score += EvaluateOpeningDevelopment(board, useGamePhaseDevelopment, phase);
 
         // King safety (endgame centralization)
         if (totalMaterial < 1000)
@@ -96,7 +108,8 @@ internal class Evaluator
     /// </summary>
     /// <param name="board">Position to evaluate.</param>
     /// <param name="useThreatEval">See <see cref="Evaluate"/>; must match what that call is given.</param>
-    public int EvaluateFast(Board board, bool useThreatEval = true)
+    /// <param name="useGamePhaseDevelopment">See <see cref="Evaluate"/>; must match likewise.</param>
+    public int EvaluateFast(Board board, bool useThreatEval = true, bool useGamePhaseDevelopment = false)
     {
         // Only the threat pass needs the piece list; with the term off, the whole board scan
         // goes away too, which is most of what disabling it saves.
@@ -112,8 +125,9 @@ internal class Evaluator
         if (useThreatEval)
             score += EvaluateThreats(board, pieceCount);
 
-        // Opening development and king safety
-        score += EvaluateOpeningDevelopment(board);
+        // Opening development and king safety. The phase comes from the Board's incremental
+        // accumulator rather than a scan — the same quantity Evaluate() sums piece by piece.
+        score += EvaluateOpeningDevelopment(board, useGamePhaseDevelopment, board.IncrementalPhase);
 
         // King safety (endgame centralization)
         if (board.IncrementalTotalMaterial < 1000)
@@ -212,17 +226,34 @@ internal class Evaluator
         => PieceSquareTables.Value(piece.Color, piece.Type, square);
 
     /// <summary>
-    /// Evaluates opening-phase development quality (moves 1–20):
+    /// Evaluates development quality:
     ///   • Penalises minor pieces still on their home squares (encourages developing ALL pieces)
-    ///   • Penalises the king lingering in the centre after move 10 (encourages castling)
+    ///   • Penalises the king lingering in the centre (encourages castling)
     ///
     /// The evaluation is symmetric: equal positions score 0.
     /// Penalties are intentionally mild so that tactical play still dominates.
+    ///
+    /// Two ways of deciding how much the term applies:
+    ///
+    /// <paramref name="useGamePhase"/> = false is the original rule — full value to move 20,
+    /// nothing after, with the king penalty switched on at move 10. That makes the evaluation a
+    /// function of the move number as well as the position, which is wrong in three ways. The
+    /// Zobrist hash does not include the move number, so a transposition entry carries a score
+    /// that was only valid at the move number it was stored at. Inside a search tree that
+    /// crosses move 20 the score jumps by up to 100 cp because plies elapsed, which rewards
+    /// shuffling over developing. And the same position, reached by a longer route, evaluates
+    /// differently from itself.
+    ///
+    /// <paramref name="useGamePhase"/> = true scales the whole term by the material phase
+    /// instead: full weight with the starting array on the board, fading smoothly to nothing as
+    /// pieces come off. It depends only on the position, so it survives a transposition and
+    /// cannot change as a search descends.
     /// </summary>
-    private static int EvaluateOpeningDevelopment(Board board)
+    /// <param name="phase">The position's 24-point material phase (see <see cref="GamePhase"/>).</param>
+    private static int EvaluateOpeningDevelopment(Board board, bool useGamePhase, int phase)
     {
-        int moveNum = board.State.FullmoveNumber;
-        if (moveNum > 20) return 0;
+        // The legacy rule switches the term off entirely after move 20.
+        if (!useGamePhase && board.State.FullmoveNumber > 20) return 0;
 
         int score = 0;
 
@@ -252,8 +283,12 @@ internal class Evaluator
         if (bc8.Color == Color.Black && bc8.Type == PieceType.Bishop) score += 20;
         if (bf8.Color == Color.Black && bf8.Type == PieceType.Bishop) score += 20;
 
-        // — King safety: penalise uncastled king in the centre after move 10 —
-        if (moveNum >= 10)
+        // — King safety: penalise an uncastled king in the centre —
+        // The legacy rule waits until move 10 to give the engine time to castle first. Under the
+        // phase rule there is nothing to wait for: material barely changes in ten moves, so no
+        // phase threshold could reproduce that gate. The penalty simply applies while there is
+        // still an army on the board to be afraid of, and fades with it.
+        if (useGamePhase || board.State.FullmoveNumber >= 10)
         {
             Square wKing = board.GetKingPosition(Color.White);
             Square bKing = board.GetKingPosition(Color.Black);
@@ -263,7 +298,7 @@ internal class Evaluator
             if (bKing.File == 4 && bKing.Rank == 7) score += 40;
         }
 
-        return score;
+        return useGamePhase ? GamePhase.ScaleByOpening(score, phase) : score;
     }
 
     /// <summary>

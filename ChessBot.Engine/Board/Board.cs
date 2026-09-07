@@ -25,6 +25,7 @@ internal readonly struct UndoState
     public readonly int EvalMaterial;
     public readonly int EvalPst;
     public readonly int EvalTotalMaterial;
+    public readonly int EvalPhase;
 
     public UndoState(
         Move move,
@@ -37,7 +38,8 @@ internal readonly struct UndoState
         ulong hash,
         int evalMaterial,
         int evalPst,
-        int evalTotalMaterial)
+        int evalTotalMaterial,
+        int evalPhase)
     {
         Move = move;
         MovingPiece = movingPiece;
@@ -50,6 +52,7 @@ internal readonly struct UndoState
         EvalMaterial = evalMaterial;
         EvalPst = evalPst;
         EvalTotalMaterial = evalTotalMaterial;
+        EvalPhase = evalPhase;
     }
 }
 
@@ -131,6 +134,7 @@ public class Board
     private int _evalMaterial;        // Σ sign * MaterialValue over non-king pieces (White +, Black -)
     private int _evalPst;             // Σ sign * PST[rank][file] over non-king pieces
     private int _evalTotalMaterial;   // Σ MaterialValue over non-king pieces (unsigned)
+    private int _evalPhase;           // Σ GamePhase.WeightFor over all pieces (24 at the start)
     private readonly int[] _whitePawnFiles = new int[8];
     private readonly int[] _blackPawnFiles = new int[8];
 
@@ -142,6 +146,13 @@ public class Board
 
     /// <summary>Total (unsigned) non-king material on the board, used for the endgame phase test.</summary>
     internal int IncrementalTotalMaterial => _evalTotalMaterial;
+
+    /// <summary>
+    /// The 24-point material game phase (see <see cref="GamePhase"/>), maintained incrementally
+    /// so a phase-dependent evaluation term costs nothing per node. Can exceed 24 after
+    /// promotions; consumers clamp it.
+    /// </summary>
+    internal int IncrementalPhase => _evalPhase;
 
     /// <summary>Per-file White pawn counts (index 0 = a-file), maintained incrementally.</summary>
     internal ReadOnlySpan<int> WhitePawnFileCounts => _whitePawnFiles;
@@ -308,6 +319,11 @@ public class Board
     /// </summary>
     private void AddPieceEval(Color color, PieceType type, Square square)
     {
+        // Phase counts every piece type that gets traded off, so it is maintained before the
+        // king early-out below (kings weigh nothing, so including them would be harmless, but
+        // the accumulator's definition is "all pieces" and it should read that way).
+        _evalPhase += GamePhase.WeightFor(type);
+
         if (type == PieceType.King) return;
 
         int sign = color == Color.White ? 1 : -1;
@@ -328,6 +344,8 @@ public class Board
     /// </summary>
     private void RemovePieceEval(Color color, PieceType type, Square square)
     {
+        _evalPhase -= GamePhase.WeightFor(type);
+
         if (type == PieceType.King) return;
 
         int sign = color == Color.White ? 1 : -1;
@@ -354,6 +372,7 @@ public class Board
         _evalMaterial = 0;
         _evalPst = 0;
         _evalTotalMaterial = 0;
+        _evalPhase = 0;
         Array.Clear(_whitePawnFiles, 0, 8);
         Array.Clear(_blackPawnFiles, 0, 8);
 
@@ -486,7 +505,7 @@ public class Board
         // Snapshot everything needed to reverse this move before mutating the board.
         PushHistory(new UndoState(
             move, movingPiece, capturedPiece, capturedSquare, rookFrom, rookTo,
-            preMoveState, preHash, _evalMaterial, _evalPst, _evalTotalMaterial));
+            preMoveState, preHash, _evalMaterial, _evalPst, _evalTotalMaterial, _evalPhase));
 
         // ── Apply piece movement through the single mutation path ──
         RemovePiece(move.From);
@@ -630,6 +649,7 @@ public class Board
         _evalMaterial = undo.EvalMaterial;
         _evalPst = undo.EvalPst;
         _evalTotalMaterial = undo.EvalTotalMaterial;
+        _evalPhase = undo.EvalPhase;
     }
 
     /// <summary>
@@ -642,7 +662,7 @@ public class Board
         var savedState = _gameState;
         PushHistory(new UndoState(
             default, Piece.Empty, Piece.Empty, default, default, default,
-            savedState, _hash, _evalMaterial, _evalPst, _evalTotalMaterial));
+            savedState, _hash, _evalMaterial, _evalPst, _evalTotalMaterial, _evalPhase));
 
         // Update hash: XOR out old EP (if any), toggle color; castling is unchanged
         if (savedState.EnPassantTarget.Index != 0)
@@ -675,6 +695,7 @@ public class Board
         _evalMaterial = undo.EvalMaterial;
         _evalPst = undo.EvalPst;
         _evalTotalMaterial = undo.EvalTotalMaterial;
+        _evalPhase = undo.EvalPhase;
     }
 
     /// <summary>
@@ -778,6 +799,7 @@ public class Board
         copy._evalMaterial = _evalMaterial;
         copy._evalPst = _evalPst;
         copy._evalTotalMaterial = _evalTotalMaterial;
+        copy._evalPhase = _evalPhase;
         Array.Copy(_whitePawnFiles, copy._whitePawnFiles, 8);
         Array.Copy(_blackPawnFiles, copy._blackPawnFiles, 8);
 
