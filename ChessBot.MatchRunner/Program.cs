@@ -81,21 +81,38 @@ internal class Program
     /// <summary>
     /// Runs a controlled, no-external-engine A/B comparison. Supported flags:
     ///   --ab-harness             (required to enter this mode)
-    ///   --ab-mode partial-root|lmr   (default: partial-root)
+    ///   --ab-mode partial-root|lmr|threat-eval   (default: partial-root)
     ///   --ab-out &lt;dir&gt;           (default: ab_reports)
     ///   --ab-depth &lt;n&gt;           (default: 8)
     ///   --ab-nodes &lt;n&gt;           (default: 200000)
+    ///   --ab-time &lt;ms&gt;           (time budget per position instead of a node budget)
+    ///   --ab-games &lt;n&gt;           (head-to-head games between the two configurations)
     /// </summary>
     private static int RunAbHarness(string[] args)
     {
         if (args.Contains("--help"))
         {
-            Console.WriteLine("Usage: ChessBot.MatchRunner --ab-harness [--ab-mode partial-root|lmr] [--ab-out <dir>] [--ab-depth <n>] [--ab-nodes <n>]");
+            Console.WriteLine("Usage: ChessBot.MatchRunner --ab-harness [--ab-mode partial-root|lmr|threat-eval] [--ab-out <dir>] [--ab-depth <n>] [--ab-nodes <n>]");
             Console.WriteLine("  --ab-mode   partial-root: baseline vs UsePartialRootResult=true (default)");
             Console.WriteLine("              lmr: legacy flat schedule vs the current logarithmic schedule");
+            Console.WriteLine("              threat-eval: hanging-piece eval term on (A) vs off (B)");
             Console.WriteLine("  --ab-out    Output directory for the report (default: ab_reports)");
             Console.WriteLine("  --ab-depth  Fixed max search depth per position (default: 8)");
             Console.WriteLine("  --ab-nodes  Enforced node budget per position (default: 200000)");
+            Console.WriteLine("  --ab-time   Time budget in ms per position INSTEAD of a node budget. A node");
+            Console.WriteLine("              budget hides the cost of an evaluation change (same nodes, less");
+            Console.WriteLine("              time); only a time budget turns a cheaper evaluation into depth.");
+            Console.WriteLine("  --ab-games  Play N head-to-head games between the two configurations");
+            Console.WriteLine("              (rounded up to an even number: every opening is played twice,");
+            Console.WriteLine("              once with each side as White). 0 = skip (default)");
+            Console.WriteLine("  --ab-game-nodes  Node budget per move in those games (default: 50000)");
+            Console.WriteLine("  --ab-game-ms     Time per move in those games INSTEAD of a node budget.");
+            Console.WriteLine("              Node-budget games isolate decision quality; timed games also");
+            Console.WriteLine("              charge each side for what its evaluation costs to compute.");
+            Console.WriteLine("  --ab-concurrency  Games played in parallel (default: half the logical");
+            Console.WriteLine("              processors). Colour-reversed pairs always run together on one");
+            Console.WriteLine("              worker. Timed games under concurrency compare fairly but at a");
+            Console.WriteLine("              reduced effective node rate; pass 1 to measure at full speed.");
             Console.WriteLine("  --ab-corpus-size  Generate a deterministic corpus of N positions instead of the");
             Console.WriteLine("                    built-in 10-position smoke corpus (needed for any KEEP verdict)");
             Console.WriteLine("  --ab-corpus-seed  Seed for the generated corpus (default: 20260906)");
@@ -111,6 +128,16 @@ internal class Program
         long nodes = long.TryParse(GetArgValue(args, "--ab-nodes"), out long n) ? n : 200_000;
         int corpusSize = int.TryParse(GetArgValue(args, "--ab-corpus-size"), out int cs) ? cs : 0;
         int corpusSeed = int.TryParse(GetArgValue(args, "--ab-corpus-seed"), out int seed) ? seed : 20260906;
+        int? timeMs    = int.TryParse(GetArgValue(args, "--ab-time"), out int tms) ? tms : null;
+        int games      = int.TryParse(GetArgValue(args, "--ab-games"), out int g) ? g : 0;
+        long gameNodes = long.TryParse(GetArgValue(args, "--ab-game-nodes"), out long gn) ? gn : 50_000;
+        int? gameMs    = int.TryParse(GetArgValue(args, "--ab-game-ms"), out int gms) ? gms : null;
+        // Games are independent, so they are played in parallel by default: half the logical
+        // processors, which leaves the machine usable and stays at or below the physical cores
+        // on a typical hyper-threaded CPU.
+        int concurrency = int.TryParse(GetArgValue(args, "--ab-concurrency"), out int cc)
+            ? Math.Max(1, cc)
+            : Math.Max(1, Environment.ProcessorCount / 2);
 
         Directory.CreateDirectory(outDir);
 
@@ -151,6 +178,24 @@ internal class Program
                 reportStem = "ab_report_lmr";
                 break;
 
+            case "threat-eval":
+                // A is the current behaviour, B the change under test, as in the other modes —
+                // so here B is the term switched off, and a KEEP verdict means "remove it".
+                configA = new AbConfig
+                {
+                    Name = "threat-eval-on",
+                    Description = "current behaviour: penalise every attacked, undefended non-pawn piece by half its value",
+                    Build = () => new ChessBot.Engine.Search.SearchSettings { UseThreatEval = true },
+                };
+                configB = new AbConfig
+                {
+                    Name = "threat-eval-off",
+                    Description = "hanging-piece term removed; quiescence alone resolves hanging material",
+                    Build = () => new ChessBot.Engine.Search.SearchSettings { UseThreatEval = false },
+                };
+                reportStem = timeMs is int ? "ab_report_threat_eval_time" : "ab_report_threat_eval";
+                break;
+
             case "partial-root":
             default:
                 mode = "partial-root";
@@ -170,9 +215,29 @@ internal class Program
                 break;
         }
 
-        Console.WriteLine($"Running A/B harness: mode={mode}  depth={depth}  nodeBudget={nodes:N0}  corpus={corpus.Count} ({corpusSource})");
-        var results = AbHarness.Run(configA, configB, corpus, maxDepth: depth, maxNodes: nodes);
+        string budgetLabel = timeMs is int t ? $"timeBudget={t:N0}ms" : $"nodeBudget={nodes:N0}";
+        Console.WriteLine($"Running A/B harness: mode={mode}  depth={depth}  {budgetLabel}  corpus={corpus.Count} ({corpusSource})");
+
+        var results = AbHarness.Run(configA, configB, corpus, maxDepth: depth, maxNodes: nodes, maxTimeMs: timeMs);
         var report = AbHarness.BuildReport(results, mode, depth, nodes, corpusSource);
+        report.TimeBudgetMs = timeMs;
+
+        if (games > 0)
+        {
+            // Openings are played in pairs (both colours), so the count is rounded up to even.
+            int openingCount = (games + 1) / 2;
+            var openings = AbHarness.GenerateOpeningPositions(openingCount, corpusSeed);
+
+            string perMove = gameMs is int gm ? $"{gm} ms/move" : $"{gameNodes:N0} nodes/move";
+            Console.WriteLine($"Playing {openings.Count * 2} head-to-head games at {perMove}, " +
+                              $"{concurrency} at a time...");
+            var h2h = AbHarness.PlayHeadToHead(
+                configA, configB, openings, gameNodes,
+                msPerMove: gameMs, concurrency: concurrency);
+            AbHarness.AttachHeadToHead(report, h2h);
+
+            Console.WriteLine($"  B scored {h2h.ScoreRateB:P1} (+{h2h.WinsB}={h2h.Draws}-{h2h.WinsA})");
+        }
 
         // Reference adjudication of the positions where the two configurations differ. Without
         // it the verdict stays INCONCLUSIVE by design, because nothing else in this harness can
@@ -199,7 +264,8 @@ internal class Program
 
         Console.WriteLine($"A/B reports written to: {textPath}");
         Console.WriteLine($"                        {jsonPath}");
-        Console.WriteLine($"Partial-root verdict: {report.PartialSelectionVerdict}  |  LMR verdict: {report.LmrVerdict}");
+        Console.WriteLine($"Partial-root verdict: {report.PartialSelectionVerdict}  |  LMR verdict: {report.LmrVerdict}" +
+                          $"  |  Threat-eval verdict: {report.ThreatEvalVerdict}");
         return 0;
     }
 

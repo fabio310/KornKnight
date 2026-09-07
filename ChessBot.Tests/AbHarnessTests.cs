@@ -212,6 +212,153 @@ public class AbHarnessTests
         }
     }
 
+    // ── Threat-eval mode, time budgets and head-to-head play ─────────────────
+
+    [Fact]
+    public void Run_ThreatEvalOnVsOff_ActuallyChangesTheSearch()
+    {
+        var on = new AbConfig
+        {
+            Name = "threat-eval-on",
+            Build = () => new SearchSettings { UseThreatEval = true },
+        };
+        var off = new AbConfig
+        {
+            Name = "threat-eval-off",
+            Build = () => new SearchSettings { UseThreatEval = false },
+        };
+
+        var corpus = AbHarness.GenerateCorpus(20, seed: 4242);
+        var results = AbHarness.Run(on, off, corpus, maxDepth: 6, maxNodes: 30_000);
+
+        Assert.Equal("True",  results[0].EffectiveSettings["UseThreatEval"]);
+        Assert.Equal("False", results[1].EffectiveSettings["UseThreatEval"]);
+
+        // If the two configurations produced identical evaluations everywhere, the flag is not
+        // reaching the search and the whole comparison would be vacuous.
+        var report = AbHarness.BuildReport(results, "threat-eval", 6, 30_000, "test corpus");
+        Assert.True(report.EvaluationAgreementRate < 1.0,
+            "disabling the threat term changed no evaluation on any position");
+    }
+
+    [Fact]
+    public void Run_TimeBudget_LetsTheNodeCountVaryInsteadOfCappingIt()
+    {
+        var cfg = new AbConfig { Name = "cfg", Build = () => new SearchSettings() };
+
+        var results = AbHarness.Run(cfg, cfg, TinyCorpus, maxDepth: 6, maxNodes: 1_000, maxTimeMs: 200);
+
+        // The node cap must not apply: with maxNodes=1000 in force, a node-budget run would stop
+        // there, and the time-budget run's whole purpose is that nodes are an outcome.
+        Assert.True(results[0].TotalNodes > 1_000,
+            $"time-budget run stopped at {results[0].TotalNodes} nodes, as if the node cap applied");
+        Assert.Equal(0, results[0].NodeBudgetReachedCount);
+    }
+
+    [Fact]
+    public void NodesPerSecond_IsTotalNodesOverTotalTime()
+    {
+        var cfg = new AbConfig { Name = "cfg", Build = () => new SearchSettings() };
+        var result = AbHarness.Run(cfg, cfg, TinyCorpus, maxDepth: 6, maxNodes: 50_000)[0];
+
+        double expected = result.TotalNodes / (result.TotalElapsedMs / 1000.0);
+        Assert.Equal(expected, result.NodesPerSecond, 3);
+    }
+
+    [Fact]
+    public void GenerateOpeningPositions_AreDeterministicBalancedAndPlayable()
+    {
+        var a = AbHarness.GenerateOpeningPositions(6, seed: 777);
+        var b = AbHarness.GenerateOpeningPositions(6, seed: 777);
+
+        Assert.Equal(6, a.Count);
+        Assert.Equal(a, b);
+        Assert.Equal(a.Count, a.Distinct().Count());
+
+        foreach (string fen in a)
+        {
+            var engine = new ChessEngine();
+            engine.LoadFen(fen);
+
+            // A game start where one side is already a piece up measures the opening, not the
+            // change under test.
+            Assert.Equal(0, engine.Evaluate().MaterialBalance.Imbalance);
+            Assert.NotEmpty(engine.GetLegalMoves());
+        }
+    }
+
+    [Fact]
+    public void PlayHeadToHead_PlaysEveryOpeningWithBothColoursAndAccountsForEveryGame()
+    {
+        var cfg = new AbConfig { Name = "cfg", Build = () => new SearchSettings() };
+        var openings = AbHarness.GenerateOpeningPositions(2, seed: 31337);
+
+        var h2h = AbHarness.PlayHeadToHead(cfg, cfg, openings, nodesPerMove: 2_000, maxPlies: 40);
+
+        Assert.Equal(openings.Count * 2, h2h.Games);
+        Assert.Equal(h2h.Games, h2h.WinsA + h2h.WinsB + h2h.Draws);
+        Assert.Equal(h2h.Games, h2h.TerminationReasons.Count);
+        Assert.All(h2h.TerminationReasons, r => Assert.NotEqual("cancelled", r));
+    }
+
+    [Fact]
+    public void HeadToHead_ScoreRateAndSignificance_ReflectTheResult()
+    {
+        var even = new AbHeadToHeadResult { Games = 100, WinsB = 25, WinsA = 25, Draws = 50 };
+        Assert.Equal(0.5, even.ScoreRateB);
+        Assert.False(even.IsSignificant);
+        Assert.Equal(0, even.EloDifference!.Value, 6);
+
+        // A small edge over few games must not read as evidence.
+        var slightEdge = new AbHeadToHeadResult { Games = 100, WinsB = 30, WinsA = 26, Draws = 44 };
+        Assert.True(slightEdge.ScoreRateB > 0.5);
+        Assert.False(slightEdge.IsSignificant);
+
+        var decisive = new AbHeadToHeadResult { Games = 200, WinsB = 120, WinsA = 40, Draws = 40 };
+        Assert.True(decisive.IsSignificant);
+        Assert.True(decisive.EloDifference > 0);
+
+        // A clean sweep has no finite logistic estimate; reporting one would be an invention.
+        var sweep = new AbHeadToHeadResult { Games = 10, WinsB = 10 };
+        Assert.Null(sweep.EloDifference);
+        Assert.Null(sweep.EloMarginOfError);
+    }
+
+    [Fact]
+    public void ThreatEvalVerdict_NeedsGamesOrAdjudication()
+    {
+        var cfg = new AbConfig { Name = "cfg", Build = () => new SearchSettings() };
+        var results = AbHarness.Run(cfg, cfg, TinyCorpus, maxDepth: 4, maxNodes: 20_000);
+        var report = AbHarness.BuildReport(results, "threat-eval", 4, 20_000, "test corpus");
+
+        // Node rate and depth show what the term costs, never whether removing it wins.
+        Assert.Equal(AbVerdict.Inconclusive, report.ThreatEvalVerdict);
+
+        // An inconclusive game result must stay inconclusive rather than being read as a win.
+        AbHarness.AttachHeadToHead(report, new AbHeadToHeadResult
+        {
+            Games = 20, WinsB = 11, WinsA = 9, Draws = 0, NodesPerMove = 1_000,
+        });
+        Assert.Equal(AbVerdict.Inconclusive, report.ThreatEvalVerdict);
+
+        AbHarness.AttachHeadToHead(report, new AbHeadToHeadResult
+        {
+            Games = 400, WinsB = 240, WinsA = 80, Draws = 80, NodesPerMove = 1_000,
+        });
+        Assert.Equal(AbVerdict.Keep, report.ThreatEvalVerdict);
+    }
+
+    [Fact]
+    public void ThreatEvalVerdict_IsInconclusiveInOtherModes()
+    {
+        var cfg = new AbConfig { Name = "cfg", Build = () => new SearchSettings() };
+        var results = AbHarness.Run(cfg, cfg, TinyCorpus, maxDepth: 4, maxNodes: 20_000);
+        var report = AbHarness.BuildReport(results, "lmr", 4, 20_000, "test corpus");
+
+        Assert.Equal(AbVerdict.Inconclusive, report.ThreatEvalVerdict);
+        Assert.Contains("not compared", report.ThreatEvalRationale);
+    }
+
     [Fact]
     public void GenerateCorpus_IsDeterministicAndDistinct()
     {

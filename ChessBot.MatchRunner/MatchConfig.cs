@@ -61,6 +61,19 @@ public class MatchConfig
     /// scoring the same position differently, not a measured centipawn loss and not a confirmed
     /// mistake; real move loss comes from the reference-engine analysis.
     /// </summary>
+    /// <summary>
+    /// How many games of the match are played at the same time. Games are independent — each
+    /// runs its own opponent process and its own engine — so this is close to a linear speed-up
+    /// on a multi-core machine.
+    ///
+    /// Defaults to 1 because the games are timed: every concurrent game takes CPU from the
+    /// others, so both engines search fewer nodes per millisecond than they would alone. That
+    /// is a fair comparison (both sides are slowed) but it is not a measurement at the machine's
+    /// full speed, and a strength number carries that qualification. Raise it deliberately, and
+    /// keep it at or below the physical core count.
+    /// </summary>
+    public int Concurrency { get; set; } = 1;
+
     public int DisagreementThresholdCp { get; set; } = 200;
 
     /// <summary>Compatibility alias for <see cref="DisagreementThresholdCp"/>.</summary>
@@ -161,6 +174,8 @@ public class MatchConfig
             : string.Join(", ", ReferenceEngineOptions.Select(o => $"{o.Name}={o.Value}")),
         ["MoveLossMaxRetries"]    = MoveLossMaxRetries.ToString(),
         ["UsePartialRootResult"]  = UsePartialRootResult.ToString(),
+        // Recorded because it qualifies every timing-derived number in the run.
+        ["Concurrency"]           = Concurrency.ToString(),
         ["Verbose"]               = Verbose.ToString(),
     };
 
@@ -199,6 +214,9 @@ public class MatchConfig
                     break;
                 case "--time" when i + 1 < args.Length:
                     if (int.TryParse(args[++i], out int ms)) cfg.MoveTimeMs = ms;
+                    break;
+                case "--concurrency" when i + 1 < args.Length:
+                    if (int.TryParse(args[++i], out int cc)) cfg.Concurrency = Math.Max(1, cc);
                     break;
                 case "--games" when i + 1 < args.Length:
                     if (int.TryParse(args[++i], out int g))
