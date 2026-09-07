@@ -17,7 +17,7 @@ namespace ChessBot.EloEvaluator.Parsing;
 /// </summary>
 public static class LogFileParser
 {
-    private enum Section { None, Header, Stats, MoveList, CurrentMove, BlunderAnalysis, RegressionFens }
+    private enum Section { None, Header, Stats, MoveList, CurrentMove, DisagreementAnalysis, RegressionFens }
 
     // ── Temporary move fields ────────────────────────────────────────────────
     private struct MoveBuf
@@ -79,11 +79,12 @@ public static class LogFileParser
                 section = Section.MoveList;
                 continue;
             }
-            if (rawLine.StartsWith("=== Blunder Analysis"))
+            if (rawLine.StartsWith("=== Cross-Engine Evaluation Disagreement Analysis") ||
+                rawLine.StartsWith("=== Blunder Analysis"))
             {
                 FinalizePendingMove(game, ref buf);
-                section = Section.BlunderAnalysis;
-                ParseBlunderAnalysisHeader(rawLine, game);
+                section = Section.DisagreementAnalysis;
+                ParseDisagreementAnalysisHeader(rawLine, game);
                 continue;
             }
             if (rawLine.StartsWith("=== Regression FENs ==="))
@@ -225,9 +226,11 @@ public static class LogFileParser
         switch (label)
         {
             case "Avg depth":
+            case "Avg depth (non-mate)":
                 if (TryParseDouble(cbVal, out double ad)) game.CbAvgDepth = ad;
                 break;
             case "Avg seldepth":
+            case "Avg seldepth (non-mate)":
                 if (TryParseDouble(cbVal, out double asd)) game.CbAvgSelDepth = asd;
                 break;
             case "Avg nodes / move":
@@ -246,12 +249,13 @@ public static class LogFileParser
                 if (TryParseLong(cbVal, out long pn)) game.CbPeakNps = pn;
                 break;
             case "Blunders detected":
-                // Use this if the blunder analysis header hasn't set it yet
-                if (game.BlundersDetected == 0 && int.TryParse(cbVal, out int bd))
-                    game.BlundersDetected = bd;
+            case "Cross-engine eval disagreements":
+                // Use this if the disagreement analysis header hasn't set it yet
+                if (game.CrossEngineDisagreementsDetected == 0 && int.TryParse(cbVal, out int bd))
+                    game.CrossEngineDisagreementsDetected = bd;
                 break;
-            // "Avg score (cp)" row writes "+F1"/"-F1" due to a format string bug
-            // in PositionAnalyzer — skip it and derive from per-move data instead.
+            // "Avg score (cp)" / "Avg score (cp, non-mate)" rows write "+F1"/"-F1" due to a
+            // format string bug in PositionAnalyzer — skip it and derive from per-move data instead.
         }
     }
 
@@ -376,18 +380,21 @@ public static class LogFileParser
         }
     }
 
-    // ── Blunder analysis header ───────────────────────────────────────────────
-    private static void ParseBlunderAnalysisHeader(string line, ParsedGame game)
+    // ── Cross-engine evaluation disagreement analysis header ─────────────────
+    // Accepts both the current "=== Cross-Engine Evaluation Disagreement Analysis ===" label
+    // and the legacy "=== Blunder Analysis ===" label from older logs.
+    private static void ParseDisagreementAnalysisHeader(string line, ParsedGame game)
     {
-        if (line.Contains("no blunders", StringComparison.OrdinalIgnoreCase))
+        if (line.Contains("none detected", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("no blunders", StringComparison.OrdinalIgnoreCase))
         {
-            game.BlundersDetected = 0;
+            game.CrossEngineDisagreementsDetected = 0;
         }
         else
         {
-            var m = Regex.Match(line, @"\((\d+)\s+blunder");
+            var m = Regex.Match(line, @"\((\d+)\s+(?:found|blunder)");
             if (m.Success && int.TryParse(m.Groups[1].Value, out int bc))
-                game.BlundersDetected = bc;
+                game.CrossEngineDisagreementsDetected = bc;
         }
     }
 

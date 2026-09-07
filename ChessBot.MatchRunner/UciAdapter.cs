@@ -14,6 +14,7 @@ public sealed class UciAdapter : IDisposable
     private StreamWriter? _stdin;
     private StreamReader? _stdout;
     private bool _disposed;
+    private readonly List<string> _handshakeLines = new();
 
     public string EngineName { get; private set; } = "Unknown";
     public bool IsRunning => _process is { HasExited: false };
@@ -62,6 +63,17 @@ public sealed class UciAdapter : IDisposable
     }
 
     /// <summary>
+    /// Sends "isready" and waits for "readyok" — used to make sure the engine has
+    /// processed pending commands (e.g. setoption) before the next search.
+    /// </summary>
+    public async Task SyncAsync(int timeoutMs = 5000, CancellationToken ct = default)
+    {
+        EnsureRunning();
+        await SendAsync("isready");
+        await WaitForAsync("readyok", timeoutMs, ct);
+    }
+
+    /// <summary>
     /// Asks the engine for the best move from the given FEN with move list applied,
     /// using a fixed move-time budget.
     /// Returns the best move in UCI format (e.g., "e2e4", "e7e8q") and any info lines.
@@ -84,6 +96,57 @@ public sealed class UciAdapter : IDisposable
 
         return await ReadUntilBestMoveAsync(timeoutMs: moveTimeMs + 5000, ct);
     }
+
+    /// <summary>
+    /// Analyses a position to a fixed depth and returns the engine's score for it.
+    ///
+    /// <paramref name="restrictToMove"/> maps to UCI "searchmoves": when set, the engine is
+    /// forced to search only that root move, so its score is the value of *that* move rather
+    /// than of the position. Analysing the same position twice — once unrestricted, once
+    /// restricted to the move actually played — yields both sides of a move-loss measurement
+    /// from one pre-move position, on one engine, on one scale.
+    ///
+    /// <paramref name="moveHistory"/>, when supplied together with <paramref name="fen"/> as the
+    /// *initial* position, reconstructs the position via "position fen &lt;fen&gt; moves ..."
+    /// instead of "position fen &lt;fen-at-this-ply&gt;" directly. A standalone FEN has no
+    /// repetition history (the board state before any single position does not record how many
+    /// times that position was reached before), so an engine analysing a bare mid-game FEN can
+    /// never correctly detect or avoid a repetition draw that the actual game history would show.
+    ///
+    /// Clears the hash first so that a fixed depth gives a reproducible score independent of
+    /// what was analysed before.
+    /// </summary>
+    public async Task<UciMoveResult> AnalyzeFenAsync(
+        string fen,
+        int depth,
+        string? restrictToMove = null,
+        CancellationToken ct = default,
+        IReadOnlyList<string>? moveHistory = null)
+    {
+        EnsureRunning();
+
+        await SendAsync("ucinewgame");
+        await SyncAsync(ct: ct);
+
+        string posCmd = moveHistory is { Count: > 0 }
+            ? $"position fen {fen} moves {string.Join(' ', moveHistory)}"
+            : $"position fen {fen}";
+        await SendAsync(posCmd);
+
+        string go = $"go depth {depth}";
+        if (!string.IsNullOrWhiteSpace(restrictToMove))
+            go += $" searchmoves {restrictToMove}";
+
+        await SendAsync(go);
+
+        return await ReadUntilBestMoveAsync(timeoutMs: 120_000, ct);
+    }
+
+    /// <summary>
+    /// Returns the engine's reported id/option lines from the handshake, so an analysis run
+    /// can record the exact configuration it used instead of describing it loosely.
+    /// </summary>
+    public IReadOnlyList<string> HandshakeLines => _handshakeLines;
 
     /// <summary>
     /// Sends the "ucinewgame" command to reset engine state between games.
@@ -118,6 +181,13 @@ public sealed class UciAdapter : IDisposable
             // Capture engine name from "id name ..."
             if (line.StartsWith("id name ", StringComparison.OrdinalIgnoreCase))
                 EngineName = line[8..].Trim();
+
+            // Keep id/option/info-string lines so a run can record the engine's actual
+            // reported configuration (threads, hash, NNUE nets) rather than asserting it.
+            if (line.StartsWith("id ", StringComparison.OrdinalIgnoreCase) ||
+                line.StartsWith("option name ", StringComparison.OrdinalIgnoreCase) ||
+                line.StartsWith("info string ", StringComparison.OrdinalIgnoreCase))
+                _handshakeLines.Add(line);
 
             if (line.StartsWith(expectedToken, StringComparison.OrdinalIgnoreCase))
                 return;
@@ -159,12 +229,27 @@ public sealed class UciAdapter : IDisposable
         throw new TimeoutException($"Engine did not return 'bestmove' within {timeoutMs}ms.");
     }
 
-    private static void ParseInfoLine(string line, UciMoveResult result)
+    /// <summary>Internal for testing: UCI info-line parsing including score-state reset.</summary>
+    internal static void ParseInfoLine(string line, UciMoveResult result)
     {
         // Parses every token defined by the UCI protocol:
         // depth seldepth multipv score(cp/mate/lowerbound/upperbound)
         // nodes nps hashfull tbhits time currmove currmovenumber pv
+        //
+        // Every "info" line that carries a "score" token is a *complete* new score report —
+        // it fully replaces whatever score was reported by an earlier line, it is never a
+        // partial update. Without resetting ScoreMate/ScoreBound before parsing, a mate score
+        // or a lowerbound/upperbound qualifier from an earlier (shallower) iteration would
+        // silently persist onto a later line that reports a plain exact centipawn score,
+        // corrupting the final result with a stale mate flag or stale bound.
         var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (Array.IndexOf(parts, "score") >= 0)
+        {
+            result.ScoreCp    = 0;
+            result.ScoreMate  = null;
+            result.ScoreBound = "exact";
+        }
+
         for (int i = 0; i < parts.Length; i++)
         {
             switch (parts[i])

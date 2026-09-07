@@ -58,7 +58,7 @@ public sealed class ReportWriter
     {
         using var w = new StreamWriter(path, false, Encoding.UTF8);
         w.WriteLine("GameNumber,SourceFile,ChessBotColor,Result,Outcome," +
-                    "Termination,TotalPlies,AvgDepth,AvgNps,PeakNps,Blunders,IsValid,Date");
+                    "Termination,TotalPlies,AvgDepth,AvgNps,PeakNps,CrossEngineDisagreements,IsValid,Date");
 
         foreach (var g in report.Games)
         {
@@ -74,7 +74,7 @@ public sealed class ReportWriter
                 g.AvgDepth?.ToString("F1")  ?? "",
                 g.AvgNps?.ToString("F0")    ?? "",
                 g.PeakNps?.ToString("F0")   ?? "",
-                g.Blunders,
+                g.CrossEngineDisagreements,
                 g.IsValid,
                 g.Date?.ToString("yyyy-MM-dd") ?? ""));
         }
@@ -169,13 +169,14 @@ public sealed class ReportWriter
         WritePhaseRow(w, report.Endgame);
         w.WriteLine();
 
-        // ── Blunder stats ─────────────────────────────────────────────────────
-        w.WriteLine("── Blunder Stats ────────────────────────────────────────────────");
-        var bs = report.BlunderStats;
-        w.WriteLine($"  Total blunders      : {bs.TotalBlunders}");
-        w.WriteLine($"  ChessBot moves total: {bs.TotalChessBotMoves}");
-        w.WriteLine($"  Blunder rate        : {bs.BlunderRate:F2} per 10 moves");
-        w.WriteLine($"  Games with blunders : {bs.GamesWithBlunders}");
+        // ── Cross-engine evaluation disagreement stats ──────────────────────────
+        w.WriteLine("── Cross-Engine Evaluation Disagreement Stats ──────────────────────");
+        w.WriteLine("    NOTE: not a blunder / centipawn-loss measurement (see MoveLossAnalyzer output).");
+        var bs = report.CrossEngineDisagreementStats;
+        w.WriteLine($"  Total disagreements     : {bs.TotalDisagreements}");
+        w.WriteLine($"  ChessBot moves total    : {bs.TotalChessBotMoves}");
+        w.WriteLine($"  Disagreement rate       : {bs.DisagreementRate:F2} per 10 moves");
+        w.WriteLine($"  Games with disagreements: {bs.GamesWithDisagreements}");
         w.WriteLine();
 
         // ── Validation issues ─────────────────────────────────────────────────
@@ -190,7 +191,7 @@ public sealed class ReportWriter
         // ── Per-game summary table ────────────────────────────────────────────
         w.WriteLine("── Per-Game Summary ─────────────────────────────────────────────");
         w.WriteLine($"  {"#",-4} {"Color",-6} {"Result",-8} {"Outcome",-14} {"Plies",-6} " +
-                    $"{"Depth",-7} {"NPS",-10} {"Blndrs",-7} {"Valid",-6} Date");
+                    $"{"Depth",-7} {"NPS",-10} {"Disagr",-7} {"Valid",-6} Date");
         w.WriteLine(new string('-', 88));
 
         foreach (var g in report.Games)
@@ -199,7 +200,7 @@ public sealed class ReportWriter
             string nps = g.AvgNps.HasValue   ? g.AvgNps.Value.ToString("N0")   : "n/a";
             w.WriteLine(
                 $"  {g.GameNumber,-4} {g.ChessBotColor,-6} {g.Result,-8} {g.Outcome,-14} " +
-                $"{g.TotalPlies,-6} {dep,-7} {nps,-10} {g.Blunders,-7} " +
+                $"{g.TotalPlies,-6} {dep,-7} {nps,-10} {g.CrossEngineDisagreements,-7} " +
                 $"{(g.IsValid ? "ok" : "ERR"),-6} {g.Date?.ToString("yyyy-MM-dd") ?? ""}");
         }
         w.WriteLine();
@@ -228,6 +229,6 @@ public sealed class ReportWriter
         w.WriteLine(
             $"  {ps.PhaseName,-12}: {ps.MoveCount,4} moves  " +
             $"depth={ps.AvgDepth:F1}  NPS={ps.AvgNps:N0}  " +
-            $"blunders={ps.Blunders} ({ps.BlunderRate:F2}/10)");
+            $"cross-engine disagreements={ps.CrossEngineDisagreements} ({ps.CrossEngineDisagreementRate:F2}/10)");
     }
 }

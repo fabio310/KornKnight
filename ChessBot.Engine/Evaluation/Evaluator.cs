@@ -14,6 +14,7 @@ internal class Evaluator
     // is always paired 1:1 with a single, persistent Board instance for its lifetime, so it is
     // safe to lazily bind this once instead of allocating a new CheckDetector on every node.
     private CheckDetector? _threatDetector;
+    private Board?         _threatDetectorBoard;
 
     // Reusable buffer for Board.GetAllPiecesInto — avoids the per-call heap allocation that
     // Board.GetAllPieces() incurs (it's a `yield return` iterator, so every invocation
@@ -25,10 +26,34 @@ internal class Evaluator
     /// Evaluates the current position statically (without search).
     /// Positive score favors White; negative favors Black.
     /// </summary>
-    public int Evaluate(Board board)
+    /// <param name="board">Position to evaluate.</param>
+    /// <param name="useThreatEval">
+    /// Include the hanging-piece term (see <see cref="EvaluateThreats"/>). Defaults to true so
+    /// that every existing caller keeps the behaviour it had; the search passes
+    /// <c>SearchSettings.UseThreatEval</c> so the term can be measured rather than assumed.
+    /// It must be passed identically to <see cref="Evaluate"/> and <see cref="EvaluateFast"/>,
+    /// which are required to return the same score for the same position.
+    /// </param>
+    /// <param name="useGamePhaseDevelopment">
+    /// Scale the opening-development term by the material game phase instead of gating it on the
+    /// move number (see <see cref="EvaluateOpeningDevelopment"/>). Defaults to false, which is
+    /// the current behaviour.
+    /// </param>
+    /// <param name="useTaperedEval">
+    /// Blend separate midgame and endgame material values and piece-square tables on the game
+    /// phase, instead of using one set for the whole game. Defaults to false (current behaviour).
+    /// </param>
+    public int Evaluate(Board board, bool useThreatEval = true, bool useGamePhaseDevelopment = false,
+                        bool useTaperedEval = false)
     {
         int score = 0;
         int totalMaterial = 0;
+        int phase = 0;
+
+        // Midgame and endgame material+PST are accumulated separately and blended once, after
+        // the phase is known — the phase is only complete when the whole scan is.
+        int midgame = 0;
+        int endgame = 0;
 
         // Single-pass over all pieces: material + PST + pawn file counts
         Span<int> whitePawnFiles = stackalloc int[8];
@@ -38,17 +63,31 @@ internal class Evaluator
         for (int i = 0; i < pieceCount; i++)
         {
             var (square, piece) = _pieceBuffer[i];
+
+            // Phase counts every piece, so it accumulates before the king is skipped — the same
+            // definition the Board's incremental accumulator maintains, which is what lets
+            // EvaluateFast reproduce this score exactly.
+            phase += GamePhase.WeightFor(piece.Type);
+
             if (piece.Type == PieceType.King) continue;
 
             int matVal = piece.Type.MaterialValue();
             totalMaterial += matVal;
             int sign = piece.Color == Color.White ? 1 : -1;
-            score += sign * matVal;
 
             // PST
             int rank = piece.Color == Color.White ? square.Rank : 7 - square.Rank;
             int file = piece.Color == Color.White ? square.File : 7 - square.File;
-            score += sign * PieceSquareTables.TableFor(piece.Type)[rank][file];
+
+            // The midgame set is the one the engine has always used, so this sum is exactly the
+            // untapered score; the endgame sum is only consulted when tapering is on.
+            midgame += sign * (matVal + PieceSquareTables.TableFor(piece.Type)[rank][file]);
+
+            if (useTaperedEval)
+            {
+                endgame += sign * (PieceSquareTables.EndgameMaterialValue(piece.Type)
+                                 + PieceSquareTables.EndgameTableFor(piece.Type)[rank][file]);
+            }
 
             // Track pawn files for structure evaluation
             if (piece.Type == PieceType.Pawn)
@@ -58,14 +97,21 @@ internal class Evaluator
             }
         }
 
+        // Material + PST, blended on the phase when tapering is on and taken from the midgame
+        // set alone when it is off.
+        score += useTaperedEval
+            ? PieceSquareTables.Interpolate(midgame, endgame, phase)
+            : midgame;
+
         // Pawn structure
         score += EvaluatePawnStructureFromCounts(whitePawnFiles, blackPawnFiles);
 
         // Threat detection: hanging pieces
-        score += EvaluateThreats(board, pieceCount);
+        if (useThreatEval)
+            score += EvaluateThreats(board, pieceCount);
 
         // Opening development and king safety
-        score += EvaluateOpeningDevelopment(board);
+        score += EvaluateOpeningDevelopment(board, useGamePhaseDevelopment, phase);
 
         // King safety (endgame centralization)
         if (totalMaterial < 1000)
@@ -84,22 +130,37 @@ internal class Evaluator
     /// (hanging-piece threats, opening development, endgame king centrality) still require board
     /// context and are computed the same way as <see cref="Evaluate"/>.
     /// </summary>
-    public int EvaluateFast(Board board)
+    /// <param name="board">Position to evaluate.</param>
+    /// <param name="useThreatEval">See <see cref="Evaluate"/>; must match what that call is given.</param>
+    /// <param name="useGamePhaseDevelopment">See <see cref="Evaluate"/>; must match likewise.</param>
+    /// <param name="useTaperedEval">See <see cref="Evaluate"/>; must match likewise.</param>
+    public int EvaluateFast(Board board, bool useThreatEval = true, bool useGamePhaseDevelopment = false,
+                            bool useTaperedEval = false)
     {
-        // The buffer is still needed for the threat pass (it scans non-pawn pieces for attacks).
-        int pieceCount = board.GetAllPiecesInto(_pieceBuffer);
+        // Only the threat pass needs the piece list; with the term off, the whole board scan
+        // goes away too, which is most of what disabling it saves.
+        int pieceCount = useThreatEval ? board.GetAllPiecesInto(_pieceBuffer) : 0;
 
-        // Material + PST come straight from the incremental White-positive accumulators.
-        int score = board.IncrementalMaterialScore + board.IncrementalPstScore;
+        // Material + PST come straight from the incremental White-positive accumulators. The
+        // midgame pair is the same one the untapered path uses; the endgame pair is maintained
+        // alongside it by the same make/unmake bookkeeping.
+        int score = useTaperedEval
+            ? PieceSquareTables.Interpolate(
+                  board.IncrementalMaterialScore + board.IncrementalPstScore,
+                  board.IncrementalEndgameMaterialScore + board.IncrementalEndgamePstScore,
+                  board.IncrementalPhase)
+            : board.IncrementalMaterialScore + board.IncrementalPstScore;
 
         // Pawn structure from the incrementally maintained per-file pawn counts.
         score += EvaluatePawnStructureFromCounts(board.WhitePawnFileCounts, board.BlackPawnFileCounts);
 
         // Threat detection: hanging pieces
-        score += EvaluateThreats(board, pieceCount);
+        if (useThreatEval)
+            score += EvaluateThreats(board, pieceCount);
 
-        // Opening development and king safety
-        score += EvaluateOpeningDevelopment(board);
+        // Opening development and king safety. The phase comes from the Board's incremental
+        // accumulator rather than a scan — the same quantity Evaluate() sums piece by piece.
+        score += EvaluateOpeningDevelopment(board, useGamePhaseDevelopment, board.IncrementalPhase);
 
         // King safety (endgame centralization)
         if (board.IncrementalTotalMaterial < 1000)
@@ -198,17 +259,34 @@ internal class Evaluator
         => PieceSquareTables.Value(piece.Color, piece.Type, square);
 
     /// <summary>
-    /// Evaluates opening-phase development quality (moves 1–20):
+    /// Evaluates development quality:
     ///   • Penalises minor pieces still on their home squares (encourages developing ALL pieces)
-    ///   • Penalises the king lingering in the centre after move 10 (encourages castling)
+    ///   • Penalises the king lingering in the centre (encourages castling)
     ///
     /// The evaluation is symmetric: equal positions score 0.
     /// Penalties are intentionally mild so that tactical play still dominates.
+    ///
+    /// Two ways of deciding how much the term applies:
+    ///
+    /// <paramref name="useGamePhase"/> = false is the original rule — full value to move 20,
+    /// nothing after, with the king penalty switched on at move 10. That makes the evaluation a
+    /// function of the move number as well as the position, which is wrong in three ways. The
+    /// Zobrist hash does not include the move number, so a transposition entry carries a score
+    /// that was only valid at the move number it was stored at. Inside a search tree that
+    /// crosses move 20 the score jumps by up to 100 cp because plies elapsed, which rewards
+    /// shuffling over developing. And the same position, reached by a longer route, evaluates
+    /// differently from itself.
+    ///
+    /// <paramref name="useGamePhase"/> = true scales the whole term by the material phase
+    /// instead: full weight with the starting array on the board, fading smoothly to nothing as
+    /// pieces come off. It depends only on the position, so it survives a transposition and
+    /// cannot change as a search descends.
     /// </summary>
-    private static int EvaluateOpeningDevelopment(Board board)
+    /// <param name="phase">The position's 24-point material phase (see <see cref="GamePhase"/>).</param>
+    private static int EvaluateOpeningDevelopment(Board board, bool useGamePhase, int phase)
     {
-        int moveNum = board.State.FullmoveNumber;
-        if (moveNum > 20) return 0;
+        // The legacy rule switches the term off entirely after move 20.
+        if (!useGamePhase && board.State.FullmoveNumber > 20) return 0;
 
         int score = 0;
 
@@ -238,8 +316,12 @@ internal class Evaluator
         if (bc8.Color == Color.Black && bc8.Type == PieceType.Bishop) score += 20;
         if (bf8.Color == Color.Black && bf8.Type == PieceType.Bishop) score += 20;
 
-        // — King safety: penalise uncastled king in the centre after move 10 —
-        if (moveNum >= 10)
+        // — King safety: penalise an uncastled king in the centre —
+        // The legacy rule waits until move 10 to give the engine time to castle first. Under the
+        // phase rule there is nothing to wait for: material barely changes in ten moves, so no
+        // phase threshold could reproduce that gate. The penalty simply applies while there is
+        // still an army on the board to be afraid of, and fades with it.
+        if (useGamePhase || board.State.FullmoveNumber >= 10)
         {
             Square wKing = board.GetKingPosition(Color.White);
             Square bKing = board.GetKingPosition(Color.Black);
@@ -249,7 +331,7 @@ internal class Evaluator
             if (bKing.File == 4 && bKing.Rank == 7) score += 40;
         }
 
-        return score;
+        return useGamePhase ? GamePhase.ScaleByOpening(score, phase) : score;
     }
 
     /// <summary>
@@ -299,10 +381,17 @@ internal class Evaluator
     /// </summary>
     private int CalculateCentralityBonus(Square square)
     {
-        int distFromCenter = 3 - Math.Min(3, Math.Max(-3, square.File - 3)) +
-                            3 - Math.Min(3, Math.Max(-3, square.Rank - 3));
+        // Distance to the nearer edge on each axis: 0 on the rim, 3 on the four centre squares.
+        //
+        // The previous form computed `3 - clamp(File - 3)`, which yields 6 on file a and 0 on
+        // file h — a gradient towards the h8 corner rather than towards the centre. Because the
+        // same function scored both kings, mirroring a position changed the White-minus-Black
+        // difference, so the evaluation was not colour-symmetric and the engine judged the two
+        // colours differently in endgames (the only phase where this term is active).
+        int fileDist = Math.Min(square.File, 7 - square.File);
+        int rankDist = Math.Min(square.Rank, 7 - square.Rank);
 
-        return Math.Max(0, 3 - distFromCenter) * 3;  // ~9 bonus at exact center, ~0 at edges
+        return Math.Max(0, fileDist + rankDist - 3) * 3;  // 9 at the centre, 0 at the rim
     }
 
     /// <summary>
@@ -319,7 +408,18 @@ internal class Evaluator
         // Reuse a single CheckDetector per Evaluator instance instead of allocating a new
         // one on every Evaluate() call — Evaluate() runs at every leaf/quiescence node,
         // so this was a major per-node heap allocation in the hot path.
-        var cd = _threatDetector ??= new CheckDetector(board);
+        // The detector is cached to avoid a per-node allocation on the hot path, but it binds
+        // to the Board it was constructed with. Caching it unconditionally meant that calling
+        // the same Evaluator with a *different* Board silently kept reading the first one and
+        // returned threat scores for the wrong position. Rebinding when the board instance
+        // changes keeps the allocation saving (the search reuses one Board throughout) while
+        // removing the silent-wrong-answer case.
+        if (_threatDetector is null || !ReferenceEquals(_threatDetectorBoard, board))
+        {
+            _threatDetector      = new CheckDetector(board);
+            _threatDetectorBoard = board;
+        }
+        var cd = _threatDetector;
 
         for (int i = 0; i < pieceCount; i++)
         {

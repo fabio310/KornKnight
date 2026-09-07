@@ -98,9 +98,14 @@ public sealed class BoardViewModel : INotifyPropertyChanged, IDisposable
     /// Handle a click on the square with the given internal index (0 = a1, 63 = h8).
     /// Manages selection, deselection, and move execution.
     /// </summary>
-    public void OnSquareClicked(int squareIndex)
+    /// <summary>
+    /// Handles a click on a square: selects, re-selects, deselects, or plays a move.
+    /// Returns true only when a move was actually executed, so the caller can trigger
+    /// the engine reply for auto-play without firing on a mere selection click.
+    /// </summary>
+    public bool OnSquareClicked(int squareIndex)
     {
-        if (_isEngineThinking) return;
+        if (_isEngineThinking) return false;
 
         var clickedSq = new Square(squareIndex);
         var snap = _engine.GetBoardSnapshot();
@@ -118,7 +123,7 @@ public sealed class BoardViewModel : INotifyPropertyChanged, IDisposable
                 Move move = candidates.FirstOrDefault(m => m.PromotionType == PieceType.Queen,
                                                        candidates[0]);
                 ExecuteMove(move);
-                return;
+                return true;
             }
 
             // Clicked on own piece — switch selection
@@ -126,13 +131,13 @@ public sealed class BoardViewModel : INotifyPropertyChanged, IDisposable
             if (!clickedPiece.IsEmpty && clickedPiece.Color == snap.ActiveColor)
             {
                 SelectSquare(clickedSq);
-                return;
+                return false;
             }
 
             // Clicked elsewhere — deselect
             ClearSelection();
             RequestRepaint();
-            return;
+            return false;
         }
 
         // Nothing selected yet — try to select a piece
@@ -141,6 +146,8 @@ public sealed class BoardViewModel : INotifyPropertyChanged, IDisposable
         {
             SelectSquare(clickedSq);
         }
+
+        return false;
     }
 
     /// <summary>
@@ -270,6 +277,16 @@ public sealed class BoardViewModel : INotifyPropertyChanged, IDisposable
     public void ToggleAutoPlay()
     {
         _autoPlay = !_autoPlay;
+    }
+
+    /// <summary>
+    /// Sets auto-play explicitly. Preferred over <see cref="ToggleAutoPlay"/> when driven by
+    /// a ToggleButton: WPF has already flipped IsChecked by the time Click fires, so flipping
+    /// a second, independent flag here can only ever drift out of sync with what the UI shows.
+    /// </summary>
+    public void SetAutoPlay(bool enabled)
+    {
+        _autoPlay = enabled;
     }
 
     public string GetCurrentFen() => _engine.ExportFen();
