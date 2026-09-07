@@ -54,6 +54,40 @@ public class ChessEngine
     }
 
     /// <summary>
+    /// The side to move in the current position. Exposed separately from
+    /// <see cref="GetBoardSnapshot"/> because a caller that only needs the side to move
+    /// (a clock allocator deciding which side's remaining time applies, for instance)
+    /// should not have to copy the whole board to get it.
+    /// </summary>
+    public Color SideToMove
+    {
+        get
+        {
+            lock (_boardLock)
+            {
+                return _board.State.ActiveColor;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Resets the engine for a new, unrelated game: starting position, empty move history,
+    /// and cleared search tables. Without the table reset, a match harness that reuses one
+    /// engine instance across games carries the previous game's transposition entries and
+    /// move-ordering history into the next one, which makes games in a series
+    /// non-independent and results non-reproducible.
+    /// </summary>
+    public void NewGame()
+    {
+        lock (_boardLock)
+        {
+            _board.ResetToStartingPosition();
+            _searcher ??= new Searcher(_board, _evaluator, _zobristHasher);
+            _searcher.ClearTables();
+        }
+    }
+
+    /// <summary>
     /// Gets all legal moves in the current position.
     /// </summary>
     public IReadOnlyList<Move> GetLegalMoves()
