@@ -120,9 +120,11 @@ dotnet run -c Release --project ChessBot.MatchRunner -- --engine <path> --games 
 dotnet run -c Release --project ChessBot.EloEvaluator -- sweep --games-per-round 2 --concurrency 2
 ```
 
-A match defaults to `--concurrency 1`; a sweep defaults to playing its round in parallel
-(capped at half the logical processors) and says so, because a sweep is long and its rounds
-are small. In both, timed games under concurrency report strength at that reduced speed.
+Matches and sweeps both play in parallel by default: as many games at once as the machine can
+usefully take — the match's game count, capped at half the logical processors and at 10. Both
+say what they used, because the games are timed and concurrent games leave each engine less CPU
+per move: the contest stays fair, but the strength measured is strength at that speed. Pass
+`--concurrency 1` to measure at the machine's full speed.
 
 A node budget makes runs reproducible but gives an expensive evaluation its cost back for
 free; a time budget charges for it. Both readings are needed, and each report states which

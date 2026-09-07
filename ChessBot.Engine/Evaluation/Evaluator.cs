@@ -39,11 +39,21 @@ internal class Evaluator
     /// move number (see <see cref="EvaluateOpeningDevelopment"/>). Defaults to false, which is
     /// the current behaviour.
     /// </param>
-    public int Evaluate(Board board, bool useThreatEval = true, bool useGamePhaseDevelopment = false)
+    /// <param name="useTaperedEval">
+    /// Blend separate midgame and endgame material values and piece-square tables on the game
+    /// phase, instead of using one set for the whole game. Defaults to false (current behaviour).
+    /// </param>
+    public int Evaluate(Board board, bool useThreatEval = true, bool useGamePhaseDevelopment = false,
+                        bool useTaperedEval = false)
     {
         int score = 0;
         int totalMaterial = 0;
         int phase = 0;
+
+        // Midgame and endgame material+PST are accumulated separately and blended once, after
+        // the phase is known — the phase is only complete when the whole scan is.
+        int midgame = 0;
+        int endgame = 0;
 
         // Single-pass over all pieces: material + PST + pawn file counts
         Span<int> whitePawnFiles = stackalloc int[8];
@@ -64,12 +74,20 @@ internal class Evaluator
             int matVal = piece.Type.MaterialValue();
             totalMaterial += matVal;
             int sign = piece.Color == Color.White ? 1 : -1;
-            score += sign * matVal;
 
             // PST
             int rank = piece.Color == Color.White ? square.Rank : 7 - square.Rank;
             int file = piece.Color == Color.White ? square.File : 7 - square.File;
-            score += sign * PieceSquareTables.TableFor(piece.Type)[rank][file];
+
+            // The midgame set is the one the engine has always used, so this sum is exactly the
+            // untapered score; the endgame sum is only consulted when tapering is on.
+            midgame += sign * (matVal + PieceSquareTables.TableFor(piece.Type)[rank][file]);
+
+            if (useTaperedEval)
+            {
+                endgame += sign * (PieceSquareTables.EndgameMaterialValue(piece.Type)
+                                 + PieceSquareTables.EndgameTableFor(piece.Type)[rank][file]);
+            }
 
             // Track pawn files for structure evaluation
             if (piece.Type == PieceType.Pawn)
@@ -78,6 +96,12 @@ internal class Evaluator
                 else                            blackPawnFiles[square.File]++;
             }
         }
+
+        // Material + PST, blended on the phase when tapering is on and taken from the midgame
+        // set alone when it is off.
+        score += useTaperedEval
+            ? PieceSquareTables.Interpolate(midgame, endgame, phase)
+            : midgame;
 
         // Pawn structure
         score += EvaluatePawnStructureFromCounts(whitePawnFiles, blackPawnFiles);
@@ -109,14 +133,23 @@ internal class Evaluator
     /// <param name="board">Position to evaluate.</param>
     /// <param name="useThreatEval">See <see cref="Evaluate"/>; must match what that call is given.</param>
     /// <param name="useGamePhaseDevelopment">See <see cref="Evaluate"/>; must match likewise.</param>
-    public int EvaluateFast(Board board, bool useThreatEval = true, bool useGamePhaseDevelopment = false)
+    /// <param name="useTaperedEval">See <see cref="Evaluate"/>; must match likewise.</param>
+    public int EvaluateFast(Board board, bool useThreatEval = true, bool useGamePhaseDevelopment = false,
+                            bool useTaperedEval = false)
     {
         // Only the threat pass needs the piece list; with the term off, the whole board scan
         // goes away too, which is most of what disabling it saves.
         int pieceCount = useThreatEval ? board.GetAllPiecesInto(_pieceBuffer) : 0;
 
-        // Material + PST come straight from the incremental White-positive accumulators.
-        int score = board.IncrementalMaterialScore + board.IncrementalPstScore;
+        // Material + PST come straight from the incremental White-positive accumulators. The
+        // midgame pair is the same one the untapered path uses; the endgame pair is maintained
+        // alongside it by the same make/unmake bookkeeping.
+        int score = useTaperedEval
+            ? PieceSquareTables.Interpolate(
+                  board.IncrementalMaterialScore + board.IncrementalPstScore,
+                  board.IncrementalEndgameMaterialScore + board.IncrementalEndgamePstScore,
+                  board.IncrementalPhase)
+            : board.IncrementalMaterialScore + board.IncrementalPstScore;
 
         // Pawn structure from the incrementally maintained per-file pawn counts.
         score += EvaluatePawnStructureFromCounts(board.WhitePawnFileCounts, board.BlackPawnFileCounts);

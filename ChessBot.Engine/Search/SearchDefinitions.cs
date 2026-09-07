@@ -156,6 +156,23 @@ public class SearchSettings
     public bool UseGamePhaseDevelopment { get; set; }
 
     /// <summary>
+    /// Blend separate midgame and endgame material values and piece-square tables on the game
+    /// phase, instead of scoring the whole game from one set.
+    ///
+    /// One table set has to describe two different games at once. A pawn on the sixth rank is a
+    /// small positional plus in the opening and nearly decisive in a pawn endgame; a knight is
+    /// worth more than a rook's difference in a closed middlegame and less once the board opens.
+    /// A single set splits those differences and is wrong at both ends.
+    ///
+    /// The midgame set is exactly the table the engine already used, so at full phase a tapered
+    /// evaluation reproduces the untapered score to the centipawn, and any measured difference
+    /// comes only from positions where material has actually left the board.
+    ///
+    /// Defaults to false (current behaviour); the default only changes if a measurement says so.
+    /// </summary>
+    public bool UseTaperedEval { get; set; }
+
+    /// <summary>
     /// Invoked once per *completed* iterative-deepening iteration — never per node — so a
     /// protocol layer (UCI "info depth ...") can report progress without the search having to
     /// know that a protocol exists. Null by default: no callback, no cost, and the search tree

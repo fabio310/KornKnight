@@ -62,17 +62,36 @@ public class MatchConfig
     /// mistake; real move loss comes from the reference-engine analysis.
     /// </summary>
     /// <summary>
+    /// Upper bound on the automatic concurrency. Ten games means ten opponent processes and ten
+    /// engines resident at once; past that the coordination and memory cost grows faster than
+    /// the throughput, and the per-game slowdown from CPU contention starts to dominate.
+    /// </summary>
+    public const int MaxAutoConcurrency = 10;
+
+    private int? _concurrency;
+
+    /// <summary>
     /// How many games of the match are played at the same time. Games are independent — each
     /// runs its own opponent process and its own engine — so this is close to a linear speed-up
     /// on a multi-core machine.
     ///
-    /// Defaults to 1 because the games are timed: every concurrent game takes CPU from the
-    /// others, so both engines search fewer nodes per millisecond than they would alone. That
-    /// is a fair comparison (both sides are slowed) but it is not a measurement at the machine's
-    /// full speed, and a strength number carries that qualification. Raise it deliberately, and
-    /// keep it at or below the physical core count.
+    /// Unset, it resolves to as many games as the machine can usefully take: the match's own
+    /// game count, capped at half the logical processors and at
+    /// <see cref="MaxAutoConcurrency"/>. Half, because each game drives an opponent process
+    /// alongside ChessBot's own search, and leaving headroom keeps the machine usable.
+    ///
+    /// The games are timed, so concurrency does cost something real: every concurrent game
+    /// takes CPU from the others, and both engines then search fewer nodes per millisecond than
+    /// they would alone. That remains a fair contest — both sides are slowed — but the strength
+    /// it measures is strength at that speed, which is why every run records the value it used.
+    /// Pass 1 to measure at the machine's full speed.
     /// </summary>
-    public int Concurrency { get; set; } = 1;
+    public int Concurrency
+    {
+        get => _concurrency ?? Math.Clamp(
+            TotalGames, 1, Math.Min(MaxAutoConcurrency, Math.Max(1, Environment.ProcessorCount / 2)));
+        set => _concurrency = Math.Max(1, value);
+    }
 
     public int DisagreementThresholdCp { get; set; } = 200;
 

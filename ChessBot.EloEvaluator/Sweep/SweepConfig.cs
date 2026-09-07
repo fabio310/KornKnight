@@ -1,4 +1,5 @@
 using System.Globalization;
+using ChessBot.MatchRunner;
 
 namespace ChessBot.EloEvaluator.Sweep;
 
@@ -180,7 +181,9 @@ public sealed class SweepConfig
         // processors keeps the box usable and stays at or below the physical cores on a typical
         // hyper-threaded CPU; each game also drives an opponent process of its own.
         if (cfg.ConcurrencyIsDefault)
-            cfg.Concurrency = Math.Clamp(cfg.GamesPerRound, 1, Math.Max(1, Environment.ProcessorCount / 2));
+            cfg.Concurrency = Math.Clamp(
+                cfg.GamesPerRound, 1,
+                Math.Min(MatchConfig.MaxAutoConcurrency, Math.Max(1, Environment.ProcessorCount / 2)));
 
         if (cfg.Concurrency > 1)
             Console.WriteLine($"NOTE: playing {cfg.Concurrency} games of each round in parallel. " +
