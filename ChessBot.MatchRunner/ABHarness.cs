@@ -280,6 +280,10 @@ public sealed class AbReport
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public AbVerdict ThreatEvalVerdict { get; set; } = AbVerdict.Inconclusive;
     public string ThreatEvalRationale { get; set; } = string.Empty;
+
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public AbVerdict TaperedEvalVerdict { get; set; } = AbVerdict.Inconclusive;
+    public string TaperedEvalRationale { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -584,6 +588,8 @@ public static class AbHarness
         ["UseCheckExtension"]     = s.UseCheckExtension.ToString(),
         ["UsePartialRootResult"]  = s.UsePartialRootResult.ToString(),
         ["UseThreatEval"]         = s.UseThreatEval.ToString(),
+        ["UseGamePhaseDevelopment"] = s.UseGamePhaseDevelopment.ToString(),
+        ["UseTaperedEval"]        = s.UseTaperedEval.ToString(),
     };
 
     /// <summary>
@@ -758,6 +764,49 @@ public static class AbHarness
         ApplyVerdicts(report, report.Mode, report.ConfigA!, report.ConfigB!);
     }
 
+    /// <summary>
+    /// Decides an evaluation-term mode's verdict. Both such modes ask the same question — does
+    /// configuration B play better? — and only games or a reference engine can answer it, so
+    /// they share one rule rather than two that could drift apart.
+    /// </summary>
+    private static (AbVerdict verdict, string rationale) EvaluationTermVerdict(
+        AbReport r, string mode, string ownMode, bool corpusTooSmall)
+    {
+        if (mode != ownMode)
+            return (AbVerdict.Inconclusive, $"not compared in this run (mode is not {ownMode})");
+
+        if (r.HeadToHead is { Games: > 1 } h2h)
+        {
+            string outcome =
+                $"head-to-head over {h2h.Games} games at {h2h.BudgetLabel}: " +
+                $"B scores {h2h.ScoreRateB:P1} (+{h2h.WinsB}={h2h.Draws}-{h2h.WinsA})";
+
+            // Games are the only evidence here that speaks to strength directly, so when they
+            // are conclusive they decide, whatever the node counts did.
+            if (h2h.IsSignificant)
+            {
+                return (h2h.ScoreRateB > 0.5 ? AbVerdict.Keep : AbVerdict.Revert,
+                        $"{outcome}, which excludes 50% at 95% confidence");
+            }
+
+            return (AbVerdict.Inconclusive,
+                    $"{outcome}, which does not exclude 50% at 95% confidence " +
+                    $"(±{1.96 * h2h.ScoreRateStdError:P1}); not measurably strength-affecting " +
+                    $"either way at this sample size");
+        }
+
+        if (r.ReferenceMeanDeltaBMinusA is double delta && !corpusTooSmall)
+        {
+            return (delta > 5 ? AbVerdict.Keep : delta < -5 ? AbVerdict.Revert : AbVerdict.Inconclusive,
+                    $"reference engine scores B's differing choices {delta:+0.0;-0.0;0} cp relative " +
+                    $"to baseline over {r.Disagreements.Count} disagreements");
+        }
+
+        return (AbVerdict.Inconclusive,
+                "no head-to-head games and no reference-engine adjudication; node rate and depth " +
+                "alone show what the change costs, not whether it wins");
+    }
+
     private static void ApplyVerdicts(AbReport r, string mode, AbConfigResult a, AbConfigResult b)
     {
         bool corpusTooSmall = r.CorpusSize < MinCorpusForStrengthVerdict;
@@ -803,50 +852,17 @@ public static class AbHarness
                 "establish a strength change";
         }
 
-        // ── Hanging-piece (threat) evaluation term ───────────────────────────
+        // ── Evaluation-term modes ────────────────────────────────────────────
         // Convention, as for the other modes: A is the current behaviour, B is the change under
-        // test. Here B is the term switched OFF, so KEEP means "adopt B" — remove the term.
-        if (mode != "threat-eval")
-        {
-            r.ThreatEvalVerdict  = AbVerdict.Inconclusive;
-            r.ThreatEvalRationale = "not compared in this run (mode is not threat-eval)";
-        }
-        else if (r.HeadToHead is { Games: > 1 } h2h && h2h.IsSignificant)
-        {
-            // Games are the only evidence here that speaks to strength directly, so when they
-            // are conclusive they decide, regardless of what the node counts did.
-            r.ThreatEvalVerdict = h2h.ScoreRateB > 0.5 ? AbVerdict.Keep : AbVerdict.Revert;
-            r.ThreatEvalRationale =
-                $"head-to-head over {h2h.Games} games at {h2h.BudgetLabel}: " +
-                $"disabled scores {h2h.ScoreRateB:P1} (+{h2h.WinsB}={h2h.Draws}-{h2h.WinsA}), " +
-                $"which excludes 50% at 95% confidence";
-        }
-        else if (r.HeadToHead is { Games: > 1 } played)
-        {
-            r.ThreatEvalVerdict  = AbVerdict.Inconclusive;
-            r.ThreatEvalRationale =
-                $"head-to-head over {played.Games} games at {played.BudgetLabel}: " +
-                $"disabled scores {played.ScoreRateB:P1} (+{played.WinsB}={played.Draws}-{played.WinsA}), " +
-                $"which does not exclude 50% at 95% confidence " +
-                $"(±{1.96 * played.ScoreRateStdError:P1}); the term is not measurably " +
-                $"strength-affecting either way at this sample size";
-        }
-        else if (r.ReferenceMeanDeltaBMinusA is double threatDelta && !corpusTooSmall)
-        {
-            r.ThreatEvalVerdict = threatDelta > 5 ? AbVerdict.Keep
-                                : threatDelta < -5 ? AbVerdict.Revert
-                                : AbVerdict.Inconclusive;
-            r.ThreatEvalRationale =
-                $"reference engine scores the disabled configuration's differing choices " +
-                $"{threatDelta:+0.0;-0.0;0} cp relative to baseline over {r.Disagreements.Count} disagreements";
-        }
-        else
-        {
-            r.ThreatEvalVerdict  = AbVerdict.Inconclusive;
-            r.ThreatEvalRationale =
-                "no head-to-head games and no reference-engine adjudication; node rate and depth " +
-                "alone show what the term costs, not whether removing it wins";
-        }
+        // test, and KEEP means "adopt B". For threat-eval B is the term switched off, so KEEP
+        // there means remove it; for tapered-eval B is the new behaviour switched on.
+        var (threatVerdict, threatRationale) = EvaluationTermVerdict(r, mode, "threat-eval", corpusTooSmall);
+        r.ThreatEvalVerdict   = threatVerdict;
+        r.ThreatEvalRationale = threatRationale;
+
+        var (taperedVerdict, taperedRationale) = EvaluationTermVerdict(r, mode, "tapered-eval", corpusTooSmall);
+        r.TaperedEvalVerdict   = taperedVerdict;
+        r.TaperedEvalRationale = taperedRationale;
 
         // ── LMR schedule ─────────────────────────────────────────────────────
         if (mode != "lmr")
@@ -1058,6 +1074,8 @@ public static class AbHarness
         w.WriteLine("=== Verdicts ===");
         w.WriteLine($"  Threat eval (B = off)  : {r.ThreatEvalVerdict.ToString().ToUpperInvariant()}");
         w.WriteLine($"      {r.ThreatEvalRationale}");
+        w.WriteLine($"  Tapered eval (B = on)  : {r.TaperedEvalVerdict.ToString().ToUpperInvariant()}");
+        w.WriteLine($"      {r.TaperedEvalRationale}");
         w.WriteLine($"  Partial root selection : {r.PartialSelectionVerdict.ToString().ToUpperInvariant()}");
         w.WriteLine($"      {r.PartialSelectionRationale}");
         w.WriteLine($"  LMR schedule           : {r.LmrVerdict.ToString().ToUpperInvariant()}");

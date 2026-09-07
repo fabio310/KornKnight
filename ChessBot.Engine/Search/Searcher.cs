@@ -116,7 +116,8 @@ internal class Searcher
     private int EvaluateStatic()
     {
         _evaluationCalls++;
-        return _evaluator.EvaluateFast(_board, _settings.UseThreatEval, _settings.UseGamePhaseDevelopment);
+        return _evaluator.EvaluateFast(_board, _settings.UseThreatEval,
+                                       _settings.UseGamePhaseDevelopment, _settings.UseTaperedEval);
     }
 
     // ── Partial-iteration root results ────────────────────────────────────────

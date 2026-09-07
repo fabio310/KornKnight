@@ -88,4 +88,44 @@ public class MatchConfigGameCountTests
         Assert.Equal(6, cfg.TotalGames);
         Assert.Equal(0, cfg.ColorImbalance);
     }
+
+    // ── Concurrency ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Concurrency_DefaultsToWhatTheMachineCanTake()
+    {
+        int machineLimit = Math.Min(MatchConfig.MaxAutoConcurrency,
+                                    Math.Max(1, Environment.ProcessorCount / 2));
+
+        // Never more workers than there are games to play.
+        Assert.Equal(1, new MatchConfig { TotalGames = 1 }.Concurrency);
+        Assert.Equal(Math.Min(2, machineLimit), new MatchConfig { TotalGames = 2 }.Concurrency);
+
+        // And never more than the machine's share, however many games are queued.
+        Assert.Equal(machineLimit, new MatchConfig { TotalGames = 500 }.Concurrency);
+        Assert.True(new MatchConfig { TotalGames = 500 }.Concurrency <= MatchConfig.MaxAutoConcurrency);
+    }
+
+    [Fact]
+    public void Concurrency_ExplicitValueWins()
+    {
+        // A run that wants full-speed timings has to be able to say so, whatever the machine has.
+        Assert.Equal(1, new MatchConfig { TotalGames = 100, Concurrency = 1 }.Concurrency);
+        Assert.Equal(32, new MatchConfig { TotalGames = 100, Concurrency = 32 }.Concurrency);
+
+        // Zero or negative would stop the match dead; clamped rather than accepted.
+        Assert.Equal(1, new MatchConfig { TotalGames = 100, Concurrency = 0 }.Concurrency);
+        Assert.Equal(1, new MatchConfig { TotalGames = 100, Concurrency = -4 }.Concurrency);
+    }
+
+    [Fact]
+    public void Concurrency_IsParsedAndRecorded()
+    {
+        var cfg = Parse("--concurrency", "3");
+
+        Assert.Equal(3, cfg.Concurrency);
+
+        // It qualifies every timing-derived number in the run, so the manifest must state it.
+        Assert.Equal("3", cfg.Describe()["Concurrency"]);
+    }
 }

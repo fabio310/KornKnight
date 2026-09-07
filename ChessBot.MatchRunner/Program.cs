@@ -37,6 +37,10 @@ internal class Program
             Console.WriteLine("  --reference-option   Reference-engine UCI option as name=value, e.g. Threads=1 (repeatable)");
             Console.WriteLine("  --moveloss-retries   Deterministic re-search attempts before an ineligible sample is excluded (default: 2)");
             Console.WriteLine("  --use-partial-root-result  Enable UsePartialRootResult in ChessBot's search (default: off)");
+            Console.WriteLine("  --concurrency        Games played at the same time (default: as many as the");
+            Console.WriteLine($"                       machine can take, capped at {MatchConfig.MaxAutoConcurrency}). Games are timed, so");
+            Console.WriteLine("                       concurrent games leave both engines less CPU per move;");
+            Console.WriteLine("                       pass 1 to measure at the machine's full speed.");
             Console.WriteLine("  --quiet              Suppress move-by-move output");
             Console.WriteLine();
             Console.WriteLine("  --ab-harness         Run a controlled, no-external-engine A/B comparison instead of a match");
@@ -92,10 +96,11 @@ internal class Program
     {
         if (args.Contains("--help"))
         {
-            Console.WriteLine("Usage: ChessBot.MatchRunner --ab-harness [--ab-mode partial-root|lmr|threat-eval] [--ab-out <dir>] [--ab-depth <n>] [--ab-nodes <n>]");
+            Console.WriteLine("Usage: ChessBot.MatchRunner --ab-harness [--ab-mode partial-root|lmr|threat-eval|tapered-eval] [--ab-out <dir>] [--ab-depth <n>] [--ab-nodes <n>]");
             Console.WriteLine("  --ab-mode   partial-root: baseline vs UsePartialRootResult=true (default)");
             Console.WriteLine("              lmr: legacy flat schedule vs the current logarithmic schedule");
             Console.WriteLine("              threat-eval: hanging-piece eval term on (A) vs off (B)");
+            Console.WriteLine("              tapered-eval: single table set (A) vs midgame/endgame taper (B)");
             Console.WriteLine("  --ab-out    Output directory for the report (default: ab_reports)");
             Console.WriteLine("  --ab-depth  Fixed max search depth per position (default: 8)");
             Console.WriteLine("  --ab-nodes  Enforced node budget per position (default: 200000)");
@@ -194,6 +199,22 @@ internal class Program
                     Build = () => new ChessBot.Engine.Search.SearchSettings { UseThreatEval = false },
                 };
                 reportStem = timeMs is int ? "ab_report_threat_eval_time" : "ab_report_threat_eval";
+                break;
+
+            case "tapered-eval":
+                configA = new AbConfig
+                {
+                    Name = "single-table-eval",
+                    Description = "current behaviour: one piece-square table set and one material scale for the whole game",
+                    Build = () => new ChessBot.Engine.Search.SearchSettings { UseTaperedEval = false },
+                };
+                configB = new AbConfig
+                {
+                    Name = "tapered-eval",
+                    Description = "separate midgame/endgame tables and material values, interpolated on the 24-point phase",
+                    Build = () => new ChessBot.Engine.Search.SearchSettings { UseTaperedEval = true },
+                };
+                reportStem = timeMs is int ? "ab_report_tapered_eval_time" : "ab_report_tapered_eval";
                 break;
 
             case "partial-root":

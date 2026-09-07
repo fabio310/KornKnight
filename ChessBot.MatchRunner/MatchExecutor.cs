@@ -206,7 +206,9 @@ public static class MatchExecutor
         var completed = new GameRunOutcome?[cfg.TotalGames];
 
         if (concurrency > 1)
-            Console.WriteLine($"Playing {cfg.TotalGames} games, {concurrency} at a time.");
+            Console.WriteLine($"Playing {cfg.TotalGames} games, {concurrency} at a time. " +
+                              $"Concurrent games share the CPU, so each engine searches fewer nodes " +
+                              $"per move than it would alone (--concurrency 1 for full speed).");
 
         var consoleLock = new object();
 
