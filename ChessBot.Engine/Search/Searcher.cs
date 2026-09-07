@@ -15,8 +15,10 @@ using System.Diagnostics;
 internal class Searcher
 {
     // ── Constants ─────────────────────────────────────────────────────────────
-    private const int MATE_SCORE     = 100_000;
-    private const int MAX_PLY        = 64;
+    // Shared with SearchScores so a protocol layer can decode mate scores without duplicating
+    // the encoding; MAX_PLY doubles as the ply distance a mate score can carry.
+    private const int MATE_SCORE     = SearchScores.Mate;
+    private const int MAX_PLY        = SearchScores.MateDistanceLimit;
     private const int INFINITY       = MATE_SCORE + 1;
 
     // Null-move pruning
@@ -77,6 +79,16 @@ internal class Searcher
     private bool           _cancelRequested;
     private Stopwatch      _searchTimer = null!;
     private SearchSettings _settings    = null!;
+
+    // The caller's cancellation token, kept as a field so the node loop can observe it. Checking
+    // it only between iterations (as the iterative-deepening loop does) is not enough for a UCI
+    // "stop": an unbounded iteration would then run to completion before noticing, which for
+    // "go infinite" means never. It is read inside the existing throttled (every 2048 nodes)
+    // check, so the hot path gains nothing per node.
+    private CancellationToken _ct;
+
+    // Reused across iterations so progress reporting costs no allocation (see SearchProgress).
+    private readonly SearchProgress _progress = new();
 
     // Diagnostics
     private int _selDepth;
@@ -206,9 +218,22 @@ internal class Searcher
 
     // ── Public search entry point ─────────────────────────────────────────────
 
+    /// <summary>
+    /// Discards everything learned from previous positions: the transposition table and the
+    /// killer/history/counter-move tables. Needed when the engine is handed an unrelated game
+    /// (UCI "ucinewgame"), where carrying scores over from the previous game's tree is at best
+    /// noise and at worst a wrong cutoff from a same-hash position reached by a different path.
+    /// </summary>
+    internal void ClearTables()
+    {
+        _transpositionTable.Clear();
+        _moveOrdering.Clear();
+    }
+
     public SearchResult Search(SearchSettings settings, CancellationToken ct = default)
     {
         _settings        = settings ?? new SearchSettings();
+        _ct              = ct;
 
         // ── Controlled A/B override of the LMR schedule (see SearchSettings.LmrBaseOverride) ──
         // UseLegacyFlatLmr reproduces the pre-table schedule exactly and takes precedence over
@@ -420,6 +445,22 @@ internal class Searcher
             if (_pvLength[0] > 0)
                 result.BestMove = _pvTable[0, 0];
 
+            // Report the finished iteration before deciding whether to start another one, so a
+            // search that stops on the time cap below has still published its deepest result.
+            if (_settings.OnIterationComplete is { } onIterationComplete)
+            {
+                _progress.Depth     = depth;
+                _progress.SelDepth  = Math.Max(_selDepth, depth);
+                _progress.Score     = score;
+                _progress.Nodes     = _nodesSearched + _qnodesSearched;
+                _progress.ElapsedMs = _searchTimer.ElapsedMilliseconds;
+                _progress.PvBuffer.Clear();
+                for (int i = 0; i < _pvLength[0]; i++)
+                    _progress.PvBuffer.Add(_pvTable[0, i]);
+
+                onIterationComplete(_progress);
+            }
+
             if (_settings.Verbose)
             {
                 double sec = _searchTimer.Elapsed.TotalSeconds;
@@ -509,8 +550,11 @@ internal class Searcher
             return 0;
         }
 
+        // Clock and caller cancellation share the same throttle: both are external stop
+        // conditions that only need to be noticed promptly, not exactly.
         if ((_nodesSearched & 2047) == 0 &&
-            _searchTimer.ElapsedMilliseconds > (_settings.MaxTimeMs ?? 10_000))
+            (_ct.IsCancellationRequested ||
+             _searchTimer.ElapsedMilliseconds > (_settings.MaxTimeMs ?? 10_000)))
         {
             _cancelRequested = true;
             return 0;
@@ -809,7 +853,8 @@ internal class Searcher
         // unbounded — measured at 29% over the move budget in tactical positions, which is
         // a flag risk under a real clock.
         if ((_qnodesSearched & 2047) == 0 &&
-            _searchTimer.ElapsedMilliseconds > (_settings.MaxTimeMs ?? 10_000))
+            (_ct.IsCancellationRequested ||
+             _searchTimer.ElapsedMilliseconds > (_settings.MaxTimeMs ?? 10_000)))
         {
             _cancelRequested = true;
             return 0;

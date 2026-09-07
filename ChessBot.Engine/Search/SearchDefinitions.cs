@@ -121,6 +121,18 @@ public class SearchSettings
     /// </summary>
     public bool UseCheckExtension { get; set; } = true;
 
+    /// <summary>
+    /// Invoked once per *completed* iterative-deepening iteration — never per node — so a
+    /// protocol layer (UCI "info depth ...") can report progress without the search having to
+    /// know that a protocol exists. Null by default: no callback, no cost, and the search tree
+    /// is identical either way, since this is telemetry rather than a heuristic.
+    ///
+    /// The argument is a single instance reused for every iteration, so its contents (the PV
+    /// list included) are only valid for the duration of the call; a consumer that needs to
+    /// keep them must copy them. Reuse is what keeps progress reporting allocation-free.
+    /// </summary>
+    public Action<SearchProgress>? OnIterationComplete { get; set; }
+
     public SearchSettings()
     {
         MinNodeTarget ??= 300_000;
@@ -141,6 +153,84 @@ public class SearchSettings
         UseAspiration         = false,
         UseCheckExtension     = false,
     };
+}
+
+/// <summary>
+/// Mate-score encoding, exposed because anything that renders a search score has to know
+/// where the mate band starts: the search returns ply-relative mate scores
+/// (<c>±(Mate - plies)</c>), and a protocol layer must turn those back into a distance
+/// ("score mate 3") rather than printing a 100,000 centipawn evaluation.
+/// </summary>
+public static class SearchScores
+{
+    /// <summary>Score of a mate delivered at ply 0. Deeper mates score less, by one per ply.</summary>
+    public const int Mate = 100_000;
+
+    /// <summary>
+    /// Largest ply distance a mate score can carry (the search's maximum ply). Scores whose
+    /// magnitude is within this much of <see cref="Mate"/> are mates rather than evaluations.
+    /// </summary>
+    public const int MateDistanceLimit = 64;
+
+    /// <summary>Lowest magnitude that still denotes a mate rather than a centipawn evaluation.</summary>
+    public const int MateThreshold = Mate - MateDistanceLimit;
+
+    /// <summary>True when <paramref name="score"/> encodes a forced mate for one side.</summary>
+    public static bool IsMateScore(int score) => Math.Abs(score) >= MateThreshold;
+
+    /// <summary>
+    /// Converts a mate score into a signed distance in *moves* (not plies), the unit UCI's
+    /// "score mate" uses: positive when the side to move mates, negative when it is mated.
+    /// A mate in 3 plies is reported as 2 moves, matching the convention that the mating move
+    /// itself completes the move pair.
+    /// </summary>
+    public static int MateDistanceInMoves(int score)
+    {
+        int plies = Mate - Math.Abs(score);
+        int moves = (plies + 1) / 2;
+        return score > 0 ? moves : -moves;
+    }
+}
+
+/// <summary>
+/// A snapshot of one completed iterative-deepening iteration, handed to
+/// <see cref="SearchSettings.OnIterationComplete"/>.
+///
+/// The searcher reuses one instance for the whole search, so the values are only valid inside
+/// the callback — that is deliberate: progress reporting must not add an allocation per
+/// iteration to a search that is otherwise allocation-free.
+/// </summary>
+public sealed class SearchProgress
+{
+    /// <summary>Depth of the iteration that just completed.</summary>
+    public int Depth { get; internal set; }
+
+    /// <summary>Deepest ply reached including quiescence, over the search so far.</summary>
+    public int SelDepth { get; internal set; }
+
+    /// <summary>
+    /// Score in the negamax convention (positive = good for the side to move). Mate scores are
+    /// ply-relative; use <see cref="SearchScores"/> to decode them.
+    /// </summary>
+    public int Score { get; internal set; }
+
+    /// <summary>Total nodes (main + quiescence) visited when this iteration finished.</summary>
+    public long Nodes { get; internal set; }
+
+    /// <summary>Elapsed search time in milliseconds when this iteration finished.</summary>
+    public long ElapsedMs { get; internal set; }
+
+    /// <summary>Nodes per second over the whole search so far.</summary>
+    public double NodesPerSecond => ElapsedMs > 0 ? Nodes / (ElapsedMs / 1000.0) : 0;
+
+    /// <summary>
+    /// The principal variation of this iteration. Backed by a list the searcher refills every
+    /// iteration; copy it if it must outlive the callback.
+    /// </summary>
+    public IReadOnlyList<Move> PrincipalVariation => PvBuffer;
+
+    /// <summary>Mutable backing store, refilled by the searcher before each callback.</summary>
+    internal List<Move> PvBuffer { get; } = new();
 }
 
 /// <summary>
