@@ -4,6 +4,7 @@ using ChessBot.Engine;
 using ChessBot.Engine.Board;
 using ChessBot.Engine.Search;
 using ChessBot.Engine.Types;
+using ChessBot.Uci;
 using Xunit;
 
 /// <summary>
@@ -30,13 +31,14 @@ public class StaticExchangeEvaluationTests
         var moves = new Move[MoveGenerator.MaxMoves];
         gen.GenerateLegalMovesInto(moves, out int count);
 
+        // Rendered by the one routine that defines the wire format, not by a local approximation
+        // of it. Spelling a promotion as the piece name's first letter — which is what stood here —
+        // writes a knight as "k", so "b7a8n" matches nothing and "b7a8k" matches a move that does
+        // not exist in chess. The same shortcut in a match harness cost two games out of ~380
+        // before it was traced, because it only ever misfires on an underpromotion to a knight.
         for (int i = 0; i < count; i++)
         {
-            var m = moves[i];
-            string s = $"{m.From}{m.To}";
-            if ((m.MoveType & MoveType.Promotion) != 0)
-                s += char.ToLowerInvariant(m.PromotionType.ToString()[0]);
-            if (s == uci) return m;
+            if (UciMoveNotation.Format(moves[i]) == uci) return moves[i];
         }
 
         Assert.Fail($"move {uci} is not legal in this position");
@@ -99,6 +101,15 @@ public class StaticExchangeEvaluationTests
     [Fact]
     public void CapturePromotion_CountsTheVictimAndThePromotionGain()
         => Assert.Equal(500 + (900 - 100), See("r6k/1P6/8/8/8/8/8/4K3 w - - 0 1", "b7a8q"));
+
+    /// <summary>
+    /// The same capture-promotion, underpromoting. Present because the promotion piece is the one
+    /// part of a UCI move that is not derivable from the squares, so every helper that renders a
+    /// move has to get it right — and a knight is where they stop doing so.
+    /// </summary>
+    [Fact]
+    public void CapturePromotionToAKnight_CountsTheKnightsPremium()
+        => Assert.Equal(500 + (320 - 100), See("r6k/1P6/8/8/8/8/8/4K3 w - - 0 1", "b7a8n"));
 
     // ── What the classification one level up is for ──────────────────────────
 

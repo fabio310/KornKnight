@@ -16,8 +16,42 @@ public sealed class UciAdapter : IDisposable
     private bool _disposed;
     private readonly List<string> _handshakeLines = new();
 
+    /// <summary>
+    /// A rolling window of the last <see cref="ProtocolTraceCapacity"/> protocol lines exchanged
+    /// with this engine, each tagged with its direction ("&gt;&gt;" sent, "&lt;&lt;" received).
+    ///
+    /// Kept permanently rather than behind a debug switch. A rejected move is only diagnosable
+    /// from the conversation that produced it — which position the engine was actually given, what
+    /// it reported before answering — and by the time one is noticed the process is usually gone.
+    /// Bounded so a long game cannot grow it without limit, and written to under a lock because
+    /// nothing else guarantees the send and receive paths are on the same thread.
+    /// </summary>
+    private readonly Queue<string> _protocolTrace = new();
+    private readonly object _traceLock = new();
+
+    /// <summary>Protocol lines retained for diagnostics. Enough to cover several full moves.</summary>
+    public const int ProtocolTraceCapacity = 40;
+
     public string EngineName { get; private set; } = "Unknown";
     public bool IsRunning => _process is { HasExited: false };
+
+    /// <summary>
+    /// Snapshot of the recent protocol conversation, oldest first. Safe to call from another
+    /// thread while the engine is running.
+    /// </summary>
+    public IReadOnlyList<string> ProtocolTrace
+    {
+        get { lock (_traceLock) return _protocolTrace.ToArray(); }
+    }
+
+    private void Trace(string direction, string line)
+    {
+        lock (_traceLock)
+        {
+            _protocolTrace.Enqueue($"{direction} {line}");
+            while (_protocolTrace.Count > ProtocolTraceCapacity) _protocolTrace.Dequeue();
+        }
+    }
 
     public UciAdapter(string enginePath)
     {
@@ -164,6 +198,7 @@ public sealed class UciAdapter : IDisposable
     private async Task SendAsync(string command)
     {
         if (_stdin is null) throw new InvalidOperationException("Engine not started.");
+        Trace(">>", command);
         await _stdin.WriteLineAsync(command);
         await _stdin.FlushAsync();
     }
@@ -290,7 +325,9 @@ public sealed class UciAdapter : IDisposable
         if (_stdout is null) return null;
         try
         {
-            return await _stdout.ReadLineAsync(ct);
+            string? line = await _stdout.ReadLineAsync(ct);
+            if (line is not null) Trace("<<", line);
+            return line;
         }
         catch (OperationCanceledException)
         {
