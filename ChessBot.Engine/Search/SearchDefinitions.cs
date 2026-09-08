@@ -218,10 +218,17 @@ public static class SearchScores
     public const int Mate = 100_000;
 
     /// <summary>
-    /// Largest ply distance a mate score can carry (the search's maximum ply). Scores whose
-    /// magnitude is within this much of <see cref="Mate"/> are mates rather than evaluations.
+    /// Width of the mate band: scores whose magnitude is within this much of <see cref="Mate"/>
+    /// are mates rather than evaluations.
+    ///
+    /// This is not the search's stack depth — that is <c>Searcher.MAX_PLY</c>, and the two were
+    /// wrongly aliased. The only relationship between them is a lower bound: a mate found at the
+    /// deepest reachable ply scores <c>Mate - ply</c>, so the band must be at least as wide as
+    /// the stack or such a score would decode as a centipawn evaluation. The value below leaves
+    /// generous headroom above the stack, and no real evaluation comes within 99,000 centipawns
+    /// of it.
     /// </summary>
-    public const int MateDistanceLimit = 64;
+    public const int MateDistanceLimit = 256;
 
     /// <summary>Lowest magnitude that still denotes a mate rather than a centipawn evaluation.</summary>
     public const int MateThreshold = Mate - MateDistanceLimit;
