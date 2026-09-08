@@ -49,6 +49,12 @@ public class StaticExchangeEvaluationTests
         return ordering.StaticExchangeEvaluation(Find(board, uci));
     }
 
+    private static bool SeeGe(string fen, string uci, int threshold)
+    {
+        var (ordering, board) = Setup(fen);
+        return ordering.SeeGe(Find(board, uci), threshold);
+    }
+
     // ── The five cases that distinguish a real SEE from the victim's value ────
 
     [Fact]
@@ -124,5 +130,75 @@ public class StaticExchangeEvaluationTests
         Assert.True(winning >= 0, "axb5 was not generated");
         Assert.True(winning < losing,
             $"axb5 (SEE +100) must be ordered before Qxd5 (SEE -400); got axb5 at {winning}, Qxd5 at {losing}");
+    }
+
+    // ── The threshold form that move ordering actually runs ──────────────────
+    //
+    // Ordering only ever needed the sign, and paid for the whole exchange to get it. SeeGe stops
+    // as soon as the balance can no longer cross the bound, so the guarantee that has to hold is
+    // that stopping early never changes the answer: on every case above, and over a whole corpus
+    // of real positions, its verdict must be exactly "the full exchange clears the threshold".
+
+    [Theory]
+    [InlineData("4k3/8/2p5/3p4/8/8/8/3QK3 w - - 0 1",   "d1d5")]  // Qxd5, defended by a pawn
+    [InlineData("qk6/8/8/8/8/8/8/R3K3 w - - 0 1",       "a1a8")]  // Rxa8, defended only by the king
+    [InlineData("7k/3p4/8/8/8/8/8/3RK3 w - - 0 1",      "d1d7")]  // Rxd7, undefended
+    [InlineData("q6k/8/8/3n4/4P3/8/8/4K3 w - - 0 1",    "e4d5")]  // exd5, defended by a queen
+    [InlineData("r6r/8/8/8/8/8/8/R3K2k w - - 0 1",      "a1a8")]  // Rxa8, an even trade
+    [InlineData("7k/8/4p3/3p4/8/3R4/8/3RK3 w - - 0 1",  "d3d5")]  // Rxd5 with a rook behind it
+    [InlineData("7k/8/8/3pP3/3r4/8/8/4K3 w - d6 0 1",   "e5d6")]  // exd6 e.p., opening the file
+    [InlineData("r6k/1P6/8/8/8/8/8/4K3 w - - 0 1",      "b7a8q")] // bxa8=Q
+    public void SeeGeAgreesWithTheFullExchangeAtEveryThreshold(string fen, string uci)
+    {
+        int exact = See(fen, uci);
+
+        // Straddle the true value: the verdict must flip exactly at it, nowhere else.
+        foreach (int threshold in new[] { exact - 1, exact, exact + 1, -900, -100, 0, 100, 900 })
+            Assert.Equal(exact >= threshold, SeeGe(fen, uci, threshold));
+    }
+
+    /// <summary>
+    /// The early exit is only safe if it never changes a verdict, and the cases above are all
+    /// hand-built. This runs both forms over every capture in several hundred positions from a
+    /// seeded random walk, which is where a deep or unusual exchange that the hand-built cases
+    /// miss actually turns up.
+    /// </summary>
+    [Fact]
+    public void SeeGeAgreesWithTheFullExchangeOverACorpus()
+    {
+        var rng     = new Random(20260908);
+        int checked_ = 0;
+
+        for (int line = 0; line < 40; line++)
+        {
+            var engine = new ChessEngine();
+
+            for (int ply = 0; ply < 40; ply++)
+            {
+                var legal = engine.GetLegalMoves();
+                if (legal.Count == 0) break;
+
+                var board    = engine.GetBoardSnapshot();
+                var ordering = new MoveOrdering(board);
+
+                foreach (var move in legal)
+                {
+                    if (!move.MoveType.IsTactical()) continue;
+
+                    int exact = ordering.StaticExchangeEvaluation(move);
+                    checked_++;
+
+                    foreach (int threshold in new[] { exact - 1, exact, exact + 1, -100, 0, 100 })
+                        Assert.True(
+                            (exact >= threshold) == ordering.SeeGe(move, threshold),
+                            $"SeeGe disagreed with SEE {exact} at threshold {threshold} " +
+                            $"for {move.From}{move.To} in {engine.ExportFen()}");
+                }
+
+                engine.MakeMove(legal[rng.Next(legal.Count)]);
+            }
+        }
+
+        Assert.True(checked_ > 500, $"corpus produced only {checked_} captures; too few to mean anything");
     }
 }
