@@ -111,39 +111,27 @@ internal class MoveOrdering
         if (move == ttMove && ttMove != default)
             return 999999;
 
-        // Captures: scored by MVV-LVA + SEE (good trades first).
-        // IsCapture() includes en passant, so it is ordered as a capture rather than a quiet move.
-        if (move.MoveType.IsCapture())
+        // Tactical moves — captures, en passant and promotions — share one band, because a
+        // promotion is a material swing like any other and belongs to be compared against
+        // captures rather than filed below them. A queen promotion used to score a flat 304,000
+        // against a capture band whose floor is 500,000, so a move worth eight pawns was searched
+        // behind every capture including ones that hang a queen; and because the capture test
+        // returned first, exd8=Q never reached the promotion branch at all and was scored as a
+        // plain capture of whatever stood on d8.
+        if (move.MoveType.IsTactical())
         {
-            Piece victim = _board.GetPiece(move.To);
-            Piece attacker = _board.GetPiece(move.From);
+            int swing    = MaterialSwing(_board, move);
+            int attacker = _board.GetPiece(move.From).Type.MaterialValue();
 
-            // En passant: the target square is empty; the victim is always a pawn.
-            if ((move.MoveType & MoveType.EnPassant) != 0)
-                victim = new Piece(_board.State.ActiveColor.Opposite(), PieceType.Pawn);
-
-            int mvvScore = MVVLVAScore(victim, attacker);
+            // MVV-LVA, generalised from "the victim" to the whole swing: prefer the largest
+            // swing, and among equal swings the cheapest piece that achieves it.
+            int mvvScore = swing * 10 - attacker;
             int seeScore = StaticExchangeEvaluation(move);
 
-            // Good captures (SEE >= 0) score higher than bad captures (SEE < 0)
-            if (seeScore >= 0)
-                return 600000 + mvvScore + seeScore;
-            else
-                return 500000 + mvvScore + seeScore;  // Bad captures later
-        }
-
-        // Promotions: very high priority (30x-40x better than quiet moves)
-        if ((move.MoveType & MoveType.Promotion) != 0)
-        {
-            int promotionBonus = move.PromotionType switch
-            {
-                PieceType.Queen => 4000,
-                PieceType.Rook => 3000,
-                PieceType.Bishop => 2000,
-                PieceType.Knight => 1000,
-                _ => 0
-            };
-            return 300000 + promotionBonus;
+            // Winning tactical moves (SEE >= 0) score above losing ones.
+            return seeScore >= 0
+                ? 600000 + mvvScore + seeScore
+                : 500000 + mvvScore + seeScore;
         }
 
         // Killer moves: moves that caused cutoffs at this depth
@@ -168,17 +156,25 @@ internal class MoveOrdering
     }
 
     /// <summary>
-    /// MVV-LVA (Most Valuable Victim - Least Valuable Attacker) scoring for captures.
-    /// Returns a score where higher = better capture.
+    /// The immediate material swing of a move: what the mover banks before the opponent replies.
+    /// That is the captured piece — a pawn for en passant, whose victim does not stand on the
+    /// target square — plus, for a promotion, the difference between the new piece and the pawn
+    /// that became it. Quiet moves swing nothing.
+    ///
+    /// One definition, shared by move ordering, SEE and quiescence delta pruning. Those three
+    /// disagreeing is what let quiescence discard at 320 centipawns a capture-promotion that
+    /// ordering had just scored at 1,120.
     /// </summary>
-    private int MVVLVAScore(Piece victim, Piece attacker)
+    internal static int MaterialSwing(Board board, Move move)
     {
-        int victimValue = victim.Type.MaterialValue();
-        int attackerValue = attacker.Type.MaterialValue();
+        int swing = (move.MoveType & MoveType.EnPassant) != 0
+            ? PieceType.Pawn.MaterialValue()
+            : board.GetPiece(move.To).Type.MaterialValue();
 
-        // Score = (victim value * 10) - (attacker value)
-        // This prioritizes capturing valuable pieces with cheap pieces
-        return (victimValue * 10) - attackerValue;
+        if ((move.MoveType & MoveType.Promotion) != 0)
+            swing += move.PromotionType.MaterialValue() - PieceType.Pawn.MaterialValue();
+
+        return swing;
     }
 
     /// <summary>
@@ -268,21 +264,13 @@ internal class MoveOrdering
         // Squares whose occupant has left the board for the purposes of this exchange.
         ulong vacated = 1UL << from.Index;
 
-        int captured = enPassant
-            ? PieceType.Pawn.MaterialValue()
-            : _board.GetPiece(to).Type.MaterialValue();
-
         // The en-passant victim stands beside the target square, not on it, so vacating its square
         // is a separate step — and it matters, because a rank or file through it opens.
         if (enPassant)
             vacated |= 1UL << new Square(to.File, to.Rank - side.PawnDirection()).Index;
 
-        // A promotion banks the difference between the new piece and the pawn, and it is the new
-        // piece that stands on the target square for the rest of the exchange.
-        int promotionGain = promotion
-            ? captureMove.PromotionType.MaterialValue() - PieceType.Pawn.MaterialValue()
-            : 0;
-
+        // After a promotion it is the new piece that stands on the target square for the rest of
+        // the exchange, so that is what the opponent is capturing.
         PieceType moverType = promotion ? captureMove.PromotionType : _board.GetPiece(from).Type;
         int onSquare = moverType == PieceType.King ? SeeKingValue : moverType.MaterialValue();
 
@@ -292,7 +280,7 @@ internal class MoveOrdering
             SeeAdvanceRay(d, to, vacated);
         }
 
-        _seeGain[0] = captured + promotionGain;
+        _seeGain[0] = MaterialSwing(_board, captureMove);
         int depth = 0;
         side = side.Opposite();
 
