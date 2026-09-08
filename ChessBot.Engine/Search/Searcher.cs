@@ -960,16 +960,15 @@ internal class Searcher
         {
             var move = moves[mi];
 
-            // Delta pruning (captures only — a hopeless capture can't raise alpha).
-            // IsCapture() includes en passant; its victim is always a pawn (the target square
-            // itself is empty), so the material gain is computed explicitly below.
-            if (!inCheck && move.MoveType.IsCapture())
+            // Delta pruning: a tactical move that cannot raise alpha even with a generous margin
+            // is skipped. The gain is the full material swing — the same figure move ordering
+            // scored the move by — so a capture-promotion is charged at the victim plus the
+            // promotion rather than the victim alone. Charging exd8=Q at 320 instead of 1,120
+            // pruned it whenever standPat + 520 fell under alpha, which is exactly the lost
+            // position with a passer on the seventh that the promotion exists to rescue.
+            if (!inCheck && move.MoveType.IsTactical())
             {
-                Piece victim = _board.GetPiece(move.To);
-                if ((move.MoveType & MoveType.EnPassant) != 0)
-                    victim = new Piece(_board.State.ActiveColor.Opposite(), PieceType.Pawn);
-
-                int gain = victim.Type.MaterialValue();
+                int gain = MoveOrdering.MaterialSwing(_board, move);
                 if (standPat + gain + DELTA_MARGIN <= alpha)
                     continue;
             }
