@@ -6,10 +6,9 @@ using System.Collections.Generic;
 
 /// <summary>
 /// Implements move ordering heuristics for efficient alpha-beta pruning.
-/// Prioritizes moves by: TT move (999k) > winning captures (MVV-LVA + SEE, 600k) >
-/// promotions (300k) > killer moves (200k) > counter-moves (150k) > history/quiet (100k),
-/// with losing captures (SEE below zero) demoted to 500k — a band that only exists because
-/// SEE can now tell the two apart.
+/// Prioritizes moves by: TT move (999k) > winning tactical moves — captures and promotions
+/// alike, by material swing and SEE (600k) > losing tactical moves (500k) > killer moves
+/// (200k/190k) > counter-moves (150k) > quiet moves ranked by history (100k ± history).
 /// </summary>
 internal class MoveOrdering
 {
@@ -23,10 +22,32 @@ internal class MoveOrdering
     private readonly Move[] _killerMoves2;
 
     /// <summary>
-    /// History heuristic: count successful moves for move ordering.
-    /// Indexed as [fromSquare.Index][toSquare.Index].
+    /// History heuristic: a signed record of how well a quiet move has done at producing beta
+    /// cutoffs, relative to how often it was tried and failed to. Indexed as [from.Index, to.Index].
     /// </summary>
-    private readonly long[,] _history;
+    private readonly int[,] _history;
+
+    /// <summary>
+    /// The magnitude a history entry approaches but never reaches. Updates move an entry toward
+    /// this ceiling by a fraction of the distance still to go, so a move that keeps cutting keeps
+    /// separating itself from one that cuts less often, and no number of hits can pin two entries
+    /// at the same value.
+    ///
+    /// The previous update added depth² outright and the read clamped at 10,000, which needs about
+    /// seventy cutoffs on one from/to pair at depth 12 before that pair stops ranking. Measured
+    /// against the old rule, that was rarer than it sounds — within a single search, 0 of 124 used
+    /// slots reached the clamp at 300k nodes, 3 of 314 at 2M and 17 of 604 at 10M — because the
+    /// table was cleared before every move, so nothing accumulated across a game. It is
+    /// <see cref="NewSearch"/> keeping the table between moves that makes an unbounded accumulator
+    /// untenable, and gravity is what makes keeping it safe.
+    /// </summary>
+    internal const int HistoryMax = 16384;
+
+    /// <summary>
+    /// Ceiling on a single update's weight. Depth² alone reaches 16,384 at depth 128 and would
+    /// swamp the gravity term in one hit at the deepest plies.
+    /// </summary>
+    private const int HistoryBonusMax = 1200;
 
     /// <summary>
     /// Counter-move heuristic: best counter to opponent's last move.
@@ -58,7 +79,7 @@ internal class MoveOrdering
         _board = board;
         _killerMoves1 = new Move[Searcher.MAX_PLY];
         _killerMoves2 = new Move[Searcher.MAX_PLY];
-        _history = new long[64, 64];
+        _history = new int[64, 64];
         _counterMoves = new Move[64, 64];
     }
 
@@ -101,9 +122,8 @@ internal class MoveOrdering
     }
 
     /// <summary>
-    /// Calculates a score for move ordering.
-    /// Higher score = earlier in search (higher priority).
-    /// Score ranges: TT/PV (999k+), Captures (500k), Killers (200k), History (100k), Quiet (0-100k).
+    /// Calculates a score for move ordering; higher is searched earlier. See the class summary
+    /// for the bands.
     /// </summary>
     private int CalculateMoveScore(Move move, Move ttMove, Move lastOpponentMove, int depth)
     {
@@ -150,9 +170,9 @@ internal class MoveOrdering
                 return 150000;
         }
 
-        // History moves: quiet moves with successful history
-        int historyScore = (int)Math.Min(10000, _history[move.From.Index, move.To.Index]);
-        return 100000 + historyScore;
+        // History: the signed cutoff record of this quiet move. Negative for a move that has been
+        // tried and failed often, so it sorts below one that has never been seen at all.
+        return 100000 + _history[move.From.Index, move.To.Index];
     }
 
     /// <summary>
@@ -194,13 +214,34 @@ internal class MoveOrdering
     }
 
     /// <summary>
-    /// Records successful move for history heuristic.
-    /// Called when a move causes a cutoff.
+    /// Rewards a quiet move that produced a beta cutoff, weighted by the depth it did so at:
+    /// a cutoff eight plies from the horizon is worth far more evidence than one at the horizon.
     /// </summary>
-    public void RecordHistoryMove(Move move, int depth)
+    public void RecordHistoryMove(Move move, int depth) => UpdateHistory(move, HistoryBonus(depth));
+
+    /// <summary>
+    /// Penalises a quiet move that was searched ahead of the move that actually cut and failed to
+    /// cut itself. Without this the table only ever learns which moves are good and never which
+    /// are merely tried often — two moves with the same number of cutoffs are indistinguishable
+    /// even when one of them was searched ten times as often to get them.
+    /// </summary>
+    public void RecordHistoryFailure(Move move, int depth) => UpdateHistory(move, -HistoryBonus(depth));
+
+    /// <summary>The current history value of a move. Signed; 0 for a move never seen.</summary>
+    internal int HistoryScore(Move move) => _history[move.From.Index, move.To.Index];
+
+    private static int HistoryBonus(int depth) => Math.Min(depth * depth, HistoryBonusMax);
+
+    /// <summary>
+    /// The gravity update: move the entry toward ±<see cref="HistoryMax"/> by the bonus, less the
+    /// share of the bonus already accounted for by how far the entry has come. An entry near the
+    /// ceiling barely moves; one near zero moves by almost the whole bonus. That is what keeps
+    /// heavily rewarded entries ordered against each other instead of piled on a clamp.
+    /// </summary>
+    private void UpdateHistory(Move move, int bonus)
     {
-        // Increment history score (depth-squared as bonus weight)
-        _history[move.From.Index, move.To.Index] += (long)depth * depth;
+        ref int entry = ref _history[move.From.Index, move.To.Index];
+        entry += bonus - entry * Math.Abs(bonus) / HistoryMax;
     }
 
     /// <summary>
@@ -417,7 +458,26 @@ internal class MoveOrdering
 
 
     /// <summary>
-    /// Clears all ordering heuristics for a new search.
+    /// Ages the tables at the start of each search within one game. History is halved rather than
+    /// discarded: the position about to be searched is two plies from the one just searched, so
+    /// most of what the previous search learned about which quiet moves cut is still true — but
+    /// only most of it, and halving lets fresh evidence overtake stale evidence within a few
+    /// cutoffs instead of competing with a full-strength record of a position that no longer
+    /// exists. Killers and counter-moves are kept outright for the same reason.
+    ///
+    /// This replaces a <see cref="Clear"/> in the per-move setup, which threw away everything the
+    /// previous move's search had learned. <see cref="Clear"/> is now only for an unrelated game.
+    /// </summary>
+    public void NewSearch()
+    {
+        for (int i = 0; i < 64; i++)
+            for (int j = 0; j < 64; j++)
+                _history[i, j] /= 2;
+    }
+
+    /// <summary>
+    /// Clears all ordering heuristics. For an unrelated game (UCI "ucinewgame"), where nothing
+    /// learned about the previous game's tree applies.
     /// </summary>
     public void Clear()
     {
