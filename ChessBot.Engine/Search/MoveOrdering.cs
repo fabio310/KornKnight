@@ -6,8 +6,10 @@ using System.Collections.Generic;
 
 /// <summary>
 /// Implements move ordering heuristics for efficient alpha-beta pruning.
-/// Prioritizes moves by: TT move (999k+) > PV move (1M) > Good captures (MVV-LVA+SEE, 500k) > 
-/// Killer moves (200k) > History/Counter moves (100k) > Quiet moves.
+/// Prioritizes moves by: TT move (999k) > winning captures (MVV-LVA + SEE, 600k) >
+/// promotions (300k) > killer moves (200k) > counter-moves (150k) > history/quiet (100k),
+/// with losing captures (SEE below zero) demoted to 500k — a band that only exists because
+/// SEE can now tell the two apart.
 /// </summary>
 internal class MoveOrdering
 {
@@ -15,7 +17,7 @@ internal class MoveOrdering
 
     /// <summary>
     /// Killer moves: best quiet moves at each depth that caused cutoffs.
-    /// Indexed by depth (max 64 plies).
+    /// Indexed by ply (the search stack depth, Searcher.MAX_PLY entries).
     /// </summary>
     private readonly Move[] _killerMoves1;
     private readonly Move[] _killerMoves2;
@@ -39,20 +41,23 @@ internal class MoveOrdering
     /// </summary>
     private readonly int[] _moveScores = new int[256];
 
-    // Precomputed direction/offset tables for CheckKnightDefense/CheckSlidingDefense.
-    // These used to be allocated as jagged int[][] literals (plus a LINQ .Select() enumerator)
-    // on every single call — and these SEE helpers run once per capture scored during move
-    // ordering, i.e. once per node. Flat static readonly arrays make this allocation-free.
+    // Precomputed direction/offset tables for the SEE attacker scan. These used to be allocated
+    // as jagged int[][] literals (plus a LINQ .Select() enumerator) on every single call, and SEE
+    // runs once per capture scored during move ordering, i.e. once per node. Flat static readonly
+    // arrays make it allocation-free.
     private static readonly int[] KnightFileOffsets = { -2, -2, -1, -1, 1, 1, 2, 2 };
     private static readonly int[] KnightRankOffsets = { -1, 1, -2, 2, -2, 2, -1, 1 };
-    private static readonly int[] SlideFileOffsets  = { -1, -1, 1, 1, -1, 1, 0, 0 };
-    private static readonly int[] SlideRankOffsets  = { -1, 1, -1, 1, 0, 0, -1, 1 };
+
+    // The eight ray directions out of a square. Indices 0-3 are diagonals, 4-7 orthogonals;
+    // SeeRayAttacks relies on that split.
+    private static readonly int[] RayFileDirs = { -1, -1, 1, 1, -1, 1, 0, 0 };
+    private static readonly int[] RayRankDirs = { -1, 1, -1, 1, 0, 0, -1, 1 };
 
     public MoveOrdering(Board board)
     {
         _board = board;
-        _killerMoves1 = new Move[64];
-        _killerMoves2 = new Move[64];
+        _killerMoves1 = new Move[Searcher.MAX_PLY];
+        _killerMoves2 = new Move[Searcher.MAX_PLY];
         _history = new long[64, 64];
         _counterMoves = new Move[64, 64];
     }
@@ -142,7 +147,7 @@ internal class MoveOrdering
         }
 
         // Killer moves: moves that caused cutoffs at this depth
-        if (depth < 64)
+        if (depth < Searcher.MAX_PLY)
         {
             if (move == _killerMoves1[depth])
                 return 200000;
@@ -182,7 +187,7 @@ internal class MoveOrdering
     /// </summary>
     public void RecordKillerMove(Move move, int depth)
     {
-        if (depth >= 64)
+        if (depth >= Searcher.MAX_PLY)
             return;
 
         if (move != _killerMoves1[depth])
@@ -211,138 +216,217 @@ internal class MoveOrdering
             _counterMoves[lastOpponentMove.From.Index, lastOpponentMove.To.Index] = counterMove;
     }
 
-    /// <summary>
-    /// Static Exchange Evaluation (SEE): estimates the value of a capture without search.
-    /// Returns positive if capture wins material, negative if it loses material.
-    /// This is a fast approximation useful for move ordering and pruning decisions.
-    /// </summary>
-    private int StaticExchangeEvaluation(Move captureMove)
-    {
-        Square toSquare = captureMove.To;
-        Piece capturedPiece = _board.GetPiece(toSquare);
-        Piece movingPiece = _board.GetPiece(captureMove.From);
+    // ── Static exchange evaluation ────────────────────────────────────────────
+    //
+    // Scratch state for one exchange. MoveOrdering belongs to a single Searcher and the search is
+    // single-threaded, so these are reused rather than allocated per call — SEE runs once per
+    // capture scored, which is once or more per node.
 
-        // Start with the material gain from the capture. En passant captures land on an empty
-        // square, so the victim (always a pawn) must be valued explicitly.
-        int gain = (captureMove.MoveType & MoveType.EnPassant) != 0
+    /// <summary>
+    /// The king's value inside an exchange. It is never actually traded, so the material value of
+    /// zero that evaluation correctly uses would make a king recapture look free. A value above
+    /// any real material total makes the swap algorithm treat losing it as unthinkable, and the
+    /// legality rule below stops the king capturing into a still-defended square in the first place.
+    /// </summary>
+    private const int SeeKingValue = 10_000;
+
+    /// <summary>Running exchange balance, one entry per capture in the sequence.</summary>
+    private readonly int[] _seeGain = new int[40];
+
+    // Per-direction cursors into the eight rays out of the target square. The front piece on a ray
+    // is the only one that can capture along it; when that piece is taken the ray resumes from
+    // where it stopped, which is exactly how an x-ray attacker behind a slider is revealed.
+    private readonly int[]    _seeRayStep     = new int[8];
+    private readonly bool[]   _seeRayHasPiece = new bool[8];
+    private readonly Piece[]  _seeRayPiece    = new Piece[8];
+    private readonly Square[] _seeRaySquare   = new Square[8];
+
+    /// <summary>
+    /// Static Exchange Evaluation: the material the side to move nets if both sides keep capturing
+    /// on the target square, each taking with its least valuable attacker and stopping as soon as
+    /// continuing would cost more than standing pat. No search, no make/unmake.
+    ///
+    /// This is the standard swap algorithm. Occupancy is not copied; instead a 64-bit mask of the
+    /// squares vacated during the exchange is carried, and the ray scan treats those squares as
+    /// empty — which is what makes x-rays fall out for free, including the very first one, since
+    /// the capturing piece leaves its own square before the scan starts.
+    ///
+    /// The usual "max(-gain[d-1], gain[d]) is negative" early exit is deliberately omitted: it
+    /// preserves the sign but not the value, and the value is what feeds capture ordering and,
+    /// later, quiescence pruning margins. Exchange sequences are a handful of captures long, so
+    /// the saving was not worth reporting a defended knight as a free one.
+    /// </summary>
+    internal int StaticExchangeEvaluation(Move captureMove)
+    {
+        Square to   = captureMove.To;
+        Square from = captureMove.From;
+        Color  side = _board.State.ActiveColor;
+
+        bool enPassant = (captureMove.MoveType & MoveType.EnPassant) != 0;
+        bool promotion = (captureMove.MoveType & MoveType.Promotion) != 0;
+
+        // Squares whose occupant has left the board for the purposes of this exchange.
+        ulong vacated = 1UL << from.Index;
+
+        int captured = enPassant
             ? PieceType.Pawn.MaterialValue()
-            : capturedPiece.Type.MaterialValue();
+            : _board.GetPiece(to).Type.MaterialValue();
 
-        // For speed, we use a simplified SEE: just check if it's defended/attacking.
-        // Full SEE would recurse, but this is a good balance for move ordering.
-        // A real SEE would be ~100 lines; we use the MVV-LVA as a reasonable heuristic.
+        // The en-passant victim stands beside the target square, not on it, so vacating its square
+        // is a separate step — and it matters, because a rank or file through it opens.
+        if (enPassant)
+            vacated |= 1UL << new Square(to.File, to.Rank - side.PawnDirection()).Index;
 
-        // Check if the captured piece is defended (rough heuristic)
-        bool isDefended = IsSquareDefended(toSquare, _board.State.ActiveColor.Opposite());
+        // A promotion banks the difference between the new piece and the pawn, and it is the new
+        // piece that stands on the target square for the rest of the exchange.
+        int promotionGain = promotion
+            ? captureMove.PromotionType.MaterialValue() - PieceType.Pawn.MaterialValue()
+            : 0;
 
-        // Check if our piece is hanging after the capture
-        bool ourPieceHanging = !IsSquareDefended(toSquare, _board.State.ActiveColor);
+        PieceType moverType = promotion ? captureMove.PromotionType : _board.GetPiece(from).Type;
+        int onSquare = moverType == PieceType.King ? SeeKingValue : moverType.MaterialValue();
 
-        if (isDefended && ourPieceHanging)
-        {
-            // Capture loses material: opponent recaptures and our piece is lost
-            gain -= movingPiece.Type.MaterialValue();
-        }
-
-        return gain;
-    }
-
-    /// <summary>
-    /// Simple check: is a square defended by the given color?
-    /// This is a fast approximation for SEE; a full implementation would be more complex.
-    /// </summary>
-    private bool IsSquareDefended(Square square, Color defendingColor)
-    {
-        // Check all attacking pieces: pawns, knights, bishops/queens (diagonals), rooks/queens (files/ranks), king
-        return CheckPawnDefense(square, defendingColor) ||
-               CheckKnightDefense(square, defendingColor) ||
-               CheckSlidingDefense(square, defendingColor) ||
-               CheckKingDefense(square, defendingColor);
-    }
-
-    private bool CheckPawnDefense(Square square, Color defendingColor)
-    {
-        int pawnDir = defendingColor.PawnDirection();
-        // Pawns attack diagonally (opposite of their direction)
-        int attackFile1 = square.File - 1;
-        int attackFile2 = square.File + 1;
-        int attackRank = square.Rank - pawnDir;
-
-        if (attackFile1 >= 0 && attackFile1 <= 7 && attackRank >= 0 && attackRank <= 7)
-        {
-            Piece p1 = _board.GetPiece(new Square(attackFile1, attackRank));
-            if (p1.Color == defendingColor && p1.Type == PieceType.Pawn)
-                return true;
-        }
-        if (attackFile2 >= 0 && attackFile2 <= 7 && attackRank >= 0 && attackRank <= 7)
-        {
-            Piece p2 = _board.GetPiece(new Square(attackFile2, attackRank));
-            if (p2.Color == defendingColor && p2.Type == PieceType.Pawn)
-                return true;
-        }
-        return false;
-    }
-
-    private bool CheckKnightDefense(Square square, Color defendingColor)
-    {
-        // Knight moves: 8 possible squares
-        for (int i = 0; i < 8; i++)
-        {
-            int nf = square.File + KnightFileOffsets[i];
-            int nr = square.Rank + KnightRankOffsets[i];
-            if (nf >= 0 && nf <= 7 && nr >= 0 && nr <= 7)
-            {
-                Piece knight = _board.GetPiece(new Square(nf, nr));
-                if (knight.Color == defendingColor && knight.Type == PieceType.Knight)
-                    return true;
-            }
-        }
-        return false;
-    }
-
-    private bool CheckSlidingDefense(Square square, Color defendingColor)
-    {
-        // Check diagonals (bishops, queens) and files/ranks (rooks, queens)
         for (int d = 0; d < 8; d++)
         {
-            int df = SlideFileOffsets[d];
-            int dr = SlideRankOffsets[d];
-
-            for (int dist = 1; dist < 8; dist++)
-            {
-                int nf = square.File + df * dist;
-                int nr = square.Rank + dr * dist;
-
-                if (nf < 0 || nf > 7 || nr < 0 || nr > 7)
-                    break;
-
-                Piece piece = _board.GetPiece(new Square(nf, nr));
-                if (piece.Type == PieceType.None)
-                    continue;
-
-                if (piece.Color != defendingColor)
-                    break;
-
-                // Check if this piece can attack along this direction
-                bool isDiagonal = (df != 0 && dr != 0);
-                bool isFileRank = (df == 0 || dr == 0);
-
-                if ((isDiagonal && (piece.Type == PieceType.Bishop || piece.Type == PieceType.Queen)) ||
-                    (isFileRank && (piece.Type == PieceType.Rook || piece.Type == PieceType.Queen)))
-                {
-                    return true;
-                }
-                break; // Stop at first piece found
-            }
+            _seeRayStep[d] = 0;
+            SeeAdvanceRay(d, to, vacated);
         }
-        return false;
+
+        _seeGain[0] = captured + promotionGain;
+        int depth = 0;
+        side = side.Opposite();
+
+        while (depth < _seeGain.Length - 2)
+        {
+            depth++;
+            _seeGain[depth] = onSquare - _seeGain[depth - 1];
+
+            int value = SeeLeastValuableAttacker(to, side, vacated, out int rayIndex, out Square square);
+            if (value == int.MaxValue) break;
+
+            // A king may only take the last defender: capturing into a square the other side still
+            // attacks is illegal, so the exchange simply stops there.
+            if (value == SeeKingValue &&
+                SeeLeastValuableAttacker(to, side.Opposite(), vacated, out _, out _) != int.MaxValue)
+                break;
+
+            vacated |= 1UL << square.Index;
+            if (rayIndex >= 0) SeeAdvanceRay(rayIndex, to, vacated);
+
+            onSquare = value;
+            side     = side.Opposite();
+        }
+
+        // Fold the speculative sequence back: at every point the side to move takes the better of
+        // capturing and standing pat. The deepest entry is never folded in — it belongs to a
+        // capture that was found not to be available.
+        while (--depth > 0)
+            _seeGain[depth - 1] = -Math.Max(-_seeGain[depth - 1], _seeGain[depth]);
+
+        return _seeGain[0];
     }
 
-    private bool CheckKingDefense(Square square, Color defendingColor)
+    /// <summary>
+    /// Walks ray <paramref name="d"/> outward from the target square, skipping vacated squares,
+    /// and records the first piece it meets as that ray's front. Resumes from where the previous
+    /// call stopped, so consuming a front costs one continuation rather than a fresh scan: the
+    /// whole exchange spends at most seven steps per direction in total.
+    /// </summary>
+    private void SeeAdvanceRay(int d, Square to, ulong vacated)
     {
-        Square kingPos = _board.GetKingPosition(defendingColor);
-        return Math.Abs(kingPos.File - square.File) <= 1 && Math.Abs(kingPos.Rank - square.Rank) <= 1;
+        int df = RayFileDirs[d], dr = RayRankDirs[d];
+        int step = _seeRayStep[d];
+
+        while (true)
+        {
+            step++;
+            int file = to.File + df * step;
+            int rank = to.Rank + dr * step;
+
+            if (file < 0 || file > 7 || rank < 0 || rank > 7)
+            {
+                _seeRayStep[d]     = step;
+                _seeRayHasPiece[d] = false;
+                return;
+            }
+
+            var square = new Square(file, rank);
+            if ((vacated & (1UL << square.Index)) != 0) continue;
+
+            Piece piece = _board.GetPiece(square);
+            if (piece.IsEmpty) continue;
+
+            _seeRayStep[d]     = step;
+            _seeRayPiece[d]    = piece;
+            _seeRaySquare[d]   = square;
+            _seeRayHasPiece[d] = true;
+            return;
+        }
     }
+
+    /// <summary>
+    /// Whether the piece at the front of ray <paramref name="d"/> actually attacks along it. One
+    /// that does not — a knight parked on the ray, a rook on a diagonal — blocks the direction
+    /// permanently: it can never be captured on the target square, so it is never vacated either.
+    /// </summary>
+    private static bool SeeRayAttacks(int d, Piece piece, int step)
+    {
+        bool diagonal = d < 4;
+        return piece.Type switch
+        {
+            PieceType.Queen  => true,
+            PieceType.Bishop => diagonal,
+            PieceType.Rook   => !diagonal,
+            PieceType.King   => step == 1,
+            PieceType.Pawn   => diagonal && step == 1 && RayRankDirs[d] == -piece.Color.PawnDirection(),
+            _                => false,
+        };
+    }
+
+    /// <summary>
+    /// The material value of the cheapest remaining attacker <paramref name="side"/> has on
+    /// <paramref name="to"/>, or <see cref="int.MaxValue"/> when it has none. Knights are scanned
+    /// directly, because nothing can stand between a knight and its target and so they take no
+    /// part in the x-ray bookkeeping.
+    /// </summary>
+    private int SeeLeastValuableAttacker(Square to, Color side, ulong vacated,
+                                         out int rayIndex, out Square square)
+    {
+        int best = int.MaxValue;
+        rayIndex = -1;
+        square   = default;
+
+        for (int i = 0; i < 8; i++)
+        {
+            int file = to.File + KnightFileOffsets[i];
+            int rank = to.Rank + KnightRankOffsets[i];
+            if (file < 0 || file > 7 || rank < 0 || rank > 7) continue;
+
+            var candidate = new Square(file, rank);
+            if ((vacated & (1UL << candidate.Index)) != 0) continue;
+
+            Piece piece = _board.GetPiece(candidate);
+            if (piece.Type != PieceType.Knight || piece.Color != side) continue;
+
+            int value = PieceType.Knight.MaterialValue();
+            if (value < best) { best = value; rayIndex = -1; square = candidate; }
+        }
+
+        for (int d = 0; d < 8; d++)
+        {
+            if (!_seeRayHasPiece[d]) continue;
+
+            Piece piece = _seeRayPiece[d];
+            if (piece.Color != side) continue;
+            if (!SeeRayAttacks(d, piece, _seeRayStep[d])) continue;
+
+            int value = piece.Type == PieceType.King ? SeeKingValue : piece.Type.MaterialValue();
+            if (value < best) { best = value; rayIndex = d; square = _seeRaySquare[d]; }
+        }
+
+        return best;
+    }
+
 
     /// <summary>
     /// Clears all ordering heuristics for a new search.

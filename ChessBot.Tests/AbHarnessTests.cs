@@ -25,8 +25,15 @@ public class AbHarnessTests
     // reliably cancelled mid-iteration *and* the partial candidate beats the completed score,
     // so UsePartialRootResult actually changes the reported move. Fixed-node searches are
     // deterministic, so these stay reproducible.
-    private const string PartialFen    = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-    private const int    PartialDepth  = 8;
+    //
+    // The fixture is inherently sensitive to move ordering — how far a fixed node budget gets
+    // through an iteration is exactly what ordering decides — so a change to ordering can stop
+    // it provoking the condition and has to be retuned here rather than asserted around. It was
+    // last retuned when SEE stopped classifying every capture as a good one. A king-and-pawn
+    // endgame is used because its score climbs with depth, which is what makes a partial
+    // candidate beat the previous iteration's completed score in the first place.
+    private const string PartialFen    = "8/8/8/4k3/8/8/4P3/4K3 w - - 0 1";
+    private const int    PartialDepth  = 12;
     private const long   PartialBudget = 12_000;
 
     [Fact]
