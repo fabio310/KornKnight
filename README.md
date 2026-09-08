@@ -89,6 +89,13 @@ dotnet run --project ChessBot.MatchRunner -- --engine <path-to-uci-engine> [--ti
 dotnet run --project ChessBot.EloEvaluator -- --pgn-dir pgns --out-dir elo-reports
 ```
 
+If either engine ever plays a move the board will not accept, the game is aborted and a full
+report is appended to `<pgn-dir>/rejected-moves.txt` and echoed to stderr: the position the mover
+was given, the move it answered with, the legal moves it was chosen from, what the engine claimed
+about it (depth, score, nodes, time against the budget), and the last 40 protocol lines exchanged
+with each engine. A rejected move otherwise looks like an ordinary loss in the summary, so in a
+long run it would inject silent forfeits into the measurement.
+
 ### A/B harness
 
 `ChessBot.MatchRunner --ab-harness` compares two search configurations under identical

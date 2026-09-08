@@ -361,16 +361,40 @@ public class GameRunner
                 PartialScoreIsExact      = partialScoreIsExact,
             });
 
-            // Apply move to both ChessBot board and move history
-            moveHistory.Add(uciMove);
-
+            // Apply the move before recording it. The history is what the external engine is
+            // replayed from, so a move that will not apply must never enter it — and the report
+            // below has to show the history as it stood when the move was produced.
             bool applied = TryApplyMove(chessBotEngine, uciMove);
             if (!applied)
             {
+                new RejectedMoveReport
+                {
+                    Player        = chessBotMoves ? "ChessBot" : _externalEngine.EngineName,
+                    Colour        = whiteToMove ? "white" : "black",
+                    MoveText      = uciMove,
+                    FenBeforeMove = currentFen,
+                    StartFen      = StartFen,
+                    MoveHistory   = moveHistory.ToArray(),
+                    LegalMoves    = chessBotEngine.GetLegalMoves().Select(m => m.ToString()).ToArray(),
+                    MoveNumber    = moveNumber,
+                    Depth         = depth,
+                    Score         = scoreMate is int m ? $"mate {m}" : $"{scoreCp} cp",
+                    Nodes         = nodes,
+                    ElapsedMs     = elapsedMs,
+                    BudgetMs      = _cfg.MoveTimeMs,
+                    // Only an external engine has a protocol conversation to show; ChessBot is
+                    // called directly, so its side is deliberately empty rather than faked.
+                    MoverTrace    = chessBotMoves ? Array.Empty<string>() : _externalEngine.ProtocolTrace,
+                    OpponentTrace = chessBotMoves ? _externalEngine.ProtocolTrace : Array.Empty<string>(),
+                }
+                .Save(Path.Combine(_cfg.PgnOutputDir, "rejected-moves.txt"));
+
                 result.TerminationReason = $"Illegal move: {uciMove}";
                 result.Outcome = GameOutcome.Aborted;
                 break;
             }
+
+            moveHistory.Add(uciMove);
 
             currentFen = chessBotEngine.ExportFen();
             whiteToMove = !whiteToMove;
