@@ -15,10 +15,19 @@ using System.Diagnostics;
 internal class Searcher
 {
     // ── Constants ─────────────────────────────────────────────────────────────
-    // Shared with SearchScores so a protocol layer can decode mate scores without duplicating
-    // the encoding; MAX_PLY doubles as the ply distance a mate score can carry.
+    // Mate encoding is shared with SearchScores so a protocol layer can decode mate scores
+    // without duplicating it.
     private const int MATE_SCORE     = SearchScores.Mate;
-    private const int MAX_PLY        = SearchScores.MateDistanceLimit;
+    private const int MATE_THRESHOLD = SearchScores.MateThreshold;
+
+    // Depth of the ply-indexed search stack: the PV table, PV lengths, per-ply move buffers,
+    // and the last-move/null-move flags are all sized by it, so it is a memory decision and
+    // nothing else. It used to be aliased to SearchScores.MateDistanceLimit, which tied the
+    // stack depth to the width of the mate band — two unrelated quantities — and left the
+    // stack 64 plies deep. That is reachable in a real game: the check extension holds depth
+    // constant across a check/evasion pair, so ply grows at roughly twice the nominal depth,
+    // and a check-heavy endgame already reaches ply 62 in 25 seconds.
+    internal const int MAX_PLY       = 128;
     private const int INFINITY       = MATE_SCORE + 1;
 
     // Null-move pruning
@@ -474,7 +483,7 @@ internal class Searcher
             if (_searchTimer.ElapsedMilliseconds > timeLimit) break;
 
             // Early exit if a forced mate is found
-            if (Math.Abs(score) >= MATE_SCORE - MAX_PLY) break;
+            if (Math.Abs(score) >= MATE_THRESHOLD) break;
         }
 
         // Extremely small node/time budgets can expire before even depth 1 completes and
@@ -536,8 +545,14 @@ internal class Searcher
 
     // ── Negamax with alpha-beta ───────────────────────────────────────────────
 
-    private int NegamaxSearch(int ply, int depth, int alpha, int beta)
+    internal int NegamaxSearch(int ply, int depth, int alpha, int beta)
     {
+        // Stack bound first, before anything ply-indexed. Every array below is sized MAX_PLY,
+        // so this has to be the first statement in the function: it used to sit seventy lines
+        // down, under the draw checks, which made it unreachable — the _pvLength write on the
+        // next line threw before the guard could return.
+        if (ply >= MAX_PLY) return EvaluateStatic();
+
         _nodesSearched++;
         _pvLength[ply] = 0;
 
@@ -605,10 +620,9 @@ internal class Searcher
             }
         }
 
-        // ── Draw / horizon ────────────────────────────────────────────────
+        // ── Draw ──────────────────────────────────────────────────────────
         if (_board.State.IsFiftyMoveRuleDraw) return 0;
         if (IsDrawByRepetition()) { _repetitionDraws++; return 0; }
-        if (ply >= MAX_PLY) return EvaluateStatic();
 
         // ── Check detection ───────────────────────────────────────────────
         bool inCheck = _checkDetector.IsInCheck(_board.State.ActiveColor);
@@ -824,9 +838,9 @@ internal class Searcher
 
         // Adjust mate scores before storing (ply-relative) so they're consistent across tree depth
         int scoreToStore = bestScore;
-        if (bestScore > MATE_SCORE - MAX_PLY)  // Mate in N for us
+        if (bestScore > MATE_THRESHOLD)  // Mate in N for us
             scoreToStore = bestScore + ply;
-        else if (bestScore < -MATE_SCORE + MAX_PLY)  // Mate in N for opponent
+        else if (bestScore < -MATE_THRESHOLD)  // Mate in N for opponent
             scoreToStore = bestScore - ply;
 
         _transpositionTable.Store(hash, depth, scoreToStore, ttFlag2, bestMove);
@@ -836,8 +850,14 @@ internal class Searcher
 
     // ── Quiescence search ─────────────────────────────────────────────────────
 
-    private int QuiescenceSearch(int ply, int alpha, int beta)
+    internal int QuiescenceSearch(int ply, int alpha, int beta)
     {
+        // Same stack bound as NegamaxSearch, and for the same reason it is the first statement:
+        // _moveBuffers[ply] below is sized MAX_PLY. Quiescence is where the bound is actually
+        // reached, because it has no depth counter at all — a check evasion sequence recurses
+        // on ply alone until this returns.
+        if (ply >= MAX_PLY) return EvaluateStatic();
+
         _qnodesSearched++;
         if (ply > _selDepth) _selDepth = ply;
 
@@ -872,8 +892,6 @@ internal class Searcher
             if (standPat >= beta)  return beta;
             if (standPat > alpha)  alpha = standPat;
         }
-
-        if (ply >= MAX_PLY - 1) return standPat;
 
         // Generate moves into the pre-allocated per-ply buffer (no allocation). When not in check,
         // only tactical moves (captures/en passant/promotions) are generated: quiet moves can never
@@ -963,9 +981,9 @@ internal class Searcher
     /// </summary>
     private int AdjustMateScore(int ttScore, int currentPly)
     {
-        if (ttScore > MATE_SCORE - MAX_PLY)  // Mate in N for us
+        if (ttScore > MATE_THRESHOLD)  // Mate in N for us
             return ttScore - currentPly;
-        if (ttScore < -MATE_SCORE + MAX_PLY)  // Mate in N for opponent
+        if (ttScore < -MATE_THRESHOLD)  // Mate in N for opponent
             return ttScore + currentPly;
         return ttScore;
     }
