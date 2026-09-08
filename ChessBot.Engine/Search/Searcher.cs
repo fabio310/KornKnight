@@ -189,6 +189,13 @@ internal class Searcher
     // pruning for an entire subtree once a real move is made deeper in the tree.
     private readonly bool[] _nullMoveAtPly;
 
+    // Quiet moves already searched at each ply, so that when one of them finally causes a cutoff
+    // the others can be told they failed. Fixed per-ply buffers keep the node allocation-free; a
+    // node that searches more quiet moves than this before cutting simply stops recording them,
+    // which costs a few malus updates and nothing else.
+    private const int MAX_QUIETS_TRACKED = 64;
+    private readonly Move[][] _quietsTried;
+
     // Check extensions accumulated on the path from the root down to each ply. Indexed by ply
     // because the search is depth-first: a node writes its own slot before it recurses, so the
     // slot below it always holds the count for the line currently being walked.
@@ -210,6 +217,10 @@ internal class Searcher
         _lastMoveAtPly  = new Move[MAX_PLY];
         _nullMoveAtPly  = new bool[MAX_PLY];
         _extensionsAtPly = new int[MAX_PLY];
+
+        _quietsTried = new Move[MAX_PLY][];
+        for (int i = 0; i < MAX_PLY; i++)
+            _quietsTried[i] = new Move[MAX_QUIETS_TRACKED];
 
         _moveBuffers = new Move[MAX_PLY][];
         for (int i = 0; i < MAX_PLY; i++)
@@ -315,7 +326,7 @@ internal class Searcher
         var result      = new SearchResult();
         int prevScore   = 0;
 
-        _moveOrdering.Clear();
+        _moveOrdering.NewSearch();
         _transpositionTable.NewSearch();
 
         // ── Root terminal-position check ───────────────────────────────────
@@ -714,10 +725,11 @@ internal class Searcher
         Move lastOpponentMove = ply > 0 ? _lastMoveAtPly[ply - 1] : default;
         _moveOrdering.OrderMoves(moves, legalCount, ttMove, lastOpponentMove, ply);
 
-        int bestScore = -INFINITY;
-        var bestMove  = moves[0];
-        var ttFlag2   = TranspositionTable.ScoreFlag.UpperBound;
-        int moveCount = 0;
+        int bestScore  = -INFINITY;
+        var bestMove   = moves[0];
+        var ttFlag2    = TranspositionTable.ScoreFlag.UpperBound;
+        int moveCount  = 0;
+        int quietCount = 0;   // quiet moves actually searched at this node, for the history malus
 
         for (int moveIndex = 0; moveIndex < legalCount; moveIndex++)
         {
@@ -773,6 +785,11 @@ internal class Searcher
                     _lmrByMoveNumber[Math.Min(moveCount, SearchResult.LmrBucketCount - 1)]++;
                 }
             }
+
+            // Recorded only for moves that are actually searched, so a futility-pruned move is
+            // never blamed for failing to cut a search it never had.
+            if (isQuiet && quietCount < MAX_QUIETS_TRACKED)
+                _quietsTried[ply][quietCount++] = move;
 
             // Record for counter-move heuristic (child nodes read _lastMoveAtPly[ply])
             _lastMoveAtPly[ply] = move;
@@ -852,6 +869,24 @@ internal class Searcher
                         {
                             _moveOrdering.RecordKillerMove(move, ply);
                             _moveOrdering.RecordHistoryMove(move, depth);
+
+                            // The quiet moves searched ahead of this one were ordered above it and
+                            // did not cut, so they were ranked too highly. Saying so is what stops
+                            // the table from only ever learning which moves are good.
+                            //
+                            // Not at a node in check: there the quiet moves are forced evasions,
+                            // and which evasion cuts depends entirely on where the check came
+                            // from, which a from/to table cannot represent. Blaming the others
+                            // writes noise into the squares a king most often flees to — measured
+                            // at -1.4 ply on check-heavy positions with no corpus gain to show
+                            // for it.
+                            if (!inCheck)
+                            {
+                                for (int q = 0; q < quietCount; q++)
+                                    if (_quietsTried[ply][q] != move)
+                                        _moveOrdering.RecordHistoryFailure(_quietsTried[ply][q], depth);
+                            }
+
                             // Counter-move: remember this quiet move as the best response to
                             // the opponent's last move (feeds the counter-move heuristic)
                             if (ply > 0)
