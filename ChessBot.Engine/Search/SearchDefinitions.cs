@@ -248,7 +248,34 @@ public static class SearchScores
         int moves = (plies + 1) / 2;
         return score > 0 ? moves : -moves;
     }
+
+    /// <summary>
+    /// The single conversion from an internal search score to a reported one. Every surface that
+    /// shows a score to something outside the engine goes through here — the UCI "score" token,
+    /// the plain-text game log, the structured match result, the UI's eval panel — because a
+    /// second copy of this rule is a second place for two artifacts to disagree about the same
+    /// move. Three copies existed, with thresholds of 99,936, 99,000 and 90,000, alongside one
+    /// call site that applied no rule at all and recorded the raw mate constant as centipawns.
+    ///
+    /// A magnitude inside the mate band becomes a signed distance in full moves and the
+    /// centipawn field is zeroed, so nothing downstream can average a mate constant into an
+    /// evaluation; everything else passes through as centipawns.
+    /// </summary>
+    public static ReportedScore ToReported(int score) =>
+        IsMateScore(score)
+            ? new ReportedScore(0,     MateDistanceInMoves(score))
+            : new ReportedScore(score, null);
 }
+
+/// <summary>
+/// A search score in the form it is reported in: a centipawn evaluation or a distance to mate
+/// in moves, never both. <see cref="MateInMoves"/> is positive when the side to move delivers
+/// the mate and negative when it is mated; <see cref="Cp"/> is 0 whenever it has a value, which
+/// is the same convention UCI engines use when they emit "score mate".
+/// </summary>
+/// <param name="Cp">Centipawn evaluation, side-to-move positive. 0 for a mate score.</param>
+/// <param name="MateInMoves">Signed distance to mate in full moves, or null for an evaluation.</param>
+public readonly record struct ReportedScore(int Cp, int? MateInMoves);
 
 /// <summary>
 /// A snapshot of one completed iterative-deepening iteration, handed to

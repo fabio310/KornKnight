@@ -222,8 +222,14 @@ public class GameRunner
                 }
 
                 uciMove   = searchResult.BestMove.ToString();
-                scoreCp   = searchResult.Evaluation;
-                scoreMate = null; // ChessBot reports mate via high cp value, not UCI mate score
+
+                // The search returns a ply-relative mate score inside the mate band, which is not
+                // a centipawn value and must not be recorded as one: every consumer that averages
+                // ScoreCp, or diffs it against the opponent's, would be reading a 100,000-unit
+                // constant as an evaluation. Same conversion the UCI layer uses.
+                var reported = SearchScores.ToReported(searchResult.Evaluation);
+                scoreCp   = reported.Cp;
+                scoreMate = reported.MateInMoves;
                 depth     = searchResult.DepthAchieved;
                 selDepth  = searchResult.SelDepth;
                 nodes     = searchResult.NodesSearched;
