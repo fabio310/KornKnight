@@ -566,6 +566,19 @@ public class SearchResult
 
     /// <summary>Draw scores returned for repetition, split out because they are path-dependent.</summary>
     public long RepetitionDraws    { get; set; }
+
+    /// <summary>Number of nodes whose depth was extended because the side to move was in check.</summary>
+    public long CheckExtensions    { get; set; }
+
+    /// <summary>
+    /// The largest number of check extensions accumulated on any single root-to-leaf line. The
+    /// extension adds a ply without consuming one, so this is the amount by which the deepest
+    /// line outran its nominal depth — and the quantity the per-line budget bounds.
+    /// </summary>
+    public int MaxCheckExtensionsInLine { get; set; }
+
+    /// <summary>Extensions the per-line budget refused. 0 means the budget never bound.</summary>
+    public long CheckExtensionsCapped { get; set; }
 }
 
 /// <summary>

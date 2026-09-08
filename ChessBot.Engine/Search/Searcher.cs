@@ -57,6 +57,10 @@ internal class Searcher
     private readonly long[] _lmrByDepth      = new long[SearchResult.LmrBucketCount];
     private readonly long[] _lmrByMoveNumber = new long[SearchResult.LmrBucketCount];
 
+    // Check extension budget: the largest number of check extensions one root-to-leaf line may
+    // accumulate.
+    internal const int MAX_EXTENSIONS = 16;
+
     // Delta pruning in quiescence
     private const int DELTA_MARGIN   = 200; // centipawns
 
@@ -120,6 +124,9 @@ internal class Searcher
     private long _aspirationFailLow;
     private long _aspirationFailHigh;
     private long _repetitionDraws;
+    private long _checkExtensions;
+    private long _checkExtensionsCapped;
+    private int  _maxExtensionsInLine;
 
     /// <summary>Static evaluation with a call counter, so evaluation cost is measurable.</summary>
     private int EvaluateStatic()
@@ -182,6 +189,11 @@ internal class Searcher
     // pruning for an entire subtree once a real move is made deeper in the tree.
     private readonly bool[] _nullMoveAtPly;
 
+    // Check extensions accumulated on the path from the root down to each ply. Indexed by ply
+    // because the search is depth-first: a node writes its own slot before it recurses, so the
+    // slot below it always holds the count for the line currently being walked.
+    private readonly int[] _extensionsAtPly;
+
     // ── Constructor ───────────────────────────────────────────────────────────
     public Searcher(Board board, Evaluator evaluator, ZobristHasher zobristHasher)
     {
@@ -197,6 +209,7 @@ internal class Searcher
         _checkDetector  = new CheckDetector(board);
         _lastMoveAtPly  = new Move[MAX_PLY];
         _nullMoveAtPly  = new bool[MAX_PLY];
+        _extensionsAtPly = new int[MAX_PLY];
 
         _moveBuffers = new Move[MAX_PLY][];
         for (int i = 0; i < MAX_PLY; i++)
@@ -295,6 +308,9 @@ internal class Searcher
         _aspirationFailLow    = 0;
         _aspirationFailHigh   = 0;
         _repetitionDraws      = 0;
+        _checkExtensions      = 0;
+        _checkExtensionsCapped = 0;
+        _maxExtensionsInLine  = 0;
 
         var result      = new SearchResult();
         int prevScore   = 0;
@@ -538,6 +554,9 @@ internal class Searcher
         result.AspirationFailLow     = _aspirationFailLow;
         result.AspirationFailHigh    = _aspirationFailHigh;
         result.RepetitionDraws       = _repetitionDraws;
+        result.CheckExtensions       = _checkExtensions;
+        result.CheckExtensionsCapped = _checkExtensionsCapped;
+        result.MaxCheckExtensionsInLine = _maxExtensionsInLine;
         result.HashFull       = _transpositionTable.GetFillPermille();
 
         return result;
@@ -627,8 +646,23 @@ internal class Searcher
         // ── Check detection ───────────────────────────────────────────────
         bool inCheck = _checkDetector.IsInCheck(_board.State.ActiveColor);
 
-        // Check extension: add 1 ply when in check to avoid missing short tactics
-        if (inCheck && _settings.UseCheckExtension) depth++;
+        // Check extension: add 1 ply when in check to avoid missing short tactics, up to a fixed
+        // budget per root-to-leaf line. Without the budget the extension gives back exactly the
+        // ply it costs, so remaining depth never falls along a check/evasion sequence and the
+        // line's length is bounded only by the search stack. The budget is per line rather than
+        // per search because a global one would be exhausted by the first check-heavy subtree
+        // and leave the rest of the tree unextended.
+        int  extensionsSoFar = ply > 0 ? _extensionsAtPly[ply - 1] : 0;
+        bool wantExtend      = inCheck && _settings.UseCheckExtension;
+        bool extend          = wantExtend && extensionsSoFar < MAX_EXTENSIONS;
+        if (extend)          { depth++; _checkExtensions++; }
+        else if (wantExtend) { _checkExtensionsCapped++; }
+
+        // Every node records its running total before recursing, so a child reads its parent's
+        // slot rather than having a counter threaded through six recursive call sites.
+        int extensions = extensionsSoFar + (extend ? 1 : 0);
+        _extensionsAtPly[ply] = extensions;
+        if (extensions > _maxExtensionsInLine) _maxExtensionsInLine = extensions;
 
         if (depth <= 0)
             return _settings.UseQuiescence
