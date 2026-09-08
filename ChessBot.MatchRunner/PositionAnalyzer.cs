@@ -414,15 +414,16 @@ public class PositionAnalyzer
     }
 
     /// <summary>
-    /// True when a move's score is a mate score rather than a centipawn evaluation: either the
-    /// external engine reported "score mate N", or the internal engine returned a value in the
-    /// mate band (it encodes mate as ±100000 minus the ply). Such values are not centipawns and
-    /// must never be averaged with them.
+    /// True when a move's score is a mate score rather than a centipawn evaluation. Such values
+    /// are not centipawns and must never be averaged with them.
+    ///
+    /// A mate distance is the only thing that marks one: both score sources — the external
+    /// engine's "score mate N" and ChessBot's own, via <see cref="SearchScores.ToReported"/> —
+    /// now record it in ScoreMate and leave ScoreCp at 0. This used to fall back to a private
+    /// 99,000 threshold on the raw centipawn field, which was a second definition of the mate
+    /// band and disagreed with the score encoding's own.
     /// </summary>
-    private static bool IsMateScored(MoveRecord m)
-        => m.ScoreMate.HasValue || Math.Abs(m.ScoreCp) >= MateScoreThreshold;
-
-    private const int MateScoreThreshold = 99_000;
+    internal static bool IsMateScored(MoveRecord m) => m.ScoreMate.HasValue;
 
     private static double Median(IEnumerable<double> values)
     {

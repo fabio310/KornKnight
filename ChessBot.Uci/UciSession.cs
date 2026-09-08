@@ -310,12 +310,14 @@ public sealed class UciSession : IDisposable
     /// <summary>
     /// Formats a search score as UCI expects it: centipawns, or a distance in moves when the
     /// score is inside the mate band. Both are already from the side to move's point of view,
-    /// which is the convention UCI uses.
+    /// which is the convention UCI uses. The classification itself belongs to
+    /// <see cref="SearchScores.ToReported"/> and is shared with every other reporting surface.
     /// </summary>
-    internal static string FormatScore(int score) =>
-        SearchScores.IsMateScore(score)
-            ? $"mate {SearchScores.MateDistanceInMoves(score)}"
-            : $"cp {score}";
+    internal static string FormatScore(int score)
+    {
+        var reported = SearchScores.ToReported(score);
+        return reported.MateInMoves is int mate ? $"mate {mate}" : $"cp {reported.Cp}";
+    }
 
     /// <summary>
     /// Writes the bestmove line. A terminal position has no move to report; the protocol's
