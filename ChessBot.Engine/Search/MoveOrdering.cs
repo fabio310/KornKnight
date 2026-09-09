@@ -90,12 +90,16 @@ internal class MoveOrdering
     /// hot-path overload: root move handling, negamax, and quiescence all pass fixed-size Move[]
     /// buffers (paired with a count) rather than List&lt;Move&gt;.
     /// Best for the typical node move count of 20–35 where insertion sort beats Array.Sort overhead.
+    ///
+    /// <paramref name="ply"/> is distance from the root, NOT remaining depth: it selects the
+    /// killer slots for this ply. See <see cref="RecordKillerMove"/> for why the distinction
+    /// matters.
     /// </summary>
-    public void OrderMoves(Move[] moves, int count, Move ttMove, Move lastOpponentMove, int depth)
+    public void OrderMoves(Move[] moves, int count, Move ttMove, Move lastOpponentMove, int ply)
     {
         // Score every move into the pre-allocated buffer (avoids List<(Move,int)> allocation)
         for (int i = 0; i < count; i++)
-            _moveScores[i] = CalculateMoveScore(moves[i], ttMove, lastOpponentMove, depth);
+            _moveScores[i] = CalculateMoveScore(moves[i], ttMove, lastOpponentMove, ply);
 
         // Insertion sort descending by score (O(N²) but N ≤ ~35 per node, fastest for small N)
         for (int i = 1; i < count; i++)
@@ -117,16 +121,16 @@ internal class MoveOrdering
     /// <summary>
     /// Overload for backward compatibility (used in quiescence search).
     /// </summary>
-    public void OrderMoves(Move[] moves, int count, Move pvMove, int depth)
+    public void OrderMoves(Move[] moves, int count, Move pvMove, int ply)
     {
-        OrderMoves(moves, count, pvMove, default, depth);
+        OrderMoves(moves, count, pvMove, default, ply);
     }
 
     /// <summary>
     /// Calculates a score for move ordering; higher is searched earlier. See the class summary
     /// for the bands.
     /// </summary>
-    private int CalculateMoveScore(Move move, Move ttMove, Move lastOpponentMove, int depth)
+    private int CalculateMoveScore(Move move, Move ttMove, Move lastOpponentMove, int ply)
     {
         // TT move: absolute highest priority (moves first)
         if (move == ttMove && ttMove != default)
@@ -161,12 +165,12 @@ internal class MoveOrdering
                 : 500000 + mvvScore;
         }
 
-        // Killer moves: moves that caused cutoffs at this depth
-        if (depth < Searcher.MAX_PLY)
+        // Killer moves: moves that caused cutoffs at this ply
+        if (ply < Searcher.MAX_PLY)
         {
-            if (move == _killerMoves1[depth])
+            if (move == _killerMoves1[ply])
                 return 200000;
-            if (move == _killerMoves2[depth])
+            if (move == _killerMoves2[ply])
                 return 190000;
         }
 
@@ -205,18 +209,25 @@ internal class MoveOrdering
     }
 
     /// <summary>
-    /// Records a killer move (a move that caused a cutoff at a given depth).
+    /// Records a killer move (a move that caused a cutoff at a given ply).
     /// Replaces the second killer with the first, and promotes the new move to first.
+    ///
+    /// <paramref name="ply"/> is distance from the root, NOT remaining depth. Killers are
+    /// siblings: the point is that a move which cut at this ply is likely to cut in the other
+    /// branches at this ply. Remaining depth would pool moves from unrelated parts of the tree
+    /// and index the table by a number that shrinks as the search descends, which is the
+    /// opposite of what the heuristic needs. The parameter was called "depth" while every call
+    /// site passed ply — correct behaviour, one rename away from a silent regression.
     /// </summary>
-    public void RecordKillerMove(Move move, int depth)
+    public void RecordKillerMove(Move move, int ply)
     {
-        if (depth >= Searcher.MAX_PLY)
+        if (ply >= Searcher.MAX_PLY)
             return;
 
-        if (move != _killerMoves1[depth])
+        if (move != _killerMoves1[ply])
         {
-            _killerMoves2[depth] = _killerMoves1[depth];
-            _killerMoves1[depth] = move;
+            _killerMoves2[ply] = _killerMoves1[ply];
+            _killerMoves1[ply] = move;
         }
     }
 

@@ -164,14 +164,16 @@ public class TacticalBlunderTests
     /// <summary>
     /// White Nd5 can play Nb6+, forking Black Ka8 and Black Ra4.
     /// The counter-move heuristic and TT ordering should help find this tactic.
-    /// FEN: White Ke1, Nd5  vs  Black Ka8, Ra4.
+    /// FEN: White Ke1, Nd5, Ph2  vs  Black Ka8, Ra4.
     /// Verified: Knight on b6 attacks a8 (diff −1,+2) AND a4 (diff −1,−2). ✓
     /// </summary>
     [Fact]
     public void MoveOrdering_KnightFork_FindsNb6()
     {
-        // k7/8/8/3N4/r7/8/8/4K3 w - - 0 1
-        const string fen = "k7/8/8/3N4/r7/8/8/4K3 w - - 0 1";
+        // k7/8/8/3N4/r7/8/7P/4K3 w - - 0 1
+        // The h-pawn is what makes winning the rook worth anything: without it the fork ends in
+        // K+N vs K, which is a dead draw and now correctly scores 0.
+        const string fen = "k7/8/8/3N4/r7/8/7P/4K3 w - - 0 1";
         var (engine, result) = Run(fen, maxDepth: 6, maxTimeMs: 4000);
 
         AssertLegal(engine, result, fen);

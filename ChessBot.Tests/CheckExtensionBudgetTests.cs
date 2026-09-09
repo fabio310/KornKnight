@@ -43,7 +43,7 @@ public class CheckExtensionBudgetTests
     public void ShortForcedMateIsStillFound()
     {
         var engine = new ChessEngine();
-        engine.LoadFen("6k1/5Q2/8/8/8/8/8/4R1K1 w - - 0 1");   // mate in 2
+        engine.LoadFen("8/k7/5R2/3K3Q/8/8/8/8 w - - 0 1");   // mate in 2: 1.Qh7+ K~8 2.Rf8#
 
         var result = engine.FindBestMove(new SearchSettings { MaxDepth = 8, MaxTimeMs = 10_000 });
 

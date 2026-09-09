@@ -48,16 +48,16 @@ public class SearchTests
     {
         var engine = new ChessEngine();
 
-        // Position where White can checkmate in 1: Qb7#
-        engine.LoadFen("6k1/5Q2/6K1/8/8/8/8/8 w - - 0 1");
+        // Position where White can checkmate in 1: Qa8# (Qg7# also mates)
+        engine.LoadFen("6k1/Q7/6K1/8/8/8/8/8 w - - 0 1");
 
         var settings = new SearchSettings { MaxDepth = 2, MaxTimeMs = 1000 };
         var result = engine.FindBestMove(settings);
 
-        // Best move should be Qb7 (checkmate)
+        // Best move should be Qa8 (checkmate)
         var expectedMove = new Move(
-            Square.FromAlgebraic("f7"),
-            Square.FromAlgebraic("b7"),
+            Square.FromAlgebraic("a7"),
+            Square.FromAlgebraic("a8"),
             MoveType.Quiet
         );
 

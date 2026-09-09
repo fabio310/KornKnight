@@ -359,7 +359,7 @@ public class UciSessionTests
         {
             // White mates in one (the position has more than one mating move, so the score is
             // asserted rather than a particular move).
-            session.Execute("position fen 6k1/5Q2/6K1/8/8/8/8/8 w - - 0 1");
+            session.Execute("position fen 6k1/Q7/6K1/8/8/8/8/8 w - - 0 1");
             session.Execute("go depth 3");
             output.WaitForLine("bestmove");
         }

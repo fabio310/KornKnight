@@ -65,11 +65,11 @@ public class EvaluationTests
         var engine = new ChessEngine();
 
         // Centralized white knight
-        engine.LoadFen("8/8/8/3N4/8/8/8/8 w - - 0 1");
+        engine.LoadFen("4k3/8/8/3N4/8/8/8/4K3 w - - 0 1");
         var centerScore = engine.Evaluate().Score;
 
         // Cornered white knight
-        engine.LoadFen("N7/8/8/8/8/8/8/8 w - - 0 1");
+        engine.LoadFen("N3k3/8/8/8/8/8/8/4K3 w - - 0 1");
         var cornerScore = engine.Evaluate().Score;
 
         // Centralized should be better
@@ -82,11 +82,11 @@ public class EvaluationTests
         var engine = new ChessEngine();
 
         // Advanced white pawn
-        engine.LoadFen("8/1P6/8/8/8/8/8/8 w - - 0 1");
+        engine.LoadFen("4k3/1P6/8/8/8/8/8/4K3 w - - 0 1");
         var advancedScore = engine.Evaluate().Score;
 
         // Back rank white pawn
-        engine.LoadFen("8/8/8/8/8/8/P7/8 w - - 0 1");
+        engine.LoadFen("4k3/8/8/8/8/8/P7/4K3 w - - 0 1");
         var backScore = engine.Evaluate().Score;
 
         // Advanced should be better
@@ -99,11 +99,11 @@ public class EvaluationTests
         var engine = new ChessEngine();
 
         // Single pawn (more centralized)
-        engine.LoadFen("8/8/8/4P3/8/8/8/8 w - - 0 1");
+        engine.LoadFen("4k3/8/8/4P3/8/8/8/4K3 w - - 0 1");
         var singleScore = engine.Evaluate().Score;
 
         // Doubled pawns (more centralized, higher PST value)
-        engine.LoadFen("8/4P3/4P3/8/8/8/8/8 w - - 0 1");
+        engine.LoadFen("4k3/4P3/4P3/8/8/8/8/4K3 w - - 0 1");
         var doubledScore = engine.Evaluate().Score;
 
         // Currently evaluator weights PST more than doubled pawn penalty;
@@ -117,11 +117,11 @@ public class EvaluationTests
         var engine = new ChessEngine();
 
         // Connected pawns
-        engine.LoadFen("8/8/8/8/PP6/8/8/8 w - - 0 1");
+        engine.LoadFen("4k3/8/8/8/PP6/8/8/4K3 w - - 0 1");
         var connectedScore = engine.Evaluate().Score;
 
         // Isolated pawns
-        engine.LoadFen("8/8/8/8/P1P5/8/8/8 w - - 0 1");
+        engine.LoadFen("4k3/8/8/8/P1P5/8/8/4K3 w - - 0 1");
         var isolatedScore = engine.Evaluate().Score;
 
         // Connected should be better
@@ -134,12 +134,12 @@ public class EvaluationTests
         var engine = new ChessEngine();
 
         // White has queen
-        engine.LoadFen("8/8/8/8/8/8/8/Q6K w - - 0 1");
+        engine.LoadFen("4k3/8/8/8/8/8/8/Q6K w - - 0 1");
         var result1 = engine.Evaluate();
         Assert.Equal(900, result1.MaterialBalance.WhiteMaterial);
 
         // White has two rooks
-        engine.LoadFen("8/8/8/8/8/8/R6R/K7 w - - 0 1");
+        engine.LoadFen("4k3/8/8/8/8/8/R6R/K7 w - - 0 1");
         var result2 = engine.Evaluate();
         Assert.Equal(1000, result2.MaterialBalance.WhiteMaterial);
 
