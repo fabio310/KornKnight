@@ -489,6 +489,44 @@ public class Board
     }
 
     /// <summary>
+    /// True when neither side has enough material to force mate: K vs K, K+B vs K, K+N vs K.
+    /// These are dead draws, and without this the extra minor reads as a material advantage —
+    /// so the engine plays on for the full fifty moves in a position it cannot win, and has
+    /// lost games doing it.
+    ///
+    /// Read once per node by the search, so the common case must be free: the compact piece
+    /// lists give the total piece count directly, and any position with more than one non-king
+    /// piece leaves on the first comparison without touching a square.
+    ///
+    /// Deliberately not the full FIDE "dead position" test. K+B vs K+B on the same colour and
+    /// K+N+N vs K are also unwinnable against any defence, but they need a square-colour or
+    /// pair test that costs more than the case it catches is worth.
+    /// </summary>
+    public bool HasInsufficientMaterial
+    {
+        get
+        {
+            int pieces = _pieceListCount[0] + _pieceListCount[1];
+            if (pieces > 3) return false;
+            if (pieces < 3) return true;         // both kings, nothing else
+
+            // Exactly one non-king piece: only a lone minor is unable to mate.
+            for (int color = 0; color < 2; color++)
+            {
+                Piece[] list = _pieceListPieces[color];
+                for (int i = 0; i < _pieceListCount[color]; i++)
+                {
+                    PieceType type = list[i].Type;
+                    if (type == PieceType.King) continue;
+                    return type == PieceType.Knight || type == PieceType.Bishop;
+                }
+            }
+
+            return true;
+        }
+    }
+
+    /// <summary>
     /// Makes a move on the board, updating all state (piece positions, castling rights, en passant,
     /// halfmove clock, fullmove number, Zobrist hash, and incremental eval) through a single direct
     /// mutation path (AddPiece/RemovePiece/MovePiece) instead of repeated SetPiece calls. Pushes a
@@ -902,8 +940,13 @@ public class Board
     /// <summary>
     /// Loads a position from FEN notation.
     /// Format: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+    /// A FEN that parses but describes an impossible position is rejected too; see
+    /// <see cref="RejectIfIllegal"/> for which rules are checked and why.
     /// </summary>
     /// <exception cref="ArgumentException">Thrown if FEN is malformed.</exception>
+    /// <exception cref="IllegalPositionException">
+    /// Thrown if the FEN parses but the position cannot occur in a game of chess.
+    /// </exception>
     public void LoadFromFen(string fen)
     {
         if (string.IsNullOrWhiteSpace(fen))
@@ -999,6 +1042,73 @@ public class Board
 
         // Initialize incremental eval accumulators from the freshly placed pieces.
         RecomputeIncrementalEval();
+
+        RejectIfIllegal(fen);
+    }
+
+    /// <summary>
+    /// Rejects a position that parsed cleanly but that the rules of chess cannot produce.
+    ///
+    /// This is the boundary the search relies on. Move generation, make/unmake and check
+    /// detection all assume each side has exactly one king and that the position was arrived at
+    /// by legal moves; when it was not, the assumption fails somewhere deep in the tree and
+    /// reports the symptom rather than the cause (a corpus FEN with adjacent kings surfaced as
+    /// "Cannot make move: no piece on h1" four frames inside negamax, naming neither the
+    /// position nor what was wrong with it). Checking costs one board scan and one attack query
+    /// per FEN load, both off the hot path.
+    ///
+    /// The four rules checked are the ones whose violation breaks those assumptions. Castling
+    /// rights and en passant targets that no legal move could have produced are left alone:
+    /// they make a position wrong, not unsearchable.
+    /// </summary>
+    private void RejectIfIllegal(string fen)
+    {
+        int whiteKings = 0, blackKings = 0;
+        int backRankPawn = -1;
+
+        for (int i = 0; i < 64; i++)
+        {
+            Piece p = _pieces[i];
+            if (p.Type == PieceType.King)
+            {
+                if (p.Color == Color.White) whiteKings++;
+                else blackKings++;
+            }
+            else if (p.Type == PieceType.Pawn && (i < 8 || i >= 56) && backRankPawn < 0)
+            {
+                backRankPawn = i;
+            }
+        }
+
+        if (whiteKings != 1 || blackKings != 1)
+            Reject(PositionViolation.KingCount, fen,
+                   $"White has {whiteKings} king(s) and Black has {blackKings}; each side must have exactly one");
+
+        Square whiteKing = _kingPositions[(int)Color.White];
+        Square blackKing = _kingPositions[(int)Color.Black];
+        if (Math.Abs(whiteKing.File - blackKing.File) <= 1 && Math.Abs(whiteKing.Rank - blackKing.Rank) <= 1)
+            Reject(PositionViolation.AdjacentKings, fen,
+                   $"the kings stand on {whiteKing} and {blackKing}");
+
+        if (backRankPawn >= 0)
+            Reject(PositionViolation.PawnOnBackRank, fen,
+                   $"a pawn stands on {new Square(backRankPawn)}");
+
+        Color waiting = _gameState.ActiveColor.Opposite();
+        if (IsKingInCheck(waiting))
+            Reject(PositionViolation.SideNotToMoveInCheck, fen,
+                   $"{waiting} is in check with {_gameState.ActiveColor} to move, so the previous move was illegal");
+    }
+
+    /// <summary>
+    /// Throws for an illegal position, after restoring the starting position. A caller that
+    /// catches the exception and carries on — the UCI front end answering a bad `position fen`,
+    /// a harness skipping a corpus entry — must not be left holding the rejected board.
+    /// </summary>
+    private void Reject(PositionViolation violation, string fen, string detail)
+    {
+        ResetToStartingPosition();
+        throw new IllegalPositionException(violation, fen, detail);
     }
 
     /// <summary>

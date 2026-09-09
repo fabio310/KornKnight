@@ -146,6 +146,11 @@ public class GameRunner
         string currentFen = StartFen;
         bool whiteToMove = true;
 
+        // Threefold repetition was not adjudicated here at all, so a repeated position ran on
+        // until the fifty-move clock or the 300-move cap. Keyed on the position without the move
+        // counters, which is what "the same position" means for the rule.
+        var seenPositions = new Dictionary<string, int>();
+
         if (_cfg.Verbose)
         {
             Console.WriteLine($"  ChessBot plays {(chessBotIsWhite ? "White" : "Black")}");
@@ -423,6 +428,22 @@ public class GameRunner
             {
                 result.Outcome = GameOutcome.Draw;
                 result.TerminationReason = "50-move rule";
+                break;
+            }
+
+            if (chessBotEngine.GetBoardSnapshot().HasInsufficientMaterial)
+            {
+                result.Outcome = GameOutcome.Draw;
+                result.TerminationReason = "Insufficient material";
+                break;
+            }
+
+            string repetitionKey = string.Join(' ', currentFen.Split(' ').Take(4));
+            seenPositions[repetitionKey] = seenPositions.GetValueOrDefault(repetitionKey) + 1;
+            if (seenPositions[repetitionKey] >= 3)
+            {
+                result.Outcome = GameOutcome.Draw;
+                result.TerminationReason = "Threefold repetition";
                 break;
             }
         }

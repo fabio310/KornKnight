@@ -373,6 +373,15 @@ internal class Searcher
 
             int score;
 
+            // prevScore is never a mate score here, and the aspiration window relies on that: a
+            // ±50 window around ±99900 would sit inside the mate band, where the true score is a
+            // different mate distance thousands of units away, so it would fail every time and
+            // walk the whole 1x → 4x → infinite ladder for nothing. What prevents it is the
+            // early exit at the bottom of this loop, which stops iterating the moment a mate is
+            // found — so no mate score ever survives into the next iteration's window. Measured:
+            // over 2,924 searches, 215 of which returned a mate score, the window saw a
+            // mate-band prevScore zero times. Remove that early exit and this needs a full-window
+            // guard on Math.Abs(prevScore) > MATE_THRESHOLD.
             if (depth <= 4 || !_settings.UseAspiration)
             {
                 // Full window for early depths — aspiration windows unreliable here
@@ -608,6 +617,20 @@ internal class Searcher
 
         bool pvNode = beta - alpha > 1;
 
+        // ── Draw ──────────────────────────────────────────────────────────
+        // Before the transposition probe, not after it. The Zobrist hash covers the pieces, the
+        // side to move, castling rights and the en passant file — it carries neither the
+        // repetition history nor the halfmove clock. Two positions with the same key can
+        // therefore be a win in one game and a dead draw in another, and a probe that answers
+        // first hands back the stored win: the engine repeats away a won game, or walks past a
+        // saving perpetual because the table already "knows" the position is lost.
+        //
+        // A draw is decided by the board in front of us, so it is cheap and exact, and it has to
+        // win over anything remembered.
+        if (_board.State.IsFiftyMoveRuleDraw) return 0;
+        if (_board.HasInsufficientMaterial) return 0;
+        if (IsDrawByRepetition(RepetitionsToDraw(ply))) { _repetitionDraws++; return 0; }
+
         // ── Transposition table lookup ─────────────────────────────────────
         // Use the board's incremental hash (O(1)) instead of recomputing from scratch (O(32)).
         ulong hash  = _board.ZobristHash;
@@ -649,10 +672,6 @@ internal class Searcher
                 }
             }
         }
-
-        // ── Draw ──────────────────────────────────────────────────────────
-        if (_board.State.IsFiftyMoveRuleDraw) return 0;
-        if (IsDrawByRepetition()) { _repetitionDraws++; return 0; }
 
         // ── Check detection ───────────────────────────────────────────────
         bool inCheck = _checkDetector.IsInCheck(_board.State.ActiveColor);
@@ -950,6 +969,12 @@ internal class Searcher
             return 0;
         }
 
+        // Quiescence is where a dead draw is usually entered: it searches captures, and the
+        // last capture is what empties the board. Without this the stand-pat below scores the
+        // surviving lone minor as material won, which is how a drawn ending gets played for
+        // fifty moves.
+        if (_board.HasInsufficientMaterial) return 0;
+
         // Check detection (cached instance – no allocation)
         bool inCheck = _checkDetector.IsInCheck(_board.State.ActiveColor);
 
@@ -1057,16 +1082,34 @@ internal class Searcher
     }
 
     /// <summary>
-    /// Detects a draw by threefold repetition via the position hash history.
+    /// How many earlier occurrences of the current position count as a draw at
+    /// <paramref name="ply"/>.
+    ///
+    /// Inside the tree, one is enough. A position reached for the second time is already a
+    /// draw for search purposes: whichever side wants it can repeat the cycle once more, so
+    /// scoring it 0 is exact, and it is seen four plies earlier than a threefold test sees it.
+    /// Those four plies are the difference between finding a saving perpetual and walking past
+    /// it.
+    ///
+    /// The root keeps the real rule. NegamaxSearch is entered at ply 0 on the position the
+    /// engine has to move from; returning 0 there because it once occurred before would
+    /// abandon the search without a move, and the game is not drawn until the third occurrence
+    /// is actually claimed.
+    /// </summary>
+    private static int RepetitionsToDraw(int ply) => ply == 0 ? 2 : 1;
+
+    /// <summary>
+    /// Detects a repetition draw via the position hash history: true once the current position
+    /// appears <paramref name="occurrencesNeeded"/> times among the earlier positions.
     /// Uses indexed array access (no List<T>, no ToArray() allocation) and iterates
     /// newest→oldest, stopping at the first irreversible move (capture) to bound the search.
     /// Zobrist hashes encode the active color, so only same-color-to-move positions
     /// can ever match, making the color check implicit.
     /// </summary>
-    private bool IsDrawByRepetition()
+    private bool IsDrawByRepetition(int occurrencesNeeded)
     {
         int count = _board.HistoryCount; // preallocated array – O(1) indexed access
-        if (count < 4) return false;
+        if (count < 2 * occurrencesNeeded) return false;
 
         ulong currentHash     = _board.ZobristHash;
         int   repetitionCount = 0;
@@ -1081,7 +1124,7 @@ internal class Searcher
             if (entry.Hash == currentHash)
             {
                 repetitionCount++;
-                if (repetitionCount >= 2) // 3 identical positions (current + 2 in history)
+                if (repetitionCount >= occurrencesNeeded)
                     return true;
             }
 

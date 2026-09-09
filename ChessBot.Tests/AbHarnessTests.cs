@@ -29,12 +29,15 @@ public class AbHarnessTests
     // The fixture is inherently sensitive to move ordering — how far a fixed node budget gets
     // through an iteration is exactly what ordering decides — so a change to ordering can stop
     // it provoking the condition and has to be retuned here rather than asserted around. It was
-    // last retuned when SEE stopped classifying every capture as a good one. A king-and-pawn
-    // endgame is used because its score climbs with depth, which is what makes a partial
-    // candidate beat the previous iteration's completed score in the first place.
+    // last retuned when a repetition inside the tree started scoring as a draw, which cuts a
+    // king-and-pawn search short and let 12,000 nodes finish depth 12 outright; before that,
+    // when SEE stopped classifying every capture as a good one. A king-and-pawn endgame is used
+    // because its score climbs with depth, which is what makes a partial candidate beat the
+    // previous iteration's completed score in the first place. 4,100–4,600 nodes all work; the
+    // middle of that band is taken so the next small shift in ordering does not break it.
     private const string PartialFen    = "8/8/8/4k3/8/8/4P3/4K3 w - - 0 1";
     private const int    PartialDepth  = 12;
-    private const long   PartialBudget = 12_000;
+    private const long   PartialBudget = 4_400;
 
     [Fact]
     public void Run_TwoIdenticalConfigs_ProducesConsistentDeterministicMetrics()
@@ -377,5 +380,74 @@ public class AbHarnessTests
         Assert.Equal(a, b);                       // same seed → same corpus
         Assert.NotEqual(a, c);                    // different seed → different corpus
         Assert.Equal(a.Count, a.Distinct().Count()); // no duplicate positions
+    }
+
+    // ── Corpus legality ────────────────────────────────────────────────────
+    //
+    // DefaultCorpus[8] shipped for months with the two kings on h1 and g2. Nothing caught it,
+    // because an illegal position does not announce itself: it crashed inside negamax, and only
+    // for A/B runs that took the built-in corpus rather than a generated one. Every FEN the
+    // harness can hand to a search is checked here, so the next bad entry fails at build time
+    // rather than mid-measurement.
+
+    /// <summary>
+    /// Names every corpus entry the engine cannot search: one it refuses to load, and one that
+    /// is already checkmate or stalemate. A terminal position does not crash, it just returns a
+    /// null move having visited no nodes, which quietly shrinks the corpus a measurement was
+    /// sized for. Returns the failures joined, empty when all entries are usable, so an
+    /// assertion failure says which position and why rather than only that one existed.
+    /// </summary>
+    private static string IllegalEntriesIn(IEnumerable<string> fens, string label)
+    {
+        var failures = new List<string>();
+        int index = 0;
+
+        foreach (string fen in fens)
+        {
+            try
+            {
+                var engine = new ChessEngine();
+                engine.LoadFen(fen);
+
+                if (engine.GetLegalMoves().Count == 0)
+                    failures.Add($"{label}[{index}]: terminal position, nothing to search. FEN: '{fen}'.");
+            }
+            catch (ArgumentException ex)
+            {
+                failures.Add($"{label}[{index}]: {ex.Message}");
+            }
+            index++;
+        }
+
+        return string.Join(Environment.NewLine, failures);
+    }
+
+    [Fact]
+    public void DefaultCorpus_ContainsOnlyLegalPositions()
+    {
+        string failures = IllegalEntriesIn(AbHarness.DefaultCorpus, nameof(AbHarness.DefaultCorpus));
+
+        Assert.True(failures.Length == 0, failures);
+    }
+
+    [Fact]
+    public void GenerateCorpus_ProducesOnlyLegalPositions()
+    {
+        // Two seeds, including the shipped default: the walk is seeded, so a generator that
+        // could produce an unloadable FEN would do it for some seeds and not others.
+        foreach (int seed in new[] { 20260906, 4242 })
+        {
+            string failures = IllegalEntriesIn(AbHarness.GenerateCorpus(200, seed), $"GenerateCorpus(seed:{seed})");
+            Assert.True(failures.Length == 0, failures);
+        }
+    }
+
+    [Fact]
+    public void GenerateOpeningPositions_ProduceOnlyLegalPositions()
+    {
+        string failures = IllegalEntriesIn(AbHarness.GenerateOpeningPositions(40, seed: 20260907),
+                                           nameof(AbHarness.GenerateOpeningPositions));
+
+        Assert.True(failures.Length == 0, failures);
     }
 }

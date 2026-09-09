@@ -318,8 +318,8 @@ public static class AbHarness
         "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",                                          // rook endgame
         "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1",                                                    // trivial king+pawn endgame
         "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP2PPP/R2Q1RK1 w - - 0 1",            // balanced middlegame
-        "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3",                      // early tactical shot (Qh4+)
-        "8/8/8/8/8/8/6k1/R6K w - - 0 1",                                                      // trivial rook endgame (mate technique)
+        "rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq g3 0 2",                     // early tactical shot (Qh4# is there to be found)
+        "8/8/8/8/8/8/5k2/R6K w - - 0 1",                                                      // trivial rook endgame (mate technique)
         "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",                    // classic sharp tactical (WAC-style)
     };
 
@@ -344,8 +344,11 @@ public static class AbHarness
 
                 engine.MakeMove(legal[rng.Next(legal.Count)]);
 
-                // Skip the first few plies: they are near-identical across lines.
-                if (ply >= 4 && ply % snapshotEvery == 0)
+                // Skip the first few plies: they are near-identical across lines. Skip a
+                // position the walk has just checkmated or stalemated too: it loads fine and
+                // searches nothing, so it would silently make the corpus one position smaller
+                // than the count the run was sized for.
+                if (ply >= 4 && ply % snapshotEvery == 0 && engine.GetLegalMoves().Count > 0)
                 {
                     string fen = engine.ExportFen();
                     if (!fens.Contains(fen)) fens.Add(fen);
@@ -547,6 +550,9 @@ public static class AbHarness
 
             if (whiteEngine.GetBoardSnapshot().State.IsFiftyMoveRuleDraw)
                 return (0, "fifty-move rule");
+
+            if (whiteEngine.GetBoardSnapshot().HasInsufficientMaterial)
+                return (0, "insufficient material");
 
             // Repetition key: the position without the move counters, which is what "the same
             // position" means for the threefold rule.

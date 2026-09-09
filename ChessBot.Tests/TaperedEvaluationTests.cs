@@ -146,8 +146,8 @@ public class TaperedEvaluationTests
     {
         // The point of tapering, in one comparison: the same pawn push is worth more when the
         // board is empty than when it is full.
-        int openingGain = PushGain("rnbq1bnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQ1BNR w - - 0 1",
-                                   "rnbq1bnr/pppppppp/8/8/8/P7/1PPPPPPP/RNBQ1BNR w - - 0 1");
+        int openingGain = PushGain("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1",
+                                   "rnbqkbnr/pppppppp/8/8/8/P7/1PPPPPPP/RNBQKBNR w - - 0 1");
 
         int endgameGain = PushGain("4k3/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1",
                                    "4k3/pppppppp/8/8/8/P7/1PPPPPPP/4K3 w - - 0 1");
