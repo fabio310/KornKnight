@@ -19,6 +19,72 @@ public sealed class ArtifactEntry
 }
 
 /// <summary>
+/// The start positions a run played from. Recorded in full, not just as a path: the file the run
+/// was pointed at can change or disappear, and two results are only comparable when the positions
+/// behind them match. <see cref="Sha256"/> is the cheap way to check that; <see cref="Positions"/>
+/// is what lets the run be rebuilt when the file is gone.
+/// </summary>
+public sealed class OpeningSetDto
+{
+    public string Source { get; set; } = string.Empty;
+    public string Format { get; set; } = string.Empty;
+    /// <summary>Book plies played before the engines took over. 0 for a raw FEN/EPD list.</summary>
+    public int    Plies  { get; set; }
+    public int    Count  { get; set; }
+    /// <summary>SHA-256 over the start positions in order, lowercase hex.</summary>
+    public string Sha256 { get; set; } = string.Empty;
+    public List<OpeningDto> Positions { get; set; } = new();
+
+    public static OpeningSetDto From(OpeningSet set) => new()
+    {
+        Source    = set.Source,
+        Format    = set.Format,
+        Plies     = set.Plies,
+        Count     = set.Count,
+        Sha256    = set.Sha256,
+        Positions = set.Openings.Select(o => new OpeningDto { Name = o.Name, Fen = o.Fen }).ToList(),
+    };
+}
+
+public sealed class OpeningDto
+{
+    public string Name { get; set; } = string.Empty;
+    public string Fen  { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// What the run took from the machine, and what the machine granted.
+///
+/// Everything here qualifies a timing-derived number. Concurrency and the budget say whether NPS
+/// from this run may be quoted at all; the core count says whether the concurrency was sized
+/// against real cores or hyperthreads; and the priority and pinning fields record what the OS
+/// actually allowed, which is not always what was asked for.
+/// </summary>
+public sealed class RunConditions
+{
+    /// <summary>"Nodes" or "Time". A node budget is reproducible under any load; a time budget is not.</summary>
+    public string Budget { get; set; } = string.Empty;
+    public int    Concurrency { get; set; }
+    /// <summary>"default" or "explicit" — whether the value came from the command line.</summary>
+    public string ConcurrencySource { get; set; } = string.Empty;
+
+    public int    PhysicalCores     { get; set; }
+    public int    LogicalProcessors { get; set; }
+    /// <summary>How the physical core count was obtained, including when it was only estimated.</summary>
+    public string CoreCountSource   { get; set; } = string.Empty;
+
+    /// <summary>The priority class the process actually ended up at.</summary>
+    public string ProcessPriority      { get; set; } = string.Empty;
+    public bool   CorePinningRequested { get; set; }
+    /// <summary>True only when every worker's pin was granted.</summary>
+    public bool   CorePinningGranted   { get; set; }
+    public List<int> PinnedCores       { get; set; } = new();
+
+    /// <summary>Empty unless a timed run was asked for more of the machine than its timings survive.</summary>
+    public string OversubscriptionWarning { get; set; } = string.Empty;
+}
+
+/// <summary>
 /// Reproducibility metadata for a single match run: the source state as it was *before* the run
 /// started, the exact invocation, the effective configuration, environment, timing, and every
 /// artifact produced.
@@ -30,9 +96,15 @@ public sealed class ArtifactEntry
 /// </summary>
 public sealed class RunManifest
 {
-    public int    SchemaVersion = 2;
+    public int    SchemaVersion = 3;
 
     public string RunId { get; set; } = string.Empty;
+
+    /// <summary>What the run took from the machine. Null for a run recorded before this existed.</summary>
+    public RunConditions? Conditions { get; set; }
+
+    /// <summary>The start positions the games were played from, with their hash.</summary>
+    public OpeningSetDto? Openings { get; set; }
 
     // ── Source state, captured before the run produced anything ──────────────
     public string CommitHash            { get; set; } = "unknown";

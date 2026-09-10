@@ -73,10 +73,13 @@ public static class MatchExecutor
         var log = new System.Text.StringBuilder();
         var artifactFiles = new List<string>();
 
-        bool chessBotIsWhite = (gameIndex % 2 == 0);
+        // The schedule is a pure function of the game index, so game n means the same opening
+        // and the same colour on every run of the same manifest — including a run that is
+        // stopped early, whose colours stay balanced at every even prefix.
+        var (opening, chessBotIsWhite) = cfg.Openings.ScheduleFor(gameIndex);
         string colorLabel = chessBotIsWhite ? "White" : "Black";
         log.AppendLine();
-        log.AppendLine($"--- Game {gameIndex + 1}: ChessBot plays {colorLabel} ---");
+        log.AppendLine($"--- Game {gameIndex + 1}: ChessBot plays {colorLabel} from {opening.Name} ---");
 
         GameResult result;
         string opponentName;
@@ -87,7 +90,7 @@ public static class MatchExecutor
             opponentName = uci.EngineName;
 
             var runner = new GameRunner(uci, cfg);
-            result = await runner.PlayGameAsync(chessBotIsWhite, gameIndex + 1, ct);
+            result = await runner.PlayGameAsync(chessBotIsWhite, gameIndex + 1, opening, ct);
         }
 
         log.AppendLine($"Game {gameIndex + 1} result: {result.Outcome}  ({result.Moves.Count} moves)");
@@ -205,15 +208,39 @@ public static class MatchExecutor
         int concurrency = Math.Max(1, cfg.Concurrency);
         var completed = new GameRunOutcome?[cfg.TotalGames];
 
+        Console.WriteLine($"Openings: {cfg.Openings}");
+        if (cfg.TotalGames > cfg.Openings.GamesBeforeRepeat)
+            Console.WriteLine($"NOTE: {cfg.TotalGames} games over {cfg.Openings.Count} openings — each " +
+                              $"position is replayed {cfg.TotalGames / cfg.Openings.GamesBeforeRepeat}x per colour. " +
+                              "Repeated games between near-deterministic engines are not independent samples; " +
+                              "pass --openings with a larger set for a run this long.");
+
+        Console.WriteLine($"Playing {cfg.TotalGames} games at {ConcurrencyPolicy.Describe(cfg.Budget, concurrency)}.");
+        string oversubscription = ConcurrencyPolicy.WarnIfOversubscribed(cfg.Budget, concurrency);
         if (concurrency > 1)
-            Console.WriteLine($"Playing {cfg.TotalGames} games, {concurrency} at a time. " +
-                              $"Concurrent games share the CPU, so each engine searches fewer nodes " +
-                              $"per move than it would alone (--concurrency 1 for full speed).");
+            Console.WriteLine("Concurrent games share the CPU, so each engine searches fewer nodes " +
+                              "per move than it would alone (--concurrency 1 for full speed).");
+
+        // Timed games are pinned by default: without it the scheduler migrates a search between
+        // cores mid-game and its transposition and history tables land in a cold cache, which is
+        // what produced a 367k–2,373k NPS spread inside one past run. The priority raise and each
+        // pin are recorded as granted or refused, never as requested.
+        bool pin = cfg.PinWorkersToCores && cfg.Budget == BudgetKind.Time;
+        string processPriority = pin
+            ? MachineTopology.RaiseProcessPriority()
+            : System.Diagnostics.Process.GetCurrentProcess().PriorityClass.ToString();
 
         var consoleLock = new object();
+        PinnedWorkerPool? workers = pin ? new PinnedWorkerPool(concurrency, raiseThreadPriority: true) : null;
 
-        using (var gate = new SemaphoreSlim(concurrency))
+        try
         {
+            // A fixed gate rather than Parallel.For: the thread pool adds and removes threads
+            // during a run, so the number of games actually in flight drifted mid-match without
+            // being reported — and a timed measurement whose concurrency changes underneath it is
+            // not one measurement. The semaphore's count IS the degree of parallelism, start to
+            // finish.
+            using var gate = new SemaphoreSlim(concurrency);
             var running = new List<Task>(cfg.TotalGames);
 
             for (int game = 0; game < cfg.TotalGames; game++)
@@ -224,7 +251,10 @@ public static class MatchExecutor
                     await gate.WaitAsync(ct);
                     try
                     {
-                        var played = await PlayAndAnalyzeGameAsync(index, cfg, ct);
+                        // Past the gate a worker is guaranteed free, so this never blocks.
+                        var played = workers is null
+                            ? await PlayAndAnalyzeGameAsync(index, cfg, ct)
+                            : await workers.RunAsync(() => PlayAndAnalyzeGameAsync(index, cfg, ct), ct);
                         completed[index] = played;
 
                         // Printed as each game finishes rather than at the end, so a long match
@@ -241,6 +271,26 @@ public static class MatchExecutor
 
             await Task.WhenAll(running);
         }
+        finally
+        {
+            workers?.Dispose();
+        }
+
+        manifest.Openings = OpeningSetDto.From(cfg.Openings);
+        manifest.Conditions = new RunConditions
+        {
+            Budget                  = cfg.Budget.ToString(),
+            Concurrency             = concurrency,
+            ConcurrencySource       = cfg.ConcurrencyIsDefault ? "default" : "explicit",
+            PhysicalCores           = MachineTopology.PhysicalCoreCount,
+            LogicalProcessors       = MachineTopology.LogicalProcessorCount,
+            CoreCountSource         = MachineTopology.CoreCountSource,
+            ProcessPriority         = processPriority,
+            CorePinningRequested    = pin,
+            CorePinningGranted      = workers?.AllPinned ?? false,
+            PinnedCores             = workers?.Cores.ToList() ?? new List<int>(),
+            OversubscriptionWarning = oversubscription,
+        };
 
         foreach (var game in completed)
         {
@@ -389,10 +439,12 @@ public static class MatchExecutor
         foreach (var opt in cfg.EngineOptions)
             w.WriteLine($"Engine option: {opt.Name}={opt.Value}");
         w.WriteLine($"Date: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        w.WriteLine($"Openings: {cfg.Openings}");
+        w.WriteLine($"Conditions: {ConcurrencyPolicy.Describe(cfg.Budget, cfg.Concurrency)}");
         w.WriteLine();
 
         foreach (var r in outcome.Games)
-            w.WriteLine($"Game {r.GameNumber} ({(r.ChessBotIsWhite ? "White" : "Black")}): " +
+            w.WriteLine($"Game {r.GameNumber} ({(r.ChessBotIsWhite ? "White" : "Black")}, {r.OpeningName}): " +
                         $"{r.Outcome} in {r.Moves.Count} moves");
 
         w.WriteLine();

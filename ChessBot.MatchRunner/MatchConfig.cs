@@ -62,11 +62,11 @@ public class MatchConfig
     /// mistake; real move loss comes from the reference-engine analysis.
     /// </summary>
     /// <summary>
-    /// Upper bound on the automatic concurrency. Ten games means ten opponent processes and ten
-    /// engines resident at once; past that the coordination and memory cost grows faster than
-    /// the throughput, and the per-game slowdown from CPU contention starts to dominate.
+    /// How this run's per-move budget is expressed, which is what decides how much of the
+    /// machine it may take. The external-engine match path is timed only: it drives the opponent
+    /// over UCI with <c>go movetime</c> and has no node-budget mode.
     /// </summary>
-    public const int MaxAutoConcurrency = 10;
+    public BudgetKind Budget => BudgetKind.Time;
 
     private int? _concurrency;
 
@@ -75,23 +75,44 @@ public class MatchConfig
     /// runs its own opponent process and its own engine — so this is close to a linear speed-up
     /// on a multi-core machine.
     ///
-    /// Unset, it resolves to as many games as the machine can usefully take: the match's own
-    /// game count, capped at half the logical processors and at
-    /// <see cref="MaxAutoConcurrency"/>. Half, because each game drives an opponent process
-    /// alongside ChessBot's own search, and leaving headroom keeps the machine usable.
+    /// Unset, it resolves through <see cref="ConcurrencyPolicy"/>, which sizes a run by the
+    /// budget it is on. These games are timed, so the default is half the PHYSICAL cores: a
+    /// timed game measures the scheduler as much as the engine, and two games sharing one core's
+    /// two hyperthreads both search slower than either would alone. There is no fixed upper cap
+    /// — a 32-core machine is allowed to be a 32-core machine — but asking a timed run for more
+    /// than half the cores prints a warning, because its timings stop meaning anything first.
     ///
-    /// The games are timed, so concurrency does cost something real: every concurrent game
-    /// takes CPU from the others, and both engines then search fewer nodes per millisecond than
-    /// they would alone. That remains a fair contest — both sides are slowed — but the strength
-    /// it measures is strength at that speed, which is why every run records the value it used.
-    /// Pass 1 to measure at the machine's full speed.
+    /// Concurrency costs something real here: every concurrent game takes CPU from the others,
+    /// so both engines search fewer nodes per millisecond than they would alone. That remains a
+    /// fair contest — both sides are slowed — but the strength it measures is strength at that
+    /// speed, which is why every run records the value it used. Pass 1 to measure at the
+    /// machine's full speed.
     /// </summary>
     public int Concurrency
     {
-        get => _concurrency ?? Math.Clamp(
-            TotalGames, 1, Math.Min(MaxAutoConcurrency, Math.Max(1, Environment.ProcessorCount / 2)));
+        get => _concurrency ?? ConcurrencyPolicy.DefaultFor(Budget, TotalGames);
         set => _concurrency = Math.Max(1, value);
     }
+
+    /// <summary>True when nothing set <see cref="Concurrency"/> explicitly.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool ConcurrencyIsDefault => _concurrency is null;
+
+    /// <summary>
+    /// Start positions for the games, assigned round-robin with each opening played once from
+    /// each side. Defaults to the fixed built-in set: from the initial position, ChessBot and a
+    /// near-deterministic opponent replay the same handful of games, so a ten-game run was only
+    /// ever three or four independent samples and its confidence interval was fiction.
+    /// </summary>
+    public OpeningSet Openings { get; set; } = OpeningBook.Standard;
+
+    /// <summary>
+    /// Pin each game's worker to a core and raise the process above Normal. On by default for
+    /// timed runs, where an unpinned search is migrated between cores mid-game and loses its
+    /// caches: one past run's NPS varied between 367k and 2,373k within itself for that reason.
+    /// Whether the OS actually granted either is recorded in the manifest, not assumed.
+    /// </summary>
+    public bool PinWorkersToCores { get; set; } = true;
 
     public int DisagreementThresholdCp { get; set; } = 200;
 
@@ -193,8 +214,20 @@ public class MatchConfig
             : string.Join(", ", ReferenceEngineOptions.Select(o => $"{o.Name}={o.Value}")),
         ["MoveLossMaxRetries"]    = MoveLossMaxRetries.ToString(),
         ["UsePartialRootResult"]  = UsePartialRootResult.ToString(),
-        // Recorded because it qualifies every timing-derived number in the run.
+        // Recorded because they qualify every timing-derived number in the run.
+        ["Budget"]                = Budget.ToString(),
         ["Concurrency"]           = Concurrency.ToString(),
+        ["ConcurrencySource"]     = ConcurrencyIsDefault ? "default" : "explicit",
+        ["PhysicalCores"]         = MachineTopology.PhysicalCoreCount.ToString(),
+        ["LogicalProcessors"]     = MachineTopology.LogicalProcessorCount.ToString(),
+        // The openings are half of what makes a run reproducible; the hash is what makes two
+        // runs comparable without diffing the files they were driven from.
+        ["OpeningSource"]         = Openings.Source,
+        ["OpeningFormat"]         = Openings.Format,
+        ["OpeningCount"]          = Openings.Count.ToString(),
+        ["OpeningPlies"]          = Openings.Plies.ToString(),
+        ["OpeningSetSha256"]      = Openings.Sha256,
+        ["PinWorkersToCores"]     = PinWorkersToCores.ToString(),
         ["Verbose"]               = Verbose.ToString(),
     };
 
@@ -214,6 +247,10 @@ public class MatchConfig
     ///   --reference-option &lt;name=value&gt;   (repeatable; e.g. Threads=1, Hash=128)
     ///   --moveloss-retries &lt;n&gt;   (deterministic re-search attempts before marking a sample ineligible)
     ///   --use-partial-root-result       (enable UsePartialRootResult; off by default)
+    ///   --openings &lt;path&gt;        (EPD/FEN list or PGN file of start positions)
+    ///   --opening-plies &lt;n&gt;      (book depth taken from a PGN; default 8)
+    ///   --start-position-only    (every game from the initial position — the old behaviour)
+    ///   --no-pin                 (do not pin workers to cores or raise process priority)
     ///   --quiet
     ///
     /// NOTE on --games: earlier versions of this tool multiplied the value by 2 internally
@@ -224,10 +261,28 @@ public class MatchConfig
     public static MatchConfig Parse(string[] args)
     {
         var cfg = new MatchConfig();
+
+        // Resolved after the loop, so --openings and --opening-plies may appear in either order.
+        string? openingsPath = null;
+        int openingPlies = OpeningBook.DefaultPlies;
+        bool startPositionOnly = false;
+
         for (int i = 0; i < args.Length; i++)
         {
             switch (args[i])
             {
+                case "--openings" when i + 1 < args.Length:
+                    openingsPath = args[++i];
+                    break;
+                case "--opening-plies" when i + 1 < args.Length:
+                    if (int.TryParse(args[++i], out int op)) openingPlies = Math.Max(0, op);
+                    break;
+                case "--start-position-only":
+                    startPositionOnly = true;
+                    break;
+                case "--no-pin":
+                    cfg.PinWorkersToCores = false;
+                    break;
                 case "--engine" when i + 1 < args.Length:
                     cfg.ExternalEnginePath = args[++i];
                     break;
@@ -309,6 +364,15 @@ public class MatchConfig
                     break;
             }
         }
+
+        if (openingsPath is not null && startPositionOnly)
+            throw new ArgumentException(
+                "--openings and --start-position-only ask for different start positions; pass one.");
+
+        cfg.Openings = openingsPath is not null ? OpeningBook.Load(openingsPath, openingPlies)
+                     : startPositionOnly       ? OpeningBook.StartPositionOnly
+                     : OpeningBook.Standard;
+
         return cfg;
     }
 }
