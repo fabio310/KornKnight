@@ -150,6 +150,13 @@ public sealed class AbHeadToHeadResult
     /// </summary>
     public int Concurrency { get; set; } = 1;
 
+    /// <summary>
+    /// Whether the games asked to be pinned to cores. Recorded because it is the other half of
+    /// what makes a timed number reproducible: two runs at the same concurrency, one pinned and
+    /// one not, are not the same measurement.
+    /// </summary>
+    public bool CorePinningRequested { get; set; }
+
     /// <summary>How the per-move budget was expressed, for reports and rationales.</summary>
     public string BudgetLabel => MsPerMove is int ms
         ? $"{ms:N0} ms/move" + (Concurrency > 1 ? $", {Concurrency} games in parallel" : "")
@@ -417,12 +424,20 @@ public static class AbHarness
     /// and only running both distinguishes that from the reverse.
     /// </summary>
     /// <param name="concurrency">
-    /// How many openings to play at once. Games are independent, so this is close to linear
-    /// speed-up, and a comparison that takes an hour is a comparison that does not get run.
-    /// The two games of one opening always run back to back on the same worker, so a colour-
-    /// reversed pair sees the same machine conditions even on a CPU whose cores differ.
-    /// Keep it at or below the physical core count, and note that timed games under
-    /// concurrency measure both sides at a reduced effective node rate.
+    /// How many openings to play at once, as a fixed degree of parallelism. Games are
+    /// independent, so this is close to linear speed-up, and a comparison that takes an hour is
+    /// a comparison that does not get run. The two games of one opening always run back to back
+    /// on the same slot, so a colour-reversed pair sees the same machine conditions even on a
+    /// CPU whose cores differ.
+    ///
+    /// A node budget can take the whole machine — it is reproducible under any load — while a
+    /// timed run should stay at or below half the physical cores, because it measures the
+    /// scheduler alongside the engine. <see cref="ConcurrencyPolicy"/> holds both defaults.
+    /// </param>
+    /// <param name="pinWorkers">
+    /// Pin each slot to a core for the run. Worth it for timed games, where an unpinned search
+    /// is migrated between cores and loses its transposition and history tables to a cold cache.
+    /// Meaningless for node-budget games, whose results are identical either way.
     /// </param>
     public static AbHeadToHeadResult PlayHeadToHead(
         AbConfig configA, AbConfig configB,
@@ -431,45 +446,82 @@ public static class AbHarness
         int maxPlies = 300,
         CancellationToken ct = default,
         int? msPerMove = null,
-        int concurrency = 1)
+        int concurrency = 1,
+        bool pinWorkers = false)
     {
+        concurrency = Math.Max(1, concurrency);
+
         var result = new AbHeadToHeadResult
         {
             NodesPerMove = msPerMove is null ? nodesPerMove : 0,
             MsPerMove    = msPerMove,
-            Concurrency  = Math.Max(1, concurrency),
+            Concurrency  = concurrency,
         };
 
         // Indexed by [opening, swap] so the fold below is in a fixed order regardless of the
         // order in which workers finish: a result that depends on scheduling is not a result.
         var outcomes = new (int outcome, string reason)?[openings.Count, 2];
 
-        var options = new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, concurrency) };
+        // A fixed gate, not Parallel.For. Parallel.For runs on the thread pool, whose
+        // hill-climbing adds and removes threads while the run is in progress: the number of
+        // games actually in flight changed mid-run, and nothing reported it. Here the
+        // semaphore's count is the degree of parallelism from the first game to the last.
+        //
+        // Slots carry the two engines a game needs and, when asked, the core it runs on. A fresh
+        // ChessEngine allocates a 64 MB transposition table, so a slot pool is what keeps this
+        // out of the GC — the same reason Parallel.For's localInit existed.
+        var slots = new SlotPool(concurrency, pinWorkers);
 
-        Parallel.For(
-            0, openings.Count, options,
-            // Each worker keeps one engine per side and reuses them across its games. A fresh
-            // ChessEngine allocates a 64 MB transposition table, so allocating per game would
-            // spend more time in the GC than in the search.
-            localInit: () => (white: new ChessEngine(), black: new ChessEngine()),
-            body: (i, _, engines) =>
+        try
+        {
+            using var gate = new SemaphoreSlim(concurrency);
+            var running = new List<Task>(openings.Count);
+
+            for (int opening = 0; opening < openings.Count; opening++)
             {
-                if (!ct.IsCancellationRequested)
+                int i = opening;
+                running.Add(Task.Run(async () =>
                 {
-                    for (int swap = 0; swap < 2; swap++)
+                    await gate.WaitAsync(ct);
+                    var slot = slots.Take();
+                    try
                     {
-                        // swap == 0: A is White. swap == 1: B is White.
-                        outcomes[i, swap] = PlayGame(
-                            white: swap == 0 ? configA : configB,
-                            black: swap == 0 ? configB : configA,
-                            openings[i], nodesPerMove, maxPlies, ct, msPerMove,
-                            engines.white, engines.black);
-                    }
-                }
+                        if (ct.IsCancellationRequested) return;
 
-                return engines;
-            },
-            localFinally: _ => { });
+                        // Pinned for the whole pair and released afterwards: these are pooled
+                        // threads, handed on to unrelated work. Nothing is awaited inside, so
+                        // the pair cannot migrate off the pinned thread halfway through.
+                        using var pin = slot.Core >= 0
+                            ? MachineTopology.PinCurrentThreadToCore(slot.Core)
+                            : null;
+
+                        for (int swap = 0; swap < 2; swap++)
+                        {
+                            // swap == 0: A is White. swap == 1: B is White.
+                            outcomes[i, swap] = PlayGame(
+                                white: swap == 0 ? configA : configB,
+                                black: swap == 0 ? configB : configA,
+                                openings[i], nodesPerMove, maxPlies, ct, msPerMove,
+                                slot.White, slot.Black);
+                        }
+                    }
+                    finally
+                    {
+                        slots.Return(slot);
+                        gate.Release();
+                    }
+                }, ct));
+            }
+
+            Task.WhenAll(running).GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException)
+        {
+            // A cancelled run still reports the games it finished; the unfinished slots stay null
+            // and are simply not folded in below.
+        }
+
+        result.CorePinningRequested = pinWorkers;
 
         for (int i = 0; i < openings.Count; i++)
         {
@@ -491,6 +543,49 @@ public static class AbHarness
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// One concurrent game's resources: an engine per side, reused across the games that run in
+    /// this slot, and the core the slot is pinned to (-1 when unpinned).
+    /// </summary>
+    private sealed class Slot
+    {
+        public required ChessEngine White { get; init; }
+        public required ChessEngine Black { get; init; }
+        public required int Core { get; init; }
+    }
+
+    /// <summary>
+    /// A fixed set of slots, one per concurrent game. Exactly <c>size</c> exist for the whole
+    /// run, so the engines — and therefore the 64 MB transposition tables — are allocated once.
+    /// </summary>
+    private sealed class SlotPool
+    {
+        private readonly Stack<Slot> _free = new();
+        private readonly object _gate = new();
+
+        public SlotPool(int size, bool pin)
+        {
+            var cores = new CoreSlotPool(size, CoreSlotPool.StrideForThisMachine);
+            for (int i = 0; i < size; i++)
+                _free.Push(new Slot
+                {
+                    White = new ChessEngine(),
+                    Black = new ChessEngine(),
+                    Core  = pin ? cores.Take() : -1,
+                });
+        }
+
+        public Slot Take()
+        {
+            lock (_gate) return _free.Pop();
+        }
+
+        public void Return(Slot slot)
+        {
+            lock (_gate) _free.Push(slot);
+        }
     }
 
     /// <summary>

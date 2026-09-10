@@ -37,10 +37,18 @@ internal class Program
             Console.WriteLine("  --reference-option   Reference-engine UCI option as name=value, e.g. Threads=1 (repeatable)");
             Console.WriteLine("  --moveloss-retries   Deterministic re-search attempts before an ineligible sample is excluded (default: 2)");
             Console.WriteLine("  --use-partial-root-result  Enable UsePartialRootResult in ChessBot's search (default: off)");
-            Console.WriteLine("  --concurrency        Games played at the same time (default: as many as the");
-            Console.WriteLine($"                       machine can take, capped at {MatchConfig.MaxAutoConcurrency}). Games are timed, so");
-            Console.WriteLine("                       concurrent games leave both engines less CPU per move;");
-            Console.WriteLine("                       pass 1 to measure at the machine's full speed.");
+            Console.WriteLine("  --openings           EPD/FEN list or PGN file of start positions, each played once");
+            Console.WriteLine("                       with each colour, round-robin (default: the built-in 16-opening set)");
+            Console.WriteLine("  --opening-plies      Book depth taken from a PGN opening file (default: 8)");
+            Console.WriteLine("  --start-position-only  Play every game from the initial position. Two");
+            Console.WriteLine("                       near-deterministic engines then replay the same handful of");
+            Console.WriteLine("                       games, so the run has far fewer samples than it has games.");
+            Console.WriteLine("  --concurrency        Games played at the same time (default: half the physical");
+            Console.WriteLine($"                       cores — {ConcurrencyPolicy.RecommendedTimedCeiling} on this machine — because these games are timed.");
+            Console.WriteLine("                       There is no fixed cap; above the default you get a warning,");
+            Console.WriteLine("                       because contention distorts what a timed game measures.");
+            Console.WriteLine("                       Pass 1 to measure at the machine's full speed.");
+            Console.WriteLine("  --no-pin             Do not pin game workers to cores or raise process priority");
             Console.WriteLine("  --quiet              Suppress move-by-move output");
             Console.WriteLine();
             Console.WriteLine("  --ab-harness         Run a controlled, no-external-engine A/B comparison instead of a match");
@@ -114,10 +122,12 @@ internal class Program
             Console.WriteLine("  --ab-game-ms     Time per move in those games INSTEAD of a node budget.");
             Console.WriteLine("              Node-budget games isolate decision quality; timed games also");
             Console.WriteLine("              charge each side for what its evaluation costs to compute.");
-            Console.WriteLine("  --ab-concurrency  Games played in parallel (default: half the logical");
-            Console.WriteLine("              processors). Colour-reversed pairs always run together on one");
-            Console.WriteLine("              worker. Timed games under concurrency compare fairly but at a");
-            Console.WriteLine("              reduced effective node rate; pass 1 to measure at full speed.");
+            Console.WriteLine("  --ab-concurrency  Games played in parallel. The default follows the budget:");
+            Console.WriteLine($"              a node budget takes every physical core ({MachineTopology.PhysicalCoreCount} here) because it is");
+            Console.WriteLine($"              bit-identical at any concurrency; a time budget takes half ({ConcurrencyPolicy.RecommendedTimedCeiling})");
+            Console.WriteLine("              because it measures the scheduler too. Colour-reversed pairs always");
+            Console.WriteLine("              run together on one slot; pass 1 to measure at full speed.");
+            Console.WriteLine("  --ab-no-pin  Do not pin timed-game workers to cores or raise process priority");
             Console.WriteLine("  --ab-corpus-size  Generate a deterministic corpus of N positions instead of the");
             Console.WriteLine("                    built-in 10-position smoke corpus (needed for any KEEP verdict)");
             Console.WriteLine("  --ab-corpus-seed  Seed for the generated corpus (default: 20260906)");
@@ -137,12 +147,17 @@ internal class Program
         int games      = int.TryParse(GetArgValue(args, "--ab-games"), out int g) ? g : 0;
         long gameNodes = long.TryParse(GetArgValue(args, "--ab-game-nodes"), out long gn) ? gn : 50_000;
         int? gameMs    = int.TryParse(GetArgValue(args, "--ab-game-ms"), out int gms) ? gms : null;
-        // Games are independent, so they are played in parallel by default: half the logical
-        // processors, which leaves the machine usable and stays at or below the physical cores
-        // on a typical hyper-threaded CPU.
+        // The budget decides how much of the machine the games may take, because the two budgets
+        // are not comparable. Node-budget games are bit-identical at any concurrency, so they run
+        // on every physical core; timed games measure the scheduler too, so they stay at half.
+        // Most A/B questions here are node-budget questions, which is what makes a large machine
+        // worth having.
+        var gameBudget = gameMs is null ? BudgetKind.Nodes : BudgetKind.Time;
+        int openingCount = (games + 1) / 2;
         int concurrency = int.TryParse(GetArgValue(args, "--ab-concurrency"), out int cc)
             ? Math.Max(1, cc)
-            : Math.Max(1, Environment.ProcessorCount / 2);
+            : ConcurrencyPolicy.DefaultFor(gameBudget, openingCount);
+        bool pinWorkers = !args.Contains("--ab-no-pin") && gameBudget == BudgetKind.Time;
 
         Directory.CreateDirectory(outDir);
 
@@ -246,15 +261,20 @@ internal class Program
         if (games > 0)
         {
             // Openings are played in pairs (both colours), so the count is rounded up to even.
-            int openingCount = (games + 1) / 2;
             var openings = AbHarness.GenerateOpeningPositions(openingCount, corpusSeed);
 
             string perMove = gameMs is int gm ? $"{gm} ms/move" : $"{gameNodes:N0} nodes/move";
             Console.WriteLine($"Playing {openings.Count * 2} head-to-head games at {perMove}, " +
-                              $"{concurrency} at a time...");
+                              $"{ConcurrencyPolicy.Describe(gameBudget, concurrency)}" +
+                              (pinWorkers ? ", workers pinned to cores" : "") + "...");
+            ConcurrencyPolicy.WarnIfOversubscribed(gameBudget, concurrency);
+
+            if (pinWorkers)
+                Console.WriteLine($"Process priority: {MachineTopology.RaiseProcessPriority()}");
+
             var h2h = AbHarness.PlayHeadToHead(
                 configA, configB, openings, gameNodes,
-                msPerMove: gameMs, concurrency: concurrency);
+                msPerMove: gameMs, concurrency: concurrency, pinWorkers: pinWorkers);
             AbHarness.AttachHeadToHead(report, h2h);
 
             Console.WriteLine($"  B scored {h2h.ScoreRateB:P1} (+{h2h.WinsB}={h2h.Draws}-{h2h.WinsA})");
