@@ -63,9 +63,16 @@ public sealed class UciAdapter : IDisposable
     /// </summary>
     public async Task InitializeAsync(CancellationToken ct = default)
     {
+        // Resolved to a full path first. A relative path satisfies File.Exists, which resolves
+        // against the current directory, but Process.Start resolves it against PATH and the
+        // start info's working directory instead — so an engine that the caller has just checked
+        // for can still fail to start, with a bare Win32 "file not found" and no indication that
+        // the path was the problem.
+        string executable = Path.GetFullPath(_enginePath);
+
         var psi = new ProcessStartInfo
         {
-            FileName               = _enginePath,
+            FileName               = executable,
             UseShellExecute        = false,
             RedirectStandardInput  = true,
             RedirectStandardOutput = true,
@@ -73,8 +80,16 @@ public sealed class UciAdapter : IDisposable
             CreateNoWindow         = true,
         };
 
-        _process = Process.Start(psi)
-            ?? throw new InvalidOperationException($"Failed to start engine: {_enginePath}");
+        try
+        {
+            _process = Process.Start(psi)
+                ?? throw new InvalidOperationException($"Failed to start engine: {executable}");
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"Could not start engine '{executable}': {ex.Message}", ex);
+        }
 
         _stdin  = _process.StandardInput;
         _stdout = _process.StandardOutput;
@@ -112,10 +127,26 @@ public sealed class UciAdapter : IDisposable
     /// using a fixed move-time budget.
     /// Returns the best move in UCI format (e.g., "e2e4", "e7e8q") and any info lines.
     /// </summary>
-    public async Task<UciMoveResult> GetBestMoveAsync(
+    public Task<UciMoveResult> GetBestMoveAsync(
         string fen,
         IReadOnlyList<string> moves,
         int moveTimeMs,
+        CancellationToken ct = default)
+        => GetBestMoveAsync(fen, moves, MoveBudget.Time(moveTimeMs), ct);
+
+    /// <summary>
+    /// Asks the engine for the best move from the given FEN with move list applied, under either
+    /// budget kind.
+    ///
+    /// The node-budget path is what lets an A/B run between two engine binaries use the whole
+    /// machine: <c>go nodes</c> sends no clock, so the engine's answer depends on the position
+    /// alone and concurrency cannot change it. Only <c>go movetime</c> existed before, which
+    /// meant every externally driven game was a timed game and had to be run on a quiet machine.
+    /// </summary>
+    public async Task<UciMoveResult> GetBestMoveAsync(
+        string fen,
+        IReadOnlyList<string> moves,
+        MoveBudget budget,
         CancellationToken ct = default)
     {
         EnsureRunning();
@@ -126,9 +157,9 @@ public sealed class UciAdapter : IDisposable
             : $"position fen {fen}";
 
         await SendAsync(posCmd);
-        await SendAsync($"go movetime {moveTimeMs}");
+        await SendAsync(budget.ToGoCommand());
 
-        return await ReadUntilBestMoveAsync(timeoutMs: moveTimeMs + 5000, ct);
+        return await ReadUntilBestMoveAsync(budget.ResponseTimeoutMs, ct);
     }
 
     /// <summary>
@@ -205,12 +236,25 @@ public sealed class UciAdapter : IDisposable
 
     private async Task WaitForAsync(string expectedToken, int timeoutMs, CancellationToken ct = default)
     {
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(timeoutMs);
+        // The deadline is its own source so the two reasons a read can end stay distinguishable:
+        // this one means the engine went silent, the caller's means the run was stopped. Merged
+        // into one token they are indistinguishable, and every stopped run was reported as an
+        // engine timeout.
+        using var deadline = new CancellationTokenSource(timeoutMs);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
 
-        while (!cts.Token.IsCancellationRequested)
+        while (true)
         {
-            string? line = await ReadLineWithTimeoutAsync(cts.Token);
+            string? line;
+            try
+            {
+                line = await ReadLineWithTimeoutAsync(cts.Token);
+            }
+            catch (OperationCanceledException) when (deadline.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                break;
+            }
+
             if (line is null) break;
 
             // Capture engine name from "id name ..."
@@ -233,14 +277,26 @@ public sealed class UciAdapter : IDisposable
 
     private async Task<UciMoveResult> ReadUntilBestMoveAsync(int timeoutMs, CancellationToken ct)
     {
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(timeoutMs);
+        // Separate sources, for the same reason as in WaitForAsync: a run stopped by SPRT or by
+        // the operator must surface as cancellation, not as a false accusation that the engine
+        // failed to answer.
+        using var deadline = new CancellationTokenSource(timeoutMs);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
 
         var result = new UciMoveResult();
 
-        while (!cts.Token.IsCancellationRequested)
+        while (true)
         {
-            string? line = await ReadLineWithTimeoutAsync(cts.Token);
+            string? line;
+            try
+            {
+                line = await ReadLineWithTimeoutAsync(cts.Token);
+            }
+            catch (OperationCanceledException) when (deadline.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                break;
+            }
+
             if (line is null) break;
 
             if (line.StartsWith("info "))
@@ -320,19 +376,22 @@ public sealed class UciAdapter : IDisposable
         }
     }
 
+    /// <summary>
+    /// Reads one protocol line, or null at end of stream.
+    ///
+    /// Cancellation is propagated rather than turned into a null. Swallowing it made the caller
+    /// unable to tell "the caller stopped this run" from "the engine went silent", and the
+    /// caller then reported an abandoned game as an engine timeout — which is a false accusation
+    /// against the engine and, for a run stopped by SPRT, an exception where a clean stop was
+    /// expected.
+    /// </summary>
     private async Task<string?> ReadLineWithTimeoutAsync(CancellationToken ct)
     {
         if (_stdout is null) return null;
-        try
-        {
-            string? line = await _stdout.ReadLineAsync(ct);
-            if (line is not null) Trace("<<", line);
-            return line;
-        }
-        catch (OperationCanceledException)
-        {
-            return null;
-        }
+
+        string? line = await _stdout.ReadLineAsync(ct);
+        if (line is not null) Trace("<<", line);
+        return line;
     }
 
     private void EnsureRunning()

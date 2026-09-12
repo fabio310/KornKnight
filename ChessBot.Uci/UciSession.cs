@@ -23,6 +23,41 @@ public sealed class UciSession : IDisposable
     /// <summary>Author reported to the GUI in the "uci" handshake.</summary>
     public const string EngineAuthor = "Fabio Kornfeld";
 
+    /// <summary>
+    /// Commit and build configuration this binary was produced from, e.g.
+    /// <c>1.0.0+a1b2c3d4e5f6 (Release)</c>, or <c>… (Release, dirty)</c> when it was built from a
+    /// working tree with uncommitted changes.
+    ///
+    /// Reported in the handshake because an A/B run compares two engine binaries, and a result
+    /// is only traceable to two commits if each binary can say which commit it is. Asking git at
+    /// measurement time answers a different question — what the harness's working tree is —
+    /// which is routinely a third commit entirely.
+    /// </summary>
+    public static readonly string BuildIdentity = DescribeBuild();
+
+    private static string DescribeBuild()
+    {
+        string version = System.Reflection.Assembly
+            .GetExecutingAssembly()
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+            .FirstOrDefault()?.InformationalVersion ?? "unknown";
+
+        string configuration =
+#if DEBUG
+            "Debug";
+#else
+            "Release";
+#endif
+
+        // The build stamps a ".dirty" suffix onto the commit id; it is pulled out into its own
+        // word here so a reader sees it next to the configuration rather than buried in a hash.
+        if (version.EndsWith(".dirty", StringComparison.Ordinal))
+            return $"{version[..^".dirty".Length]} ({configuration}, dirty)";
+
+        return $"{version} ({configuration})";
+    }
+
     private const string StartPositionFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
     private readonly ChessEngine _engine;
@@ -81,7 +116,7 @@ public sealed class UciSession : IDisposable
         switch (tokens[0].ToLowerInvariant())
         {
             case "uci":
-                WriteLine($"id name {EngineName}");
+                WriteLine($"id name {EngineName} {BuildIdentity}");
                 WriteLine($"id author {EngineAuthor}");
                 WriteLine("uciok");
                 return true;

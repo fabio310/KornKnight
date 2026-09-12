@@ -223,6 +223,51 @@ public sealed class MoveLossAggregateDto
 
         return agg;
     }
+
+    /// <summary>
+    /// Folds per-game aggregates into a run-level one, for a long run that keeps a summary per
+    /// game rather than every sample.
+    ///
+    /// The mean and the counts combine exactly, from the per-game sums. The median and the 95th
+    /// percentile do not: an order statistic cannot be recovered from other order statistics, and
+    /// averaging per-game medians would produce a number that is not the median of anything. They
+    /// are left null rather than approximated, because a plausible wrong quantile is worse than a
+    /// missing one — the per-game reports still hold the samples they were computed from.
+    /// </summary>
+    public static MoveLossAggregateDto? Combine(IReadOnlyList<MoveLossAggregateDto> parts)
+    {
+        if (parts.Count == 0) return null;
+
+        var combined = new MoveLossAggregateDto();
+        double lossSum = 0;
+
+        foreach (var part in parts)
+        {
+            combined.TotalSamples    += part.TotalSamples;
+            combined.EligibleSamples += part.EligibleSamples;
+            combined.LossesAbove200Cp += part.LossesAbove200Cp;
+
+            if (part.MeanCentipawnLoss is double mean)
+                lossSum += mean * part.EligibleSamples;
+
+            foreach (var (key, count) in part.EligibilityCounts)
+                combined.EligibilityCounts[key] = combined.EligibilityCounts.GetValueOrDefault(key) + count;
+            foreach (var (key, count) in part.MateCategoryCounts)
+                combined.MateCategoryCounts[key] = combined.MateCategoryCounts.GetValueOrDefault(key) + count;
+        }
+
+        if (combined.EligibleSamples > 0)
+            combined.MeanCentipawnLoss = lossSum / combined.EligibleSamples;
+
+        return combined;
+    }
+
+    /// <summary>One line for a report header. Says what was measured and what was excluded.</summary>
+    public override string ToString() =>
+        MeanCentipawnLoss is double mean
+            ? $"mean {mean:F1} cp over {EligibleSamples} exact samples " +
+              $"({ExcludedSamples} excluded, {LossesAbove200Cp} above 200 cp)"
+            : $"no exact samples ({TotalSamples} analysed, all excluded)";
 }
 
 /// <summary>

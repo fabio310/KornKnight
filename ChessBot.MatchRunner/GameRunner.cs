@@ -102,7 +102,23 @@ public record MoveRecord
 public class GameResult
 {
     public int GameNumber       { get; init; }
+
+    /// <summary>
+    /// Whether the measured player had White. In a match against an external opponent that
+    /// player is ChessBot. In an A/B run between two engine binaries it is arm A: the record is
+    /// shared so that the PGN writer, the position analyzer and the reference-engine move-loss
+    /// analysis serve both without a parallel set of types. <see cref="Outcome"/> and
+    /// <see cref="MoveRecord.IsChessBotMove"/> are relative to that same player, and
+    /// <see cref="MeasuredPlayerName"/> says who it was.
+    /// </summary>
     public bool ChessBotIsWhite { get; init; }
+
+    /// <summary>Name of the player <see cref="ChessBotIsWhite"/> and <see cref="Outcome"/> refer to.</summary>
+    public string MeasuredPlayerName { get; init; } = "ChessBot";
+
+    /// <summary>Name of the other player.</summary>
+    public string OpponentPlayerName { get; init; } = "External";
+
     public GameOutcome Outcome  { get; set; } = GameOutcome.Aborted;
     public List<MoveRecord> Moves { get; } = new();
     public string InitialFen      { get; init; } = OpeningBook.StartFen;
