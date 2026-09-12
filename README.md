@@ -104,16 +104,28 @@ than a run to design:
 ```powershell
 dotnet run -c Release --project ChessBot.MatchRunner -- `
   --engine "C:\Tools\stockfish\stockfish-windows-x86-64-avx2.exe" `
-  --engine-elo 2100 --time 100 --games 200 --concurrency 1 --quiet `
+  --engine-elo 2300 --time 100 --games 200 --concurrency 1 --quiet `
   --openings openings/generated-500.epd `
   --pgn-dir matches/anchor
 ```
 
-Last measured: **~2058 Elo, 95% CI [2009, 2105]** — +84 =8 -108 over 200 games, 33 min at
+Last measured: **~2253 Elo, 95% CI [2204, 2300]** — +83 =7 -110 over 200 games, 36 min at
 concurrency 1.
 
+The opponent was re-pitched from 2100 to 2300 for this measurement. Against 2100 the engine now
+scores far enough above 50% that the interval widens and the limiter is doing most of the talking;
+an anchor is only informative while the opponent is close. The previous **~2058 Elo, CI
+[2009, 2105]** was measured against 2100 and is superseded — both are estimates on Stockfish's
+own `UCI_Elo` scale so the two numbers can be compared as ratings, but `UCI_LimitStrength` is not
+linear, so a change of anchor opponent carries uncertainty the intervals above do not show.
+
+Run-to-run spread is larger than the interval suggests. Three measurements of this same build
+scored 55.8% (60 games, concurrency 1), 49.25% (200 games, concurrency 7) and 43.25% (200 games,
+concurrency 1). They are mutually consistent, but a single 200-game anchor moves by several score
+points between runs, so treat a change under about 50 Elo as unmeasured rather than real.
+
 The opponent Elo, the time control and the opening suite are all fixed parts: change any of them
-and the result is not comparable to the last anchor. `--engine-elo 2100` caps Stockfish through
+and the result is not comparable to the last anchor. `--engine-elo 2300` caps Stockfish through
 `UCI_LimitStrength`, which is a crude limiter and not a FIDE-calibrated rating, so treat the
 absolute number as a repeatable yardstick rather than a rating. The 500-opening suite is used
 rather than the built-in sixteen because 200 games over sixteen openings replays each one six
