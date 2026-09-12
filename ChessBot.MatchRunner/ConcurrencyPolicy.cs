@@ -19,6 +19,43 @@ public enum BudgetKind
 }
 
 /// <summary>
+/// One side's budget for one move, and the UCI command that expresses it.
+///
+/// The two kinds are not interchangeable and a run has to say which it used. A node budget makes
+/// a game reproducible: the same position searches the same nodes and returns the same move
+/// whatever else the machine is doing. A time budget is the only one that charges a change for
+/// what it costs to compute, and the only one whose result depends on how loaded the machine was.
+/// </summary>
+public readonly record struct MoveBudget(BudgetKind Kind, long Value)
+{
+    public static MoveBudget Nodes(long nodes) => new(BudgetKind.Nodes, Math.Max(1, nodes));
+    public static MoveBudget Time(int ms)      => new(BudgetKind.Time,  Math.Max(1, ms));
+
+    /// <summary>
+    /// The "go" command for this budget. <c>go nodes</c> carries no clock, so a UCI engine has
+    /// nothing but the node count to stop on and the search stays deterministic; adding a
+    /// movetime alongside it would quietly turn a node budget back into a time budget on any
+    /// position that ran long.
+    /// </summary>
+    public string ToGoCommand() => Kind == BudgetKind.Nodes
+        ? $"go nodes {Value}"
+        : $"go movetime {Value}";
+
+    /// <summary>
+    /// How long to wait for the engine's answer before treating it as hung. A timed move has a
+    /// known deadline and gets a fixed grace period on top; a node budget has no wall-clock
+    /// bound at all, so it gets a generous ceiling that only catches a genuinely stuck process.
+    /// </summary>
+    public int ResponseTimeoutMs => Kind == BudgetKind.Time
+        ? checked((int)Math.Min(int.MaxValue - 5_000, Value)) + 5_000
+        : 300_000;
+
+    public override string ToString() => Kind == BudgetKind.Nodes
+        ? $"{Value:N0} nodes/move"
+        : $"{Value:N0} ms/move";
+}
+
+/// <summary>
 /// Decides how much of the machine a run may take, from the one fact that actually settles it:
 /// which budget the run is on.
 ///

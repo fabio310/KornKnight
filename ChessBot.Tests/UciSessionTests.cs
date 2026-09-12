@@ -78,8 +78,28 @@ public class UciSessionTests
         }
 
         Assert.Equal(
-            new[] { $"id name {UciSession.EngineName}", $"id author {UciSession.EngineAuthor}", "uciok" },
+            new[]
+            {
+                $"id name {UciSession.EngineName} {UciSession.BuildIdentity}",
+                $"id author {UciSession.EngineAuthor}",
+                "uciok",
+            },
             output.Lines);
+    }
+
+    [Fact]
+    public void Uci_IdNameCarriesTheCommitAndConfigurationTheBinaryWasBuiltFrom()
+    {
+        // An A/B run compares two binaries, so a result is only traceable to two commits if each
+        // binary says which commit it is. Asking git at measurement time describes the harness's
+        // working tree instead, which is routinely a third commit.
+        var (session, _, output) = NewSession();
+        using (session) session.Execute("uci");
+
+        string idName = output.Lines.Single(l => l.StartsWith("id name ", StringComparison.Ordinal));
+
+        Assert.StartsWith($"id name {UciSession.EngineName} ", idName);
+        Assert.Matches(@"\((Debug|Release)(, dirty)?\)$", idName);
     }
 
     [Fact]

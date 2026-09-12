@@ -1,6 +1,5 @@
 namespace ChessBot.Tests;
 
-using ChessBot.Engine.Search;
 using ChessBot.MatchRunner;
 using Xunit;
 
@@ -105,47 +104,4 @@ public class MeasurementRigTests
         Assert.Equal(taken[1], pool.Take());
     }
 
-    // ── A node budget must not depend on how many games ran at once ──────────
-
-    [Fact]
-    public void PlayHeadToHead_NodeBudgetGivesTheSameResultAtEveryConcurrency()
-    {
-        // This is the claim that lets a node-budget run take the whole machine: concurrency 4 is
-        // bit-identical to concurrency 1, just faster. If it ever stops holding, the defaults
-        // that saturate a large box are unsafe and the split by budget kind is wrong.
-        var configA = new AbConfig { Name = "A", Build = () => new SearchSettings() };
-        var configB = new AbConfig { Name = "B", Build = () => new SearchSettings { UseThreatEval = false } };
-
-        var openings = AbHarness.GenerateOpeningPositions(4, seed: 20260907);
-
-        var serial   = AbHarness.PlayHeadToHead(configA, configB, openings, nodesPerMove: 1_500, maxPlies: 30, concurrency: 1);
-        var parallel = AbHarness.PlayHeadToHead(configA, configB, openings, nodesPerMove: 1_500, maxPlies: 30, concurrency: 4);
-
-        Assert.Equal(serial.Games,  parallel.Games);
-        Assert.Equal(serial.WinsA,  parallel.WinsA);
-        Assert.Equal(serial.WinsB,  parallel.WinsB);
-        Assert.Equal(serial.Draws,  parallel.Draws);
-
-        // Folded in a fixed order, so even the per-game reasons line up: a result that depends
-        // on the order the workers happened to finish in is not a result.
-        Assert.Equal(serial.TerminationReasons, parallel.TerminationReasons);
-    }
-
-    [Fact]
-    public void PlayHeadToHead_AccountsForEveryGameAtEveryConcurrency()
-    {
-        var cfg = new AbConfig { Name = "same", Build = () => new SearchSettings() };
-        var openings = AbHarness.GenerateOpeningPositions(3, seed: 20260907);
-
-        foreach (int concurrency in new[] { 1, 2, 8 })
-        {
-            var h2h = AbHarness.PlayHeadToHead(
-                cfg, cfg, openings, nodesPerMove: 1_500, maxPlies: 30, concurrency: concurrency);
-
-            // Every opening twice, once with each side as White, and nothing lost to scheduling.
-            Assert.Equal(openings.Count * 2, h2h.Games);
-            Assert.Equal(h2h.Games, h2h.WinsA + h2h.WinsB + h2h.Draws);
-            Assert.Equal(concurrency, h2h.Concurrency);
-        }
-    }
 }

@@ -141,28 +141,68 @@ game *n* is always the same position with the same colour, and colours are balan
 prefix, which is what makes a killed run's partial result usable. `--start-position-only` restores
 the old behaviour deliberately.
 
-### A/B harness
+### A/B: comparing two builds
 
-`ChessBot.MatchRunner --ab-harness` compares two search configurations under identical
-conditions, without an external engine. Modes: `partial-root`, `lmr`, `threat-eval`.
+`ChessBot.MatchRunner --ab` plays two **engine binaries** against each other. An arm is a binary
+plus its UCI options — not a settings flag inside the engine — which is what lets a decision
+actually be made: the winner is kept and the loser is deleted, and nothing is left behind to
+configure.
+
+The workflow is the point:
 
 ```powershell
-# Search-shape comparison at a fixed node budget (reproducible; isolates decisions)
-dotnet run -c Release --project ChessBot.MatchRunner -- --ab-harness --ab-mode threat-eval `
-  --ab-corpus-size 400 --ab-depth 12 --ab-nodes 200000
+# 1. Branch, and build the baseline arm from the commit you are comparing against
+git switch -c experiment/king-pst
+dotnet build -c Release ChessBot.Uci
+Copy-Item ChessBot.Uci/bin/Release/net8.0 arms/base -Recurse
 
-# Same corpus at a fixed time budget — the only way a cheaper evaluation shows up as depth
-dotnet run -c Release --project ChessBot.MatchRunner -- --ab-harness --ab-mode threat-eval `
-  --ab-corpus-size 400 --ab-depth 30 --ab-time 500
+# 2. Change exactly one thing, and build that as the other arm
+#    (edit the engine, then:)
+dotnet build -c Release ChessBot.Uci
+Copy-Item ChessBot.Uci/bin/Release/net8.0 arms/change -Recurse
 
-# Head-to-head games between the two configurations (both colours per opening)
-dotnet run -c Release --project ChessBot.MatchRunner -- --ab-harness --ab-mode threat-eval `
-  --ab-games 200 --ab-game-ms 100 --ab-concurrency 10
+# 3. Run, with SPRT so it stops as soon as the answer is known
+dotnet run -c Release --project ChessBot.MatchRunner -- --ab `
+  --arm-a arms/base/ChessBot.Uci.exe `
+  --arm-b arms/change/ChessBot.Uci.exe `
+  --ab-games 4000 --ab-nodes 50000 --sprt --ab-out ab_runs/king-pst
+
+# 4. Keep or discard. Exit code 0 = adopt B, 4 = discard B, 5 = still unknown.
 ```
 
-Games are independent and run in parallel at a fixed degree of parallelism; the two
-colour-reversed games of an opening always run together on one slot, so a pair sees the same
-machine conditions even on a CPU whose cores differ.
+Change **one** thing per run. Two changes measured together give one number and no way to tell
+which of them earned it.
+
+Each arm reports the commit and build configuration it was built from in its UCI `id name` line,
+and the run records both — plus each binary's SHA-256 — so a result is traceable to two commits.
+An arm built from a working tree with uncommitted changes is flagged as such, because it is not
+traceable to the commit it names.
+
+**SPRT.** `--sprt` tests H0 "B is `--sprt-elo0` stronger" against H1 "B is `--sprt-elo1`
+stronger" (default 0 and 5) at `--sprt-alpha`/`--sprt-beta` (default 0.05 each), and stops the
+run the moment the log-likelihood ratio crosses a bound. The running LLR is printed after every
+game. The test only ever stops at a colour-balanced point: ending mid-pair would leave one arm
+having had White more often, and that bias would land in the score. The LLR is the standard
+normal approximation over per-game scores and treats games as independent, which
+colour-reversed pairs are not quite — that makes it slightly conservative, never over-eager.
+
+**Resumability.** Every finished game is appended to `games.jsonl` and flushed before the next
+one starts, so a killed run keeps everything it finished. Re-running the same command against
+the same `--ab-out` resumes from there; a truncated final line costs one game, not the file.
+Pointing it at a directory holding a *different* run — a rebuilt arm, other openings, another
+budget — is refused rather than silently spliced. Two measurement attempts in this project have
+already been lost to a process dying mid-run.
+
+A run directory holds `run_state.json` (written once, and what resume checks), `games.jsonl`
+(the durable record), one PGN per game, and `ab_report.log` / `ab_result.json`, rewritten after
+every game so a killed run still leaves a readable result.
+
+With `--ab-reference-engine`, each finished game is also analysed for per-arm move loss, so a run
+can say not only which arm won but how much each of them threw away. Median and 95th percentile
+stay per game: an order statistic cannot be combined across games, so the run-level summary
+reports the exact mean and counts and leaves the quantiles to the per-game reports.
+
+Openings, budget and concurrency flags work as they do for matches — `--ab --help` lists them.
 
 ### How much of the machine a run may take
 

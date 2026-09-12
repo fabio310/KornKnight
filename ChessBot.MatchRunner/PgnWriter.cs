@@ -38,8 +38,8 @@ public static class PgnWriter
 
     private static void WriteHeaders(StreamWriter w, GameResult result)
     {
-        string white = result.ChessBotIsWhite ? "ChessBot" : "External";
-        string black = result.ChessBotIsWhite ? "External" : "ChessBot";
+        string white = result.ChessBotIsWhite ? result.MeasuredPlayerName : result.OpponentPlayerName;
+        string black = result.ChessBotIsWhite ? result.OpponentPlayerName : result.MeasuredPlayerName;
 
         string resultTag = result.Outcome switch
         {
