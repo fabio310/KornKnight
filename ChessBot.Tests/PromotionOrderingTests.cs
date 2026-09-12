@@ -130,7 +130,7 @@ public class PromotionOrderingTests
         var board    = engine.GetBoardSnapshot();
         var settings = new SearchSettings { MaxDepth = 3 };
 
-        int standPat = new Evaluator().EvaluateFast(board, settings.UseThreatEval);
+        int standPat = new Evaluator().EvaluateFast(board);
 
         var searcher = new Searcher(board, new Evaluator(), new ZobristHasher());
         searcher.Search(settings);   // initialises the per-search state the node functions need
