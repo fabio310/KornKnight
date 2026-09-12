@@ -8,7 +8,7 @@ using ChessBot.Engine.Types;
 using Xunit;
 
 /// <summary>
-/// Gates for UseGamePhaseDevelopment.
+/// Gates for the development term, whose weight is a function of the material game phase.
 ///
 /// The defect being fixed is that the evaluation was not a function of the position: the
 /// development term read the move number, which the Zobrist hash does not encode. Two positions
@@ -47,12 +47,8 @@ public class GamePhaseEvaluationTests
     {
         var evaluator = new Evaluator();
 
-        int reference = evaluator.Evaluate(
-            BoardAt(OpeningFen, 0, 1), useThreatEval: true, useGamePhaseDevelopment: true);
-
-        int actual = evaluator.Evaluate(
-            BoardAt(OpeningFen, halfmoveClock, fullmoveNumber),
-            useThreatEval: true, useGamePhaseDevelopment: true);
+        int reference = evaluator.Evaluate(BoardAt(OpeningFen, 0, 1));
+        int actual    = evaluator.Evaluate(BoardAt(OpeningFen, halfmoveClock, fullmoveNumber));
 
         Assert.Equal(reference, actual);
     }
@@ -63,26 +59,12 @@ public class GamePhaseEvaluationTests
         "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQ1BKR w kq - {0} {1}";
 
     [Fact]
-    public void MoveNumberDevelopment_ScoresTheSamePositionDifferently()
-    {
-        // The behaviour the flag exists to replace, asserted so the fix cannot quietly become a
-        // no-op: with the legacy rule the identical position is worth something different purely
-        // because the move counter moved.
-        var evaluator = new Evaluator();
-
-        int early = evaluator.Evaluate(BoardAt(AsymmetricFen, 0, 1),  useGamePhaseDevelopment: false);
-        int late  = evaluator.Evaluate(BoardAt(AsymmetricFen, 0, 40), useGamePhaseDevelopment: false);
-
-        Assert.NotEqual(early, late);
-    }
-
-    [Fact]
     public void PhaseDevelopment_ScoresTheAsymmetricPositionIdenticallyAtEveryMoveNumber()
     {
         var evaluator = new Evaluator();
 
-        int early = evaluator.Evaluate(BoardAt(AsymmetricFen, 0, 1),  useGamePhaseDevelopment: true);
-        int late  = evaluator.Evaluate(BoardAt(AsymmetricFen, 0, 40), useGamePhaseDevelopment: true);
+        int early = evaluator.Evaluate(BoardAt(AsymmetricFen, 0, 1));
+        int late  = evaluator.Evaluate(BoardAt(AsymmetricFen, 0, 40));
 
         Assert.Equal(early, late);
     }
@@ -105,8 +87,8 @@ public class GamePhaseEvaluationTests
         var evaluator = new Evaluator();
 
         Assert.Equal(
-            evaluator.Evaluate(direct.GetBoardSnapshot(), useGamePhaseDevelopment: true),
-            evaluator.Evaluate(viaShuffle.GetBoardSnapshot(), useGamePhaseDevelopment: true));
+            evaluator.Evaluate(direct.GetBoardSnapshot()),
+            evaluator.Evaluate(viaShuffle.GetBoardSnapshot()));
     }
 
     // ── The term still does its job ──────────────────────────────────────────
@@ -117,11 +99,11 @@ public class GamePhaseEvaluationTests
     /// Every position passed here has White to move, and the evaluator returns a side-to-move
     /// relative score, so no sign correction is needed.
     /// </summary>
-    private static int Eval(string fen, bool useGamePhase = true)
+    private static int Eval(string fen)
     {
         var engine = new ChessEngine();
         engine.LoadFen(fen);
-        return new Evaluator().Evaluate(engine.GetBoardSnapshot(), useGamePhaseDevelopment: useGamePhase);
+        return new Evaluator().Evaluate(engine.GetBoardSnapshot());
     }
 
     // Two positions identical in every piece except where White's king stands: e1 (uncastled)
@@ -175,12 +157,24 @@ public class GamePhaseEvaluationTests
             $"the term should fade rather than switch off: {openingDelta} → {endgameDelta}");
     }
 
-    /// <summary>Piece-square-table score alone, so a comparison can exclude what is not under test.</summary>
+    /// <summary>
+    /// The material-and-piece-square part of the score, interpolated on the phase exactly as the
+    /// evaluation does it, so a comparison can subtract out what is not under test.
+    ///
+    /// Reading the midgame accumulator alone was right only while the evaluation was untapered.
+    /// Now it over-subtracts at any phase below 24: the castling pair below moves the midgame
+    /// king table by 30 and the endgame one by 0, so at phase 8 the score only sees 10 of it.
+    /// </summary>
     private static int PstOf(string fen)
     {
         var engine = new ChessEngine();
         engine.LoadFen(fen);
-        return engine.GetBoardSnapshot().IncrementalPstScore;
+        var board = engine.GetBoardSnapshot();
+
+        return PieceSquareTables.Interpolate(
+            board.IncrementalMaterialScore + board.IncrementalPstScore,
+            board.IncrementalEndgameMaterialScore + board.IncrementalEndgamePstScore,
+            board.IncrementalPhase);
     }
 
     // ── The phase itself ─────────────────────────────────────────────────────
@@ -286,39 +280,7 @@ public class GamePhaseEvaluationTests
 
         // The incremental phase must reproduce the from-scratch scan exactly, or the search's
         // scores would differ from the reference evaluation.
-        Assert.Equal(evaluator.Evaluate(board, useGamePhaseDevelopment: true),
-                     evaluator.EvaluateFast(board, useGamePhaseDevelopment: true));
-    }
-
-    [Fact]
-    public void Search_HonoursTheSetting()
-    {
-        // Same position, same depth, only the flag differs: the reported score must change,
-        // proving the setting reaches the evaluator through the search.
-        SearchSettings Settings(bool usePhase) => new()
-        {
-            MaxDepth = 1,
-            MaxTimeMs = 5_000,
-            UseQuiescence = false,
-            UseGamePhaseDevelopment = usePhase,
-        };
-
-        const string LateOpeningFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 30";
-
-        var engine = new ChessEngine();
-        engine.LoadFen(LateOpeningFen);
-        int legacy = engine.FindBestMove(Settings(false)).Evaluation;
-
-        engine.LoadFen(LateOpeningFen);
-        int phased = engine.FindBestMove(Settings(true)).Evaluation;
-
-        // At move 30 the legacy term is switched off entirely; the phase term is at full weight.
-        Assert.NotEqual(legacy, phased);
-    }
-
-    [Fact]
-    public void DefaultSettings_KeepTheMoveNumberBehaviour()
-    {
-        Assert.False(new SearchSettings().UseGamePhaseDevelopment);
+        Assert.Equal(evaluator.Evaluate(board),
+                     evaluator.EvaluateFast(board));
     }
 }

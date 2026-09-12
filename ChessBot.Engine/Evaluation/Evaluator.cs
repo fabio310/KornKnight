@@ -34,17 +34,7 @@ internal class Evaluator
     /// It must be passed identically to <see cref="Evaluate"/> and <see cref="EvaluateFast"/>,
     /// which are required to return the same score for the same position.
     /// </param>
-    /// <param name="useGamePhaseDevelopment">
-    /// Scale the opening-development term by the material game phase instead of gating it on the
-    /// move number (see <see cref="EvaluateOpeningDevelopment"/>). Defaults to false, which is
-    /// the current behaviour.
-    /// </param>
-    /// <param name="useTaperedEval">
-    /// Blend separate midgame and endgame material values and piece-square tables on the game
-    /// phase, instead of using one set for the whole game. Defaults to false (current behaviour).
-    /// </param>
-    public int Evaluate(Board board, bool useThreatEval = true, bool useGamePhaseDevelopment = false,
-                        bool useTaperedEval = false)
+    public int Evaluate(Board board, bool useThreatEval = true)
     {
         int score = 0;
         int phase = 0;
@@ -78,15 +68,10 @@ internal class Evaluator
             int rank = piece.Color == Color.White ? square.Rank : 7 - square.Rank;
             int file = piece.Color == Color.White ? square.File : 7 - square.File;
 
-            // The midgame set is the one the engine has always used, so this sum is exactly the
-            // untapered score; the endgame sum is only consulted when tapering is on.
             midgame += sign * (matVal + PieceSquareTables.TableFor(piece.Type)[rank][file]);
 
-            if (useTaperedEval)
-            {
-                endgame += sign * (PieceSquareTables.EndgameMaterialValue(piece.Type)
-                                 + PieceSquareTables.EndgameTableFor(piece.Type)[rank][file]);
-            }
+            endgame += sign * (PieceSquareTables.EndgameMaterialValue(piece.Type)
+                             + PieceSquareTables.EndgameTableFor(piece.Type)[rank][file]);
 
             // Track pawn files for structure evaluation
             if (piece.Type == PieceType.Pawn)
@@ -96,11 +81,8 @@ internal class Evaluator
             }
         }
 
-        // Material + PST, blended on the phase when tapering is on and taken from the midgame
-        // set alone when it is off.
-        score += useTaperedEval
-            ? PieceSquareTables.Interpolate(midgame, endgame, phase)
-            : midgame;
+        // Material + PST, blended on the phase.
+        score += PieceSquareTables.Interpolate(midgame, endgame, phase);
 
         // Pawn structure
         score += EvaluatePawnStructureFromCounts(whitePawnFiles, blackPawnFiles);
@@ -110,7 +92,7 @@ internal class Evaluator
             score += EvaluateThreats(board, pieceCount);
 
         // Opening development
-        score += EvaluateOpeningDevelopment(board, useGamePhaseDevelopment, phase);
+        score += EvaluateOpeningDevelopment(board, phase);
 
         // Negamax convention: return score relative to the side to move.
         int sideSign = board.State.ActiveColor == Color.White ? 1 : -1;
@@ -127,24 +109,18 @@ internal class Evaluator
     /// </summary>
     /// <param name="board">Position to evaluate.</param>
     /// <param name="useThreatEval">See <see cref="Evaluate"/>; must match what that call is given.</param>
-    /// <param name="useGamePhaseDevelopment">See <see cref="Evaluate"/>; must match likewise.</param>
-    /// <param name="useTaperedEval">See <see cref="Evaluate"/>; must match likewise.</param>
-    public int EvaluateFast(Board board, bool useThreatEval = true, bool useGamePhaseDevelopment = false,
-                            bool useTaperedEval = false)
+    public int EvaluateFast(Board board, bool useThreatEval = true)
     {
         // Only the threat pass needs the piece list; with the term off, the whole board scan
         // goes away too, which is most of what disabling it saves.
         int pieceCount = useThreatEval ? board.GetAllPiecesInto(_pieceBuffer) : 0;
 
-        // Material + PST come straight from the incremental White-positive accumulators. The
-        // midgame pair is the same one the untapered path uses; the endgame pair is maintained
-        // alongside it by the same make/unmake bookkeeping.
-        int score = useTaperedEval
-            ? PieceSquareTables.Interpolate(
-                  board.IncrementalMaterialScore + board.IncrementalPstScore,
-                  board.IncrementalEndgameMaterialScore + board.IncrementalEndgamePstScore,
-                  board.IncrementalPhase)
-            : board.IncrementalMaterialScore + board.IncrementalPstScore;
+        // Material + PST come straight from the incremental White-positive accumulators, one
+        // pair per scale, both maintained by the same make/unmake bookkeeping.
+        int score = PieceSquareTables.Interpolate(
+            board.IncrementalMaterialScore + board.IncrementalPstScore,
+            board.IncrementalEndgameMaterialScore + board.IncrementalEndgamePstScore,
+            board.IncrementalPhase);
 
         // Pawn structure from the incrementally maintained per-file pawn counts.
         score += EvaluatePawnStructureFromCounts(board.WhitePawnFileCounts, board.BlackPawnFileCounts);
@@ -155,7 +131,7 @@ internal class Evaluator
 
         // Opening development. The phase comes from the Board's incremental accumulator rather
         // than a scan — the same quantity Evaluate() sums piece by piece.
-        score += EvaluateOpeningDevelopment(board, useGamePhaseDevelopment, board.IncrementalPhase);
+        score += EvaluateOpeningDevelopment(board, board.IncrementalPhase);
 
         // Negamax convention: return score relative to the side to move.
         int sideSign = board.State.ActiveColor == Color.White ? 1 : -1;
@@ -257,28 +233,22 @@ internal class Evaluator
     /// The evaluation is symmetric: equal positions score 0.
     /// Penalties are intentionally mild so that tactical play still dominates.
     ///
-    /// Two ways of deciding how much the term applies:
+    /// How much the term applies is a function of the material phase: full weight with the
+    /// starting array on the board, fading smoothly to nothing as pieces come off. It depends
+    /// only on the position, so it survives a transposition and cannot change as a search
+    /// descends.
     ///
-    /// <paramref name="useGamePhase"/> = false is the original rule — full value to move 20,
-    /// nothing after, with the king penalty switched on at move 10. That makes the evaluation a
-    /// function of the move number as well as the position, which is wrong in three ways. The
-    /// Zobrist hash does not include the move number, so a transposition entry carries a score
-    /// that was only valid at the move number it was stored at. Inside a search tree that
-    /// crosses move 20 the score jumps by up to 100 cp because plies elapsed, which rewards
-    /// shuffling over developing. And the same position, reached by a longer route, evaluates
-    /// differently from itself.
-    ///
-    /// <paramref name="useGamePhase"/> = true scales the whole term by the material phase
-    /// instead: full weight with the starting array on the board, fading smoothly to nothing as
-    /// pieces come off. It depends only on the position, so it survives a transposition and
-    /// cannot change as a search descends.
+    /// The rule this replaced read the move number instead — full value to move 20, nothing
+    /// after, with the king penalty switched on at move 10 — which made the evaluation a
+    /// function of something the position does not contain. The Zobrist hash does not include
+    /// the move number, so a transposition entry carried a score that was only valid at the move
+    /// number it was stored at; inside a search tree crossing move 20 the score jumped by up to
+    /// 100 cp because plies elapsed, which paid the engine to shuffle rather than develop; and
+    /// the same position reached by a longer route evaluated differently from itself.
     /// </summary>
     /// <param name="phase">The position's 24-point material phase (see <see cref="GamePhase"/>).</param>
-    private static int EvaluateOpeningDevelopment(Board board, bool useGamePhase, int phase)
+    private static int EvaluateOpeningDevelopment(Board board, int phase)
     {
-        // The legacy rule switches the term off entirely after move 20.
-        if (!useGamePhase && board.State.FullmoveNumber > 20) return 0;
-
         int score = 0;
 
         // — Undeveloped minor pieces on home squares —
@@ -308,21 +278,18 @@ internal class Evaluator
         if (bf8.Color == Color.Black && bf8.Type == PieceType.Bishop) score += 20;
 
         // — King safety: penalise an uncastled king in the centre —
-        // The legacy rule waits until move 10 to give the engine time to castle first. Under the
-        // phase rule there is nothing to wait for: material barely changes in ten moves, so no
-        // phase threshold could reproduce that gate. The penalty simply applies while there is
-        // still an army on the board to be afraid of, and fades with it.
-        if (useGamePhase || board.State.FullmoveNumber >= 10)
-        {
-            Square wKing = board.GetKingPosition(Color.White);
-            Square bKing = board.GetKingPosition(Color.Black);
+        // The rule this replaced waited until move 10 to give the engine time to castle first.
+        // There is nothing to wait for here: material barely changes in ten moves, so no phase
+        // threshold could reproduce that gate. The penalty simply applies while there is still an
+        // army on the board to be afraid of, and fades with it.
+        Square wKing = board.GetKingPosition(Color.White);
+        Square bKing = board.GetKingPosition(Color.Black);
 
-            // King on e-file and on its original rank = still on starting square, not castled
-            if (wKing.File == 4 && wKing.Rank == 0) score -= 40;
-            if (bKing.File == 4 && bKing.Rank == 7) score += 40;
-        }
+        // King on e-file and on its original rank = still on starting square, not castled
+        if (wKing.File == 4 && wKing.Rank == 0) score -= 40;
+        if (bKing.File == 4 && bKing.Rank == 7) score += 40;
 
-        return useGamePhase ? GamePhase.ScaleByOpening(score, phase) : score;
+        return GamePhase.ScaleByOpening(score, phase);
     }
 
     /// <summary>

@@ -7,7 +7,7 @@ using ChessBot.Engine.Types;
 using Xunit;
 
 /// <summary>
-/// Gates for UseTaperedEval.
+/// Gates for the tapered evaluation, which is the only evaluation the engine has.
 ///
 /// The load-bearing test here is the one that plays a self-play game and demands
 /// EvaluateFast == Evaluate at every position along it. That equality is the only thing keeping
@@ -72,15 +72,11 @@ public class TaperedEvaluationTests
         Assert.True(positions.Count >= 300,
             $"expected several hundred positions to check, got {positions.Count}");
 
+        // One equality, but it covers both accumulator pairs: the evaluation interpolates the
+        // midgame and endgame sums on every call, so a mismatched update to either one shows up
+        // here at whatever phase the game happened to reach.
         foreach (var board in positions)
-        {
-            foreach (bool tapered in new[] { false, true })
-            {
-                Assert.Equal(
-                    evaluator.Evaluate(board, useTaperedEval: tapered),
-                    evaluator.EvaluateFast(board, useTaperedEval: tapered));
-            }
-        }
+            Assert.Equal(evaluator.Evaluate(board), evaluator.EvaluateFast(board));
     }
 
     [Fact]
@@ -94,51 +90,20 @@ public class TaperedEvaluationTests
         var engine = new ChessEngine();
         engine.LoadFen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
 
-        int before = evaluator.EvaluateFast(engine.GetBoardSnapshot(), useTaperedEval: true);
+        int before = evaluator.EvaluateFast(engine.GetBoardSnapshot());
 
         foreach (var move in engine.GetLegalMoves())
         {
             engine.MakeMove(move);
 
             var board = engine.GetBoardSnapshot();
-            Assert.Equal(evaluator.Evaluate(board, useTaperedEval: true),
-                         evaluator.EvaluateFast(board, useTaperedEval: true));
+            Assert.Equal(evaluator.Evaluate(board),
+                         evaluator.EvaluateFast(board));
 
             engine.UndoMove();
 
-            Assert.Equal(before, evaluator.EvaluateFast(engine.GetBoardSnapshot(), useTaperedEval: true));
+            Assert.Equal(before, evaluator.EvaluateFast(engine.GetBoardSnapshot()));
         }
-    }
-
-    [Fact]
-    public void TaperedEval_AtFullPhase_EqualsTheUntaperedScore()
-    {
-        // The midgame set is the table the engine already used, so the opening end of the taper
-        // is a no-op. This is what confines any measured difference to positions where material
-        // has actually left the board.
-        var evaluator = new Evaluator();
-        var engine = new ChessEngine();
-
-        var board = engine.GetBoardSnapshot();
-        Assert.Equal(GamePhase.Max, board.IncrementalPhase);
-
-        Assert.Equal(evaluator.Evaluate(board, useTaperedEval: false),
-                     evaluator.Evaluate(board, useTaperedEval: true));
-    }
-
-    [Fact]
-    public void TaperedEval_ChangesTheScoreOnceMaterialHasLeftTheBoard()
-    {
-        // A rook endgame: phase 4 of 24, so the endgame table set carries five sixths of the
-        // weight and the score must differ from the single-table one.
-        var evaluator = new Evaluator();
-        var engine = new ChessEngine();
-        engine.LoadFen("4k3/pppppppp/8/8/8/8/PPPPPPPP/R3K3 w Q - 0 1");
-
-        var board = engine.GetBoardSnapshot();
-
-        Assert.NotEqual(evaluator.Evaluate(board, useTaperedEval: false),
-                        evaluator.Evaluate(board, useTaperedEval: true));
     }
 
     [Fact]
@@ -164,8 +129,8 @@ public class TaperedEvaluationTests
         var b = new ChessEngine(); b.LoadFen(before);
         var a = new ChessEngine(); a.LoadFen(after);
 
-        return evaluator.Evaluate(a.GetBoardSnapshot(), useTaperedEval: true)
-             - evaluator.Evaluate(b.GetBoardSnapshot(), useTaperedEval: true);
+        return evaluator.Evaluate(a.GetBoardSnapshot())
+             - evaluator.Evaluate(b.GetBoardSnapshot());
     }
 
     // ── The accumulators themselves ──────────────────────────────────────────
@@ -242,29 +207,6 @@ public class TaperedEvaluationTests
         }
     }
 
-    [Fact]
-    public void Search_HonoursTheSetting()
-    {
-        SearchSettings Settings(bool tapered) => new()
-        {
-            MaxDepth = 1,
-            MaxTimeMs = 5_000,
-            UseQuiescence = false,
-            UseTaperedEval = tapered,
-        };
-
-        const string EndgameFen = "4k3/pppppppp/8/8/8/8/PPPPPPPP/R3K3 w Q - 0 1";
-
-        var engine = new ChessEngine();
-        engine.LoadFen(EndgameFen);
-        int flat = engine.FindBestMove(Settings(false)).Evaluation;
-
-        engine.LoadFen(EndgameFen);
-        int tapered = engine.FindBestMove(Settings(true)).Evaluation;
-
-        Assert.NotEqual(flat, tapered);
-    }
-
     // ── Kings in the tapered evaluation ──────────────────────────────────────
 
     [Fact]
@@ -338,14 +280,7 @@ public class TaperedEvaluationTests
         var a = new ChessEngine(); a.LoadFen(corner);
         var b = new ChessEngine(); b.LoadFen(centre);
 
-        return evaluator.Evaluate(b.GetBoardSnapshot(), useTaperedEval: true)
-             - evaluator.Evaluate(a.GetBoardSnapshot(), useTaperedEval: true);
-    }
-
-
-    [Fact]
-    public void DefaultSettings_KeepTheSingleTableBehaviour()
-    {
-        Assert.False(new SearchSettings().UseTaperedEval);
+        return evaluator.Evaluate(b.GetBoardSnapshot())
+             - evaluator.Evaluate(a.GetBoardSnapshot());
     }
 }
