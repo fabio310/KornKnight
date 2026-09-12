@@ -46,7 +46,6 @@ internal class Searcher
     private int    _lmrFullMoves;
     private double _lmrTableBase;
     private double _lmrTableDivisor;
-    private bool   _useLegacyFlatLmr;
     private bool   _inAspirationRetry;
     private bool   _cancelledDuringAspirationRetry;
 
@@ -135,45 +134,22 @@ internal class Searcher
         return _evaluator.EvaluateFast(_board);
     }
 
-    // ── Partial-iteration root results ────────────────────────────────────────
-    // When an iterative-deepening pass runs out of time it is abandoned, but the root
-    // moves it *did* finish are still valid: a partially searched depth N that has
-    // examined the best few moves usually beats a completed depth N-1. These fields
-    // capture the best root move of the iteration currently in progress, recorded only
-    // when a root move actually raises alpha (so the score is a real improvement rather
-    // than a fail-low bound). Reset at the start of every depth iteration.
-    private Move   _rootPartialMove;
-    private int    _rootPartialScore;
-    private readonly Move[] _rootPartialPv;
-    private int    _rootPartialPvLength;
-
-    // True when _rootPartialScore is an exact value (the move was the new best and did not
-    // itself trigger a beta cutoff at the root). False means the score is only a lower bound
-    // (the root move raised alpha and then immediately failed high against the *current*
-    // aspiration window) — the true value could be higher. Kept separate from ScoreBound
-    // strings used elsewhere because this is specifically about the *partial* root candidate.
-    private bool   _rootPartialIsExact;
-
-    // Number of root moves that finished searching in the iteration currently in progress —
-    // separate from the partial best-move fields above because it must be reported even when
-    // no root move ever raised alpha (i.e. every root move so far failed low).
+    // ── Root coverage of the iteration in progress ────────────────────────────
+    // How far the cancelled iteration got, reported so a caller can see how much of a depth
+    // was actually examined before the budget ran out. Telemetry only: the search always
+    // falls back to the last fully completed iteration.
     private int    _rootMovesCompleted;
     private int    _rootMoveCount;
 
     /// <summary>
-    /// Resets all partial-root-candidate and root-coverage state. Must be called before
-    /// *every* root search attempt — including each aspiration-window retry within the same
-    /// iterative-deepening depth — so that a cancellation during e.g. the fail-high re-search
-    /// cannot report a candidate or coverage count left over from the fail-low attempt that
-    /// preceded it in the same depth.
+    /// Resets root-coverage state. Must be called before *every* root search attempt —
+    /// including each aspiration-window retry within the same iterative-deepening depth — so
+    /// that a cancellation during e.g. the fail-high re-search cannot report a coverage count
+    /// left over from the fail-low attempt that preceded it in the same depth.
     /// </summary>
     private void ResetRootPartialState()
     {
-        _rootPartialMove     = default;
-        _rootPartialScore     = -INFINITY;
-        _rootPartialPvLength = 0;
-        _rootPartialIsExact  = false;
-        _rootMovesCompleted  = 0;
+        _rootMovesCompleted = 0;
     }
 
     /// <summary>Precomputed LMR reductions indexed by [depth, moveNumber]; built in the constructor.</summary>
@@ -225,7 +201,6 @@ internal class Searcher
         for (int i = 0; i < MAX_PLY; i++)
             _moveBuffers[i] = new Move[MoveGenerator.MaxMoves];
 
-        _rootPartialPv = new Move[MAX_PLY];
 
         // ── Late Move Reduction table ─────────────────────────────────────────
         // R = 0.75 + ln(depth)·ln(moveNumber) / 2.25, the standard logarithmic schedule.
@@ -269,11 +244,6 @@ internal class Searcher
         _ct              = ct;
 
         // ── Controlled A/B override of the LMR schedule (see SearchSettings.LmrBaseOverride) ──
-        // UseLegacyFlatLmr reproduces the pre-table schedule exactly and takes precedence over
-        // the parametric overrides, so the current schedule can be compared against the
-        // implementation it actually replaced.
-        _useLegacyFlatLmr = _settings.UseLegacyFlatLmr;
-
         double wantBase    = _settings.LmrBaseOverride    ?? LMR_BASE_DEFAULT;
         double wantDivisor = _settings.LmrDivisorOverride ?? LMR_DIVISOR_DEFAULT;
         int    wantFullMoves = _settings.LmrFullMovesOverride ?? LMR_FULL_MOVES;
@@ -452,26 +422,6 @@ internal class Searcher
                 result.RootCoveragePercent = _rootMoveCount > 0
                     ? 100.0 * _rootMovesCompleted / _rootMoveCount : 0;
 
-                // If enabled, and the iteration already found a root move that beats the
-                // previous (completed) iteration's score, that move can replace the completed
-                // iteration's answer. A fail-low re-search cannot get here: its scores never
-                // exceed prevScore. This is a heuristic substitution — the partial score and
-                // the completed score come from different depths and not every root move was
-                // searched at the partial depth, so it must remain independently switchable.
-                if (_settings.UsePartialRootResult &&
-                    result.DepthAchieved > 0 &&
-                    _rootPartialMove != default &&
-                    _rootPartialScore > prevScore)
-                {
-                    result.BestMove              = _rootPartialMove;
-                    result.Evaluation            = _rootPartialScore;
-                    result.UsedPartialRootResult = true;
-                    result.PartialScoreIsExact   = _rootPartialIsExact;
-
-                    result.PrincipalVariation.Clear();
-                    for (int i = 0; i < _rootPartialPvLength; i++)
-                        result.PrincipalVariation.Add(_rootPartialPv[i]);
-                }
                 break;
             }
 
@@ -521,8 +471,7 @@ internal class Searcher
             if (_searchTimer.ElapsedMilliseconds > timeLimit) break;
         }
 
-        // Extremely small node/time budgets can expire before even depth 1 completes and
-        // before UsePartialRootResult ever finds a root move that raises alpha, leaving
+        // Extremely small node/time budgets can expire before even depth 1 completes, leaving
         // BestMove at its default value. A legal move must still be returned — fall back to
         // the first move produced by move ordering (root move 0) and flag this explicitly so
         // callers never mistake it for an evaluated result.
@@ -772,28 +721,17 @@ internal class Searcher
             if (_settings.UseLmr
                 && !inCheck && depth >= LMR_MIN_DEPTH && moveCount > _lmrFullMoves && isQuiet)
             {
-                if (_useLegacyFlatLmr)
-                {
-                    // The pre-table schedule, reproduced exactly: depth-independent, and with
-                    // no PV-node relief. Kept verbatim so an A/B run compares against the real
-                    // previous behaviour rather than a re-parameterised version of the new one.
-                    reduction = moveCount > 8 ? 2 : 1;
-                    reduction = Math.Clamp(reduction, 0, depth - 2);
-                }
-                else
-                {
-                    reduction = _lmrTable[Math.Min(depth, MAX_PLY - 1),
-                                          Math.Min(moveCount, LMR_MAX_MOVES - 1)];
+                reduction = _lmrTable[Math.Min(depth, MAX_PLY - 1),
+                                      Math.Min(moveCount, LMR_MAX_MOVES - 1)];
 
-                    // PV nodes carry the principal variation; reduce them one ply less so the
-                    // main line keeps its accuracy while the rest of the tree is cut harder.
-                    if (pvNode) reduction--;
+                // PV nodes carry the principal variation; reduce them one ply less so the
+                // main line keeps its accuracy while the rest of the tree is cut harder.
+                if (pvNode) reduction--;
 
-                    // Leave at least one real ply below the reduction: the null-window probe has
-                    // to be a search, not a jump straight into quiescence, or the full-depth
-                    // re-search that recovers accuracy is never triggered.
-                    reduction = Math.Clamp(reduction, 0, depth - 2);
-                }
+                // Leave at least one real ply below the reduction: the null-window probe has
+                // to be a search, not a jump straight into quiescence, or the full-depth
+                // re-search that recovers accuracy is never triggered.
+                reduction = Math.Clamp(reduction, 0, depth - 2);
 
                 if (reduction > 0)
                 {
@@ -866,18 +804,6 @@ internal class Searcher
                     alpha   = score;
                     ttFlag2 = TranspositionTable.ScoreFlag.Exact;
 
-                    // Root move that raised alpha: remember it so the iteration is still
-                    // worth something if we run out of time before finishing it.
-                    if (ply == 0)
-                    {
-                        _rootPartialMove     = move;
-                        _rootPartialScore    = score;
-                        _rootPartialPvLength = _pvLength[0];
-                        _rootPartialIsExact  = true;
-                        for (int i = 0; i < _rootPartialPvLength; i++)
-                            _rootPartialPv[i] = _pvTable[0, i];
-                    }
-
                     if (alpha >= beta)
                     {
                         _betaCutoffs++;
@@ -911,12 +837,6 @@ internal class Searcher
                                 _moveOrdering.RecordCounterMove(_lastMoveAtPly[ply - 1], move);
                         }
                         ttFlag2 = TranspositionTable.ScoreFlag.LowerBound;
-
-                        // The root move that just triggered a beta cutoff is only known to be
-                        // *at least* this good against the current aspiration window — the
-                        // window was too narrow to prove an exact value, so the partial
-                        // candidate captured above must be flagged as a bound, not exact.
-                        if (ply == 0) _rootPartialIsExact = false;
                         break;
                     }
                 }

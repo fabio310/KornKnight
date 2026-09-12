@@ -39,7 +39,6 @@ internal class Program
             Console.WriteLine("  --reference-depth    Fixed search depth for reference-engine analysis (default: 18)");
             Console.WriteLine("  --reference-option   Reference-engine UCI option as name=value, e.g. Threads=1 (repeatable)");
             Console.WriteLine("  --moveloss-retries   Deterministic re-search attempts before an ineligible sample is excluded (default: 2)");
-            Console.WriteLine("  --use-partial-root-result  Enable UsePartialRootResult in ChessBot's search (default: off)");
             Console.WriteLine("  --openings           EPD/FEN list or PGN file of start positions, each played once");
             Console.WriteLine("                       with each colour, round-robin (default: the built-in 16-opening set)");
             Console.WriteLine("  --opening-plies      Book depth taken from a PGN opening file (default: 8)");
@@ -79,7 +78,6 @@ internal class Program
             Console.WriteLine($"External engine option: {opt.Name}={opt.Value}");
         if (!string.IsNullOrWhiteSpace(cfg.ReferenceEnginePath))
             Console.WriteLine($"Reference engine: {cfg.ReferenceEnginePath} (depth {cfg.ReferenceEngineDepth})");
-        Console.WriteLine($"UsePartialRootResult: {cfg.UsePartialRootResult}");
         Console.WriteLine($"Games: {cfg.TotalGames} total" +
                           (cfg.ColorImbalance > 0 ? $" (odd: {(cfg.TotalGames + 1) / 2} as White, {cfg.TotalGames / 2} as Black)" : " (evenly split between colors)"));
 

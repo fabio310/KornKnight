@@ -44,13 +44,6 @@ public class MatchConfig
     /// </summary>
     public int ColorImbalance => TotalGames % 2;
 
-    /// <summary>
-    /// When true, propagated into every <see cref="ChessBot.Engine.Search.SearchSettings"/>
-    /// created for ChessBot's moves. Mirrors <see cref="ChessBot.Engine.Search.SearchSettings.UsePartialRootResult"/>;
-    /// defaults to false (matches the engine default) because this is a strength-affecting
-    /// heuristic that has not yet been validated by a controlled A/B comparison.
-    /// </summary>
-    public bool UsePartialRootResult { get; set; } = false;
 
     /// <summary>Directory to save PGN files.</summary>
     public string PgnOutputDir { get; set; } = "pgns";
@@ -213,7 +206,6 @@ public class MatchConfig
             ? "(none)"
             : string.Join(", ", ReferenceEngineOptions.Select(o => $"{o.Name}={o.Value}")),
         ["MoveLossMaxRetries"]    = MoveLossMaxRetries.ToString(),
-        ["UsePartialRootResult"]  = UsePartialRootResult.ToString(),
         // Recorded because they qualify every timing-derived number in the run.
         ["Budget"]                = Budget.ToString(),
         ["Concurrency"]           = Concurrency.ToString(),
@@ -246,7 +238,6 @@ public class MatchConfig
     ///   --reference-depth &lt;depth&gt;
     ///   --reference-option &lt;name=value&gt;   (repeatable; e.g. Threads=1, Hash=128)
     ///   --moveloss-retries &lt;n&gt;   (deterministic re-search attempts before marking a sample ineligible)
-    ///   --use-partial-root-result       (enable UsePartialRootResult; off by default)
     ///   --openings &lt;path&gt;        (EPD/FEN list or PGN file of start positions)
     ///   --opening-plies &lt;n&gt;      (book depth taken from a PGN; default 8)
     ///   --start-position-only    (every game from the initial position — the old behaviour)
@@ -328,9 +319,6 @@ public class MatchConfig
                     break;
                 case "--engine-elo" when i + 1 < args.Length:
                     if (int.TryParse(args[++i], out int elo)) cfg.EngineElo = elo;
-                    break;
-                case "--use-partial-root-result":
-                    cfg.UsePartialRootResult = true;
                     break;
                 case "--engine-option" when i + 1 < args.Length:
                     {
