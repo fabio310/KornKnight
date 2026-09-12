@@ -141,6 +141,20 @@ game *n* is always the same position with the same colour, and colours are balan
 prefix, which is what makes a killed run's partial result usable. `--start-position-only` restores
 the old behaviour deliberately.
 
+A run longer than twice the opening count replays positions, and the runner warns when it will.
+Sixteen openings cover 32 games; for a thousand-game run, generate a suite:
+
+```powershell
+dotnet run -c Release --project ChessBot.MatchRunner -- `
+  --make-openings 500 --openings-out openings/generated-500.epd
+```
+
+Those are balanced positions from a seeded random walk, not book lines: what a calibration or a
+large A/B run needs is many independent, unbiased starts, and sixteen mainlines replayed sixty
+times each are neither. The seed is printed and recorded in the file header, so the suite is
+reproducible without keeping the file. For the rating anchor, where the question is how the engine
+plays real chess, the built-in mainline set is the better instrument.
+
 ### A/B: comparing two builds
 
 `ChessBot.MatchRunner --ab` plays two **engine binaries** against each other. An arm is a binary

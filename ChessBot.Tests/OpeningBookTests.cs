@@ -346,6 +346,72 @@ public class OpeningBookTests
         Assert.Equal(2, set.GamesBeforeRepeat);
     }
 
+    // ── Generated suites ─────────────────────────────────────────────────────
+
+    [Fact]
+    public void Generate_ProducesTheRequestedNumberOfDistinctBalancedPositions()
+    {
+        var set = OpeningBook.Generate(count: 40, seed: 1234, plies: 8);
+
+        Assert.Equal(40, set.Count);
+        Assert.Equal(40, set.Openings.Select(o => o.Fen).Distinct().Count());
+
+        foreach (var opening in set.Openings)
+        {
+            var engine = new ChessEngine();
+            engine.LoadFen(opening.Fen);
+
+            Assert.NotEmpty(engine.GetLegalMoves());
+            // Material must be level: an opening that hands one side a piece measures luck.
+            Assert.Equal(0, engine.Evaluate().MaterialBalance.Imbalance);
+        }
+    }
+
+    [Fact]
+    public void Generate_IsReproducibleFromItsSeed()
+    {
+        // The seed is what lets a run be reproduced from its manifest without the openings file
+        // being kept alongside it.
+        var first  = OpeningBook.Generate(count: 20, seed: 99, plies: 8);
+        var second = OpeningBook.Generate(count: 20, seed: 99, plies: 8);
+        var other  = OpeningBook.Generate(count: 20, seed: 100, plies: 8);
+
+        Assert.Equal(first.Sha256, second.Sha256);
+        Assert.NotEqual(first.Sha256, other.Sha256);
+        Assert.Contains("seed=99", first.Source);
+    }
+
+    [Fact]
+    public void WriteEpd_RoundTripsThroughLoadWithTheSameHashAndNames()
+    {
+        var set = OpeningBook.Generate(count: 12, seed: 7, plies: 8);
+        string path = Path.Combine(Path.GetTempPath(), $"openings_{Guid.NewGuid():N}.epd");
+
+        OpeningBook.WriteEpd(set, path);
+        var loaded = OpeningBook.Load(path);
+
+        // Same positions in the same order, so a run driven from the file is the run the
+        // generator described.
+        Assert.Equal(set.Count, loaded.Count);
+        Assert.Equal(set.Sha256, loaded.Sha256);
+        Assert.Equal(set.Openings.Select(o => o.Name), loaded.Openings.Select(o => o.Name));
+
+        // The header records how to regenerate it, and is skipped as comments on the way back in.
+        string text = File.ReadAllText(path);
+        Assert.Contains("# ", text);
+        Assert.Contains(set.Sha256, text);
+    }
+
+    [Fact]
+    public void Generate_RefusesToReturnFewerOpeningsThanAsked()
+    {
+        // A short set would silently make a long run replay positions, which is the defect the
+        // whole opening mechanism exists to remove. Two plies from the initial position reach
+        // exactly 20 x 20 = 400 distinct positions, so 500 of them cannot exist.
+        Assert.Throws<InvalidOperationException>(
+            () => OpeningBook.Generate(count: 500, seed: 1, plies: 2));
+    }
+
     private static string WriteTempFile(string extension, params string[] lines)
     {
         string path = Path.Combine(Path.GetTempPath(), $"openings_{Guid.NewGuid():N}{extension}");
