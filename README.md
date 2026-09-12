@@ -20,7 +20,7 @@ The solution (`ChessBot.sln`) contains six projects:
 - **Board**: 8x8 mailbox (`Piece[64]`), with per-color piece lists for O(pieceCount) iteration, a preallocated undo-state stack for O(1) make/unmake, and incrementally maintained Zobrist hash + material/PST evaluation state.
 - **Move generation** (`Board/MoveGenerator.cs`): generates fully legal moves directly in one pass (no pseudo-legal filtering step), using bitboards internally for checkers/pins/attacked squares. Handles check evasion, pins, castling, en passant (including the discovered-check edge case).
 - **Search** (`Search/Searcher.cs`): negamax with alpha-beta pruning, iterative deepening, a transposition table, quiescence search, null-move pruning, late move reductions, aspiration windows, and check extensions. Move ordering via TT move → PV move → MVV-LVA/SEE captures → killer moves → history/counter-move heuristics.
-- **Evaluation** (`Evaluation/Evaluator.cs`): material, piece-square tables, pawn structure, hanging-piece/threat detection, development and endgame king centralization; both a full recompute path and an incremental fast path used during search.
+- **Evaluation** (`Evaluation/Evaluator.cs`): material, tapered piece-square tables (kings included), pawn structure, hanging-piece/threat detection and development; both a full recompute path and an incremental fast path used during search.
 - **API**: `ChessEngine` is the public, thread-safe facade — `LoadFen`/`ExportFen`, `GetLegalMoves`, `MakeMove`/`UndoMove`, `FindBestMove`, `Evaluate`, `RunPerft`/`RunPerftDivide`, `NewGame`. The engine core itself does not speak UCI; `ChessBot.Uci` wraps this API in the protocol, and `ChessBot.MatchRunner` uses UCI only to talk to an *external* opponent engine.
 
 ### ChessBot.Uci

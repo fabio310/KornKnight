@@ -265,6 +265,84 @@ public class TaperedEvaluationTests
         Assert.NotEqual(flat, tapered);
     }
 
+    // ── Kings in the tapered evaluation ──────────────────────────────────────
+
+    [Fact]
+    public void MidgameKingTable_NeverRewardsWalkingTheKingUpTheBoard()
+    {
+        // The midgame king table is White-perspective, so it has to fall away from the home rank
+        // and never climb back: a king that leaves its shelter and walks up the board must not
+        // score better for having done so. The table was written by mirroring the bottom four
+        // ranks into the top four, so rank 8 scored the same as rank 1 — a White king on g8 was
+        // worth the same +30 as a White king castled on g1. That was invisible while kings were
+        // excluded from the accumulator. It is not invisible any more.
+        var king = PieceSquareTables.TableFor(PieceType.King);
+
+        for (int file = 0; file < 8; file++)
+            for (int rank = 1; rank < 8; rank++)
+                Assert.True(king[rank][file] <= king[rank - 1][file],
+                    $"file {file}: rank {rank + 1} scores {king[rank][file]}, better than " +
+                    $"rank {rank} at {king[rank - 1][file]}");
+    }
+
+    [Fact]
+    public void KingPst_IsInTheIncrementalAccumulators()
+    {
+        // A move that changes nothing but where the king stands has to move both accumulators,
+        // or the king is not in the taper at all.
+        var engine = new ChessEngine();
+        engine.LoadFen("4k3/pppppppp/8/8/4K3/8/PPPPPPPP/8 w - - 0 1");
+
+        var before = engine.GetBoardSnapshot();
+        int midgameBefore = before.IncrementalPstScore;
+        int endgameBefore = before.IncrementalEndgamePstScore;
+
+        engine.MakeMove(engine.GetLegalMoves().Single(m => m.ToString() == "e4f3"));
+
+        var after = engine.GetBoardSnapshot();
+        Assert.NotEqual(midgameBefore, after.IncrementalPstScore);
+        Assert.NotEqual(endgameBefore, after.IncrementalEndgamePstScore);
+    }
+
+    [Fact]
+    public void TaperedEval_ValuesACentralisedKingMoreAsMaterialLeavesTheBoard()
+    {
+        // The same king, on d4 instead of a1, judged with a full enemy army on the board and
+        // again with nothing but pawns. This is the transition the taper exists to make
+        // continuous, and the one the king used to bypass entirely: a hard
+        // `totalMaterial < 1000` threshold switched a centralisation bonus on, and the midgame
+        // table — the one thing that says a king belongs behind its pawns while queens are on —
+        // was never read at all.
+        int withArmy = CentralisationGain(
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/K7 w kq - 0 1",
+            "rnbqkbnr/pppppppp/8/8/3K4/8/PPPPPPPP/8 w kq - 0 1");
+
+        int bareBoard = CentralisationGain(
+            "4k3/pppppppp/8/8/8/8/PPPPPPPP/K7 w - - 0 1",
+            "4k3/pppppppp/8/8/3K4/8/PPPPPPPP/8 w - - 0 1");
+
+        Assert.True(bareBoard > withArmy,
+            $"centralising the king should be worth more as material leaves: {withArmy} -> {bareBoard}");
+
+        // At phase 0 the endgame table carries the whole weight, so the gain is exactly the
+        // difference between its d4 and a1 entries and nothing else.
+        Assert.Equal(PieceSquareTables.EndgameTableFor(PieceType.King)[3][3]
+                   - PieceSquareTables.EndgameTableFor(PieceType.King)[0][0], bareBoard);
+    }
+
+    /// <summary>Tapered score difference between a corner king and a centralised one.</summary>
+    private static int CentralisationGain(string corner, string centre)
+    {
+        var evaluator = new Evaluator();
+
+        var a = new ChessEngine(); a.LoadFen(corner);
+        var b = new ChessEngine(); b.LoadFen(centre);
+
+        return evaluator.Evaluate(b.GetBoardSnapshot(), useTaperedEval: true)
+             - evaluator.Evaluate(a.GetBoardSnapshot(), useTaperedEval: true);
+    }
+
+
     [Fact]
     public void DefaultSettings_KeepTheSingleTableBehaviour()
     {

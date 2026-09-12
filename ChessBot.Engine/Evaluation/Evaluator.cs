@@ -5,7 +5,7 @@ using ChessBot.Engine.Board;
 
 /// <summary>
 /// Static board evaluator. Scores positions from White's perspective (positive = White advantage).
-/// Features: Material balance, Piece-Square Tables, pawn structure, king safety scaling.
+/// Features: Material balance, Piece-Square Tables (tapered, kings included), pawn structure.
 /// All scores are in centipawns (1 pawn = 100cp).
 /// </summary>
 internal class Evaluator
@@ -47,7 +47,6 @@ internal class Evaluator
                         bool useTaperedEval = false)
     {
         int score = 0;
-        int totalMaterial = 0;
         int phase = 0;
 
         // Midgame and endgame material+PST are accumulated separately and blended once, after
@@ -64,15 +63,15 @@ internal class Evaluator
         {
             var (square, piece) = _pieceBuffer[i];
 
-            // Phase counts every piece, so it accumulates before the king is skipped — the same
-            // definition the Board's incremental accumulator maintains, which is what lets
-            // EvaluateFast reproduce this score exactly.
+            // The same definition the Board's incremental accumulator maintains, which is what
+            // lets EvaluateFast reproduce this score exactly.
             phase += GamePhase.WeightFor(piece.Type);
 
-            if (piece.Type == PieceType.King) continue;
-
+            // The king is in the accumulators like any other piece. Its material value is 0 on
+            // both scales, so it contributes nothing but its piece-square term — which is the
+            // whole point: the king's midgame-to-endgame transition is the largest single thing
+            // a taper buys, and a king scored outside the interpolation bypasses it.
             int matVal = piece.Type.MaterialValue();
-            totalMaterial += matVal;
             int sign = piece.Color == Color.White ? 1 : -1;
 
             // PST
@@ -110,12 +109,8 @@ internal class Evaluator
         if (useThreatEval)
             score += EvaluateThreats(board, pieceCount);
 
-        // Opening development and king safety
+        // Opening development
         score += EvaluateOpeningDevelopment(board, useGamePhaseDevelopment, phase);
-
-        // King safety (endgame centralization)
-        if (totalMaterial < 1000)
-            score += EvaluateKingCentrality(board);
 
         // Negamax convention: return score relative to the side to move.
         int sideSign = board.State.ActiveColor == Color.White ? 1 : -1;
@@ -127,7 +122,7 @@ internal class Evaluator
     /// Numerically identical to <see cref="Evaluate"/>, but the material, piece-square-table, and
     /// pawn-file terms are read from the Board's incrementally maintained make/unmake eval state
     /// instead of being recomputed by a full piece scan every node. The remaining terms
-    /// (hanging-piece threats, opening development, endgame king centrality) still require board
+    /// (hanging-piece threats, opening development) still require board
     /// context and are computed the same way as <see cref="Evaluate"/>.
     /// </summary>
     /// <param name="board">Position to evaluate.</param>
@@ -158,13 +153,9 @@ internal class Evaluator
         if (useThreatEval)
             score += EvaluateThreats(board, pieceCount);
 
-        // Opening development and king safety. The phase comes from the Board's incremental
-        // accumulator rather than a scan — the same quantity Evaluate() sums piece by piece.
+        // Opening development. The phase comes from the Board's incremental accumulator rather
+        // than a scan — the same quantity Evaluate() sums piece by piece.
         score += EvaluateOpeningDevelopment(board, useGamePhaseDevelopment, board.IncrementalPhase);
-
-        // King safety (endgame centralization)
-        if (board.IncrementalTotalMaterial < 1000)
-            score += EvaluateKingCentrality(board);
 
         // Negamax convention: return score relative to the side to move.
         int sideSign = board.State.ActiveColor == Color.White ? 1 : -1;
@@ -332,66 +323,6 @@ internal class Evaluator
         }
 
         return useGamePhase ? GamePhase.ScaleByOpening(score, phase) : score;
-    }
-
-    /// <summary>
-    /// Evaluates king safety and endgame considerations (kept for callers that invoke it directly).
-    /// </summary>
-    private int EvaluateKingSafety(Board board)
-    {
-        int materialCount = CountMaterial(board);
-        return materialCount < 1000 ? EvaluateKingCentrality(board) : 0;
-    }
-
-    /// <summary>
-    /// Counts total material on board (excluding kings).
-    /// </summary>
-    private static int CountMaterial(Board board)
-    {
-        int count = 0;
-        foreach (var (_, piece) in board.GetAllPieces())
-        {
-            if (piece.Type != PieceType.King && piece.Type != PieceType.None)
-                count += piece.Type.MaterialValue();
-        }
-        return count;
-    }
-
-    /// <summary>
-    /// Bonus for king centralization in endgame.
-    /// </summary>
-    private int EvaluateKingCentrality(Board board)
-    {
-        int score = 0;
-
-        Square whiteKing = board.GetKingPosition(Color.White);
-        Square blackKing = board.GetKingPosition(Color.Black);
-
-        // Bonus for centralization: closer to center (d4, e4, d5, e5) is better
-        int whiteKingCentrality = CalculateCentralityBonus(whiteKing);
-        int blackKingCentrality = CalculateCentralityBonus(blackKing);
-
-        score += whiteKingCentrality - blackKingCentrality;
-
-        return score;
-    }
-
-    /// <summary>
-    /// Calculates centrality bonus for a square (bonus for center squares).
-    /// </summary>
-    private int CalculateCentralityBonus(Square square)
-    {
-        // Distance to the nearer edge on each axis: 0 on the rim, 3 on the four centre squares.
-        //
-        // The previous form computed `3 - clamp(File - 3)`, which yields 6 on file a and 0 on
-        // file h — a gradient towards the h8 corner rather than towards the centre. Because the
-        // same function scored both kings, mirroring a position changed the White-minus-Black
-        // difference, so the evaluation was not colour-symmetric and the engine judged the two
-        // colours differently in endgames (the only phase where this term is active).
-        int fileDist = Math.Min(square.File, 7 - square.File);
-        int rankDist = Math.Min(square.Rank, 7 - square.Rank);
-
-        return Math.Max(0, fileDist + rankDist - 3) * 3;  // 9 at the centre, 0 at the rim
     }
 
     /// <summary>

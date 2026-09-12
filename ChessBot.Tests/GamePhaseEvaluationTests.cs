@@ -125,16 +125,21 @@ public class GamePhaseEvaluationTests
     }
 
     // Two positions identical in every piece except where White's king stands: e1 (uncastled)
-    // versus g1 (castled). Material and piece-square tables both skip kings, so the difference
-    // between these evaluations is exactly the uncastled-king penalty and nothing else.
+    // versus g1 (castled). The king is in the piece-square accumulator now, so that part of the
+    // difference is subtracted out (as in the knight pair above) to leave the development term
+    // alone — which is what these tests are about.
     private const string KingOnE1Fen = "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 0 1";
     private const string KingOnG1Fen = "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQ1BKR w kq - 0 1";
+
+    /// <summary>The development term's own contribution to a difference between two positions.</summary>
+    private static int DevelopmentDelta(string from, string to)
+        => (Eval(to) - Eval(from)) - (PstOf(to) - PstOf(from));
 
     [Fact]
     public void PhaseDevelopment_StillRewardsCastling()
     {
         // A full starting array is phase 24, so the term applies at full weight.
-        Assert.Equal(40, Eval(KingOnG1Fen) - Eval(KingOnE1Fen));
+        Assert.Equal(40, DevelopmentDelta(KingOnE1Fen, KingOnG1Fen));
     }
 
     [Fact]
@@ -160,8 +165,8 @@ public class GamePhaseEvaluationTests
         const string EndgameKingOnE1Fen = "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1";
         const string EndgameKingOnG1Fen = "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R4RK1 w kq - 0 1";
 
-        int openingDelta = Eval(KingOnG1Fen) - Eval(KingOnE1Fen);
-        int endgameDelta = Eval(EndgameKingOnG1Fen) - Eval(EndgameKingOnE1Fen);
+        int openingDelta = DevelopmentDelta(KingOnE1Fen, KingOnG1Fen);
+        int endgameDelta = DevelopmentDelta(EndgameKingOnE1Fen, EndgameKingOnG1Fen);
 
         Assert.Equal(40, openingDelta);            // phase 24/24
         Assert.Equal(40 * 8 / 24, endgameDelta);   // phase  8/24
