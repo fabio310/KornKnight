@@ -104,14 +104,22 @@ than a run to design:
 ```powershell
 dotnet run -c Release --project ChessBot.MatchRunner -- `
   --engine "C:\Tools\stockfish\stockfish-windows-x86-64-avx2.exe" `
-  --engine-elo 2100 --time 1000 --games 200 --concurrency 1 --quiet `
+  --engine-elo 2100 --time 100 --games 200 --concurrency 1 --quiet `
+  --openings openings/generated-500.epd `
   --pgn-dir matches/anchor
 ```
 
-`--engine-elo 2100` and the built-in sixteen-opening set are the fixed parts: change either and
-the result is not comparable to the last anchor. Everything the run needs to be reproduced —
-the opponent's Elo, the openings and their SHA-256, the concurrency, the core count, and whether
-the process was pinned and promoted — is written to `matches/anchor/run_manifest.json`.
+Last measured: **~2058 Elo, 95% CI [2009, 2105]** — +84 =8 -108 over 200 games, 33 min at
+concurrency 1.
+
+The opponent Elo, the time control and the opening suite are all fixed parts: change any of them
+and the result is not comparable to the last anchor. `--engine-elo 2100` caps Stockfish through
+`UCI_LimitStrength`, which is a crude limiter and not a FIDE-calibrated rating, so treat the
+absolute number as a repeatable yardstick rather than a rating. The 500-opening suite is used
+rather than the built-in sixteen because 200 games over sixteen openings replays each one six
+times per colour. Everything needed to reproduce the run — the opponent's Elo, the openings and
+their SHA-256, the concurrency, the core count, and whether the process was pinned and promoted —
+is written to `matches/anchor/run_manifest.json`.
 
 `--concurrency 1` is what makes the number an anchor rather than an anchor *at some speed*; a
 larger `--games` narrows the interval, at a cost this table sets:
