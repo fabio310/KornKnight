@@ -143,6 +143,91 @@ public static class OpeningBook
     };
 
     /// <summary>
+    /// Builds a set of balanced start positions from a seeded random walk, for runs that need
+    /// more openings than a hand-written list can carry.
+    ///
+    /// A walk of random legal moves, kept only when material is still level and the position is
+    /// still playable. Not book lines — these are positions no opening theory would reach, which
+    /// is a fair trade for a calibration or a large A/B run: what such a run needs is many
+    /// independent, unbiased starts, and sixteen mainlines replayed sixty times each are neither.
+    /// For the rating anchor, where the question is how the engine plays real chess, the built-in
+    /// mainline set is the better instrument.
+    ///
+    /// The same seed always produces the same set, so a run stays reproducible from its manifest
+    /// without the openings file having to be kept.
+    /// </summary>
+    public static OpeningSet Generate(int count, int seed = 20260912, int plies = DefaultPlies)
+    {
+        var openings = new List<Opening>(count);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var rng = new Random(seed);
+
+        // Bounded so an impossible request fails instead of spinning: at eight plies there are
+        // far more than a few thousand balanced positions, so exhausting this means the caller
+        // asked for more than exist.
+        int attempts = 0;
+        int maxAttempts = Math.Max(10_000, count * 400);
+
+        // One engine, reset per attempt. A fresh ChessEngine allocates a 64 MB transposition
+        // table, so constructing one per attempt spent tens of gigabytes of allocation on a
+        // walk that never searches anything — enough to make an impossible request look like a
+        // hang rather than an error.
+        var engine = new ChessEngine();
+
+        while (openings.Count < count && attempts < maxAttempts)
+        {
+            attempts++;
+            engine.LoadFen(StartFen);
+
+            bool usable = true;
+            for (int ply = 0; ply < plies; ply++)
+            {
+                var legal = engine.GetLegalMoves();
+                if (legal.Count == 0) { usable = false; break; }
+                engine.MakeMove(legal[rng.Next(legal.Count)]);
+            }
+
+            if (!usable) continue;
+            if (engine.GetLegalMoves().Count == 0) continue;                  // already terminal
+            if (engine.Evaluate().MaterialBalance.Imbalance != 0) continue;   // one side already ahead
+
+            string fen = engine.ExportFen();
+            if (seen.Add(fen))
+                openings.Add(new Opening($"gen-{openings.Count + 1:D4}", fen));
+        }
+
+        if (openings.Count < count)
+            throw new InvalidOperationException(
+                $"Could only generate {openings.Count} of {count} balanced openings in {attempts} attempts.");
+
+        return new OpeningSet
+        {
+            Source   = $"generated:seed={seed},plies={plies},count={count}",
+            Format   = "generated",
+            Plies    = plies,
+            Openings = openings,
+        };
+    }
+
+    /// <summary>
+    /// Writes a set as an EPD file that <see cref="Load"/> reads back unchanged. The header
+    /// records how the set was produced, so a file found on disk a month later still says what
+    /// it is and how to regenerate it.
+    /// </summary>
+    public static void WriteEpd(OpeningSet set, string path)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".");
+
+        using var w = new StreamWriter(path, append: false);
+        w.WriteLine($"# {set.Count} openings, source {set.Source}");
+        w.WriteLine($"# sha256 {set.Sha256}");
+        w.WriteLine($"# written {DateTime.UtcNow:o}");
+
+        foreach (var opening in set.Openings)
+            w.WriteLine($"{opening.Fen} ; id \"{opening.Name}\"");
+    }
+
+    /// <summary>
     /// Reads an opening set from disk. The format follows the extension: <c>.pgn</c> is parsed as
     /// PGN and replayed <paramref name="plies"/> plies deep, anything else as one EPD or FEN per
     /// line. Duplicate positions are dropped — an opening file that lists a position twice would

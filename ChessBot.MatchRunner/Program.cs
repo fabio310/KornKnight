@@ -13,6 +13,9 @@ internal class Program
         if (args.Contains("--ab"))
             return await AbCommand.RunAsync(args);
 
+        if (args.Contains("--make-openings"))
+            return MakeOpenings(args);
+
         var cfg = MatchConfig.Parse(args);
 
         if (string.IsNullOrWhiteSpace(cfg.ExternalEnginePath))
@@ -88,5 +91,56 @@ internal class Program
         Console.WriteLine($"Summary written to: {outcome.SummaryPath}");
 
         return 0;
+    }
+
+    /// <summary>
+    /// Writes a generated opening suite to an EPD file:
+    ///   --make-openings &lt;n&gt; [--openings-out &lt;path&gt;] [--openings-seed &lt;n&gt;] [--openings-plies &lt;n&gt;]
+    ///
+    /// A long run needs more start positions than it has games, or it replays the same games; the
+    /// built-in sixteen cover 32 games before a position comes round again.
+    /// </summary>
+    private static int MakeOpenings(string[] args)
+    {
+        int count = Value(args, "--make-openings", 500);
+        int seed  = Value(args, "--openings-seed", 20260912);
+        int plies = Value(args, "--openings-plies", OpeningBook.DefaultPlies);
+        string outPath = Arg(args, "--openings-out") ?? $"openings/generated-{count}.epd";
+
+        try
+        {
+            var set = OpeningBook.Generate(count, seed, plies);
+            OpeningBook.WriteEpd(set, outPath);
+
+            Console.WriteLine($"Wrote {set.Count} openings to {Path.GetFullPath(outPath)}");
+            Console.WriteLine($"  {set}");
+            Console.WriteLine($"  Regenerate with: --make-openings {count} --openings-seed {seed} --openings-plies {plies}");
+            return 0;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or IOException)
+        {
+            Console.Error.WriteLine($"ERROR: {ex.Message}");
+            return 2;
+        }
+    }
+
+    private static int Value(string[] args, string flag, int fallback)
+    {
+        string? raw = Arg(args, flag);
+        if (raw is null) return fallback;
+
+        // Invariant, like every other numeric option: a number on the command line must mean the
+        // same thing whatever the machine's locale is.
+        if (!int.TryParse(raw, System.Globalization.NumberStyles.Integer,
+                          System.Globalization.CultureInfo.InvariantCulture, out int value))
+            throw new ArgumentException($"{flag} expects a whole number, got '{raw}'.");
+
+        return value;
+    }
+
+    private static string? Arg(string[] args, string flag)
+    {
+        int index = Array.IndexOf(args, flag);
+        return index >= 0 && index + 1 < args.Length ? args[index + 1] : null;
     }
 }
