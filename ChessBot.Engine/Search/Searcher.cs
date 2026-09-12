@@ -373,16 +373,19 @@ internal class Searcher
 
             int score;
 
-            // prevScore is never a mate score here, and the aspiration window relies on that: a
-            // ±50 window around ±99900 would sit inside the mate band, where the true score is a
-            // different mate distance thousands of units away, so it would fail every time and
-            // walk the whole 1x → 4x → infinite ladder for nothing. What prevents it is the
-            // early exit at the bottom of this loop, which stops iterating the moment a mate is
-            // found — so no mate score ever survives into the next iteration's window. Measured:
-            // over 2,924 searches, 215 of which returned a mate score, the window saw a
-            // mate-band prevScore zero times. Remove that early exit and this needs a full-window
-            // guard on Math.Abs(prevScore) > MATE_THRESHOLD.
-            if (depth <= 4 || !_settings.UseAspiration)
+            // A mate-band prevScore gets a full window, not an aspiration one. A ±50 window
+            // around ±99900 sits inside the mate band, where the true score is a different mate
+            // distance thousands of units away: it would fail every time and walk the whole
+            // 1x → 4x → infinite ladder for nothing.
+            //
+            // This used to be guaranteed instead by an early exit at the bottom of the loop that
+            // stopped iterating the moment a mate was found, so no mate score ever survived into
+            // the next iteration's window. That exit made the engine report and play whichever
+            // mate it happened to find first rather than the shortest one — in
+            // "8/k7/5R2/3K3Q/8/8/8/8 w" it stopped at depth 4 with a mate in 3, while the mate in
+            // 2 only becomes visible at depth 7 — so it is gone, and the guard it stood in for is
+            // written out explicitly here.
+            if (depth <= 4 || !_settings.UseAspiration || SearchScores.IsMateScore(prevScore))
             {
                 // Full window for early depths — aspiration windows unreliable here
                 score = NegamaxSearch(0, depth, -INFINITY, INFINITY);
@@ -517,9 +520,6 @@ internal class Searcher
 
             // Check hard cap at end of iteration too
             if (_searchTimer.ElapsedMilliseconds > timeLimit) break;
-
-            // Early exit if a forced mate is found
-            if (Math.Abs(score) >= MATE_THRESHOLD) break;
         }
 
         // Extremely small node/time budgets can expire before even depth 1 completes and
