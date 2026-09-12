@@ -113,6 +113,13 @@ public class PromotionOrderingTests
     /// 200 margin falls under alpha, the full swing (1,300) plus the margin clears it. Pruned,
     /// quiescence returns alpha untouched, because the only other tactical moves are the b8
     /// promotions that walk into Rxb8.
+    ///
+    /// The offset is 800 rather than 1,000 because alpha has to sit below what the promotion is
+    /// actually worth, not below what delta pruning charges it. bxa8=Q trades a pawn for the rook
+    /// and yields a queen, which leaves K+Q against K+Q — level material, about 970 centipawns
+    /// above a stand-pat of roughly -1,006. An alpha of stand-pat + 1,000 lands *above* that, so
+    /// quiescence fails low for a reason that has nothing to do with pruning, and the test would
+    /// pass or fail on a few centipawns of evaluation drift.
     /// </summary>
     [Fact]
     public void DeltaPruning_DoesNotDiscardACapturePromotion()
@@ -123,13 +130,12 @@ public class PromotionOrderingTests
         var board    = engine.GetBoardSnapshot();
         var settings = new SearchSettings { MaxDepth = 3 };
 
-        int standPat = new Evaluator().EvaluateFast(
-            board, settings.UseThreatEval, settings.UseGamePhaseDevelopment, settings.UseTaperedEval);
+        int standPat = new Evaluator().EvaluateFast(board, settings.UseThreatEval);
 
         var searcher = new Searcher(board, new Evaluator(), new ZobristHasher());
         searcher.Search(settings);   // initialises the per-search state the node functions need
 
-        int alpha = standPat + 1000;
+        int alpha = standPat + 800;
         int score = searcher.QuiescenceSearch(0, alpha, alpha + 5000);
 
         Assert.True(score > alpha,

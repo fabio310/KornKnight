@@ -137,11 +137,9 @@ internal static class PieceSquareTables
     // board has emptied. Evaluator interpolates between them on the 24-point material phase, so
     // the transition is continuous rather than a threshold the search can see itself crossing.
     //
-    // Only the endgame side is new: the midgame tables and values are exactly the ones the
-    // engine already used, so at full phase a tapered evaluation reproduces the untapered score
-    // to the centipawn. That is deliberate — it makes the change a pure addition at the opening
-    // end, and confines any measured difference to positions where material has actually left
-    // the board.
+    // At full phase the interpolation returns the midgame set alone, so the tables above still
+    // describe the opening exactly as they always did; the endgame set only takes weight as
+    // material actually leaves the board.
 
     /// <summary>
     /// Endgame pawn table: the advance gradient is much steeper than in the midgame, because a
@@ -279,8 +277,8 @@ internal static class PieceSquareTables
     /// prospect; a knight loses value as the board opens and it can no longer reach both wings,
     /// while a rook gains it. Bishops gain slightly, and the queen is close to flat.
     ///
-    /// The midgame values remain <see cref="PieceTypeExtensions.MaterialValue"/>, unchanged, so
-    /// a tapered evaluation at full phase equals the untapered one exactly.
+    /// The midgame values are <see cref="PieceTypeExtensions.MaterialValue"/>, which the
+    /// interpolation returns on its own at full phase.
     /// </summary>
     public static int EndgameMaterialValue(PieceType type) => type switch
     {
