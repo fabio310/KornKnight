@@ -10,12 +10,6 @@ using ChessBot.Engine.Board;
 /// </summary>
 internal class Evaluator
 {
-    // Cached CheckDetector reused across Evaluate() calls (see EvaluateThreats). The Evaluator
-    // is always paired 1:1 with a single, persistent Board instance for its lifetime, so it is
-    // safe to lazily bind this once instead of allocating a new CheckDetector on every node.
-    private CheckDetector? _threatDetector;
-    private Board?         _threatDetectorBoard;
-
     // Reusable buffer for Board.GetAllPiecesInto — avoids the per-call heap allocation that
     // Board.GetAllPieces() incurs (it's a `yield return` iterator, so every invocation
     // allocates a new enumerator). Evaluate() runs at every leaf/quiescence node, so this
@@ -27,14 +21,7 @@ internal class Evaluator
     /// Positive score favors White; negative favors Black.
     /// </summary>
     /// <param name="board">Position to evaluate.</param>
-    /// <param name="useThreatEval">
-    /// Include the hanging-piece term (see <see cref="EvaluateThreats"/>). Defaults to true so
-    /// that every existing caller keeps the behaviour it had; the search passes
-    /// <c>SearchSettings.UseThreatEval</c> so the term can be measured rather than assumed.
-    /// It must be passed identically to <see cref="Evaluate"/> and <see cref="EvaluateFast"/>,
-    /// which are required to return the same score for the same position.
-    /// </param>
-    public int Evaluate(Board board, bool useThreatEval = true)
+    public int Evaluate(Board board)
     {
         int score = 0;
         int phase = 0;
@@ -87,10 +74,6 @@ internal class Evaluator
         // Pawn structure
         score += EvaluatePawnStructureFromCounts(whitePawnFiles, blackPawnFiles);
 
-        // Threat detection: hanging pieces
-        if (useThreatEval)
-            score += EvaluateThreats(board, pieceCount);
-
         // Opening development
         score += EvaluateOpeningDevelopment(board, phase);
 
@@ -103,18 +86,16 @@ internal class Evaluator
     /// Fast static evaluation used on the search hot path (leaf, stand-pat, null-move staticEval).
     /// Numerically identical to <see cref="Evaluate"/>, but the material, piece-square-table, and
     /// pawn-file terms are read from the Board's incrementally maintained make/unmake eval state
-    /// instead of being recomputed by a full piece scan every node. The remaining terms
-    /// (hanging-piece threats, opening development) still require board
-    /// context and are computed the same way as <see cref="Evaluate"/>.
+    /// instead of being recomputed by a full piece scan every node. Only the opening-development
+    /// term still requires board context, and it is computed the same way as
+    /// <see cref="Evaluate"/>.
+    ///
+    /// Nothing here scans the board any more. The hanging-piece term was the last caller that
+    /// needed the piece list, so removing it took the per-node board scan with it.
     /// </summary>
     /// <param name="board">Position to evaluate.</param>
-    /// <param name="useThreatEval">See <see cref="Evaluate"/>; must match what that call is given.</param>
-    public int EvaluateFast(Board board, bool useThreatEval = true)
+    public int EvaluateFast(Board board)
     {
-        // Only the threat pass needs the piece list; with the term off, the whole board scan
-        // goes away too, which is most of what disabling it saves.
-        int pieceCount = useThreatEval ? board.GetAllPiecesInto(_pieceBuffer) : 0;
-
         // Material + PST come straight from the incremental White-positive accumulators, one
         // pair per scale, both maintained by the same make/unmake bookkeeping.
         int score = PieceSquareTables.Interpolate(
@@ -124,10 +105,6 @@ internal class Evaluator
 
         // Pawn structure from the incrementally maintained per-file pawn counts.
         score += EvaluatePawnStructureFromCounts(board.WhitePawnFileCounts, board.BlackPawnFileCounts);
-
-        // Threat detection: hanging pieces
-        if (useThreatEval)
-            score += EvaluateThreats(board, pieceCount);
 
         // Opening development. The phase comes from the Board's incremental accumulator rather
         // than a scan — the same quantity Evaluate() sums piece by piece.
@@ -290,61 +267,5 @@ internal class Evaluator
         if (bKing.File == 4 && bKing.Rank == 7) score += 40;
 
         return GamePhase.ScaleByOpening(score, phase);
-    }
-
-    /// <summary>
-    /// Penalizes fully undefended pieces (hanging pieces attacked with no defender).
-    /// Uses fast early-exit IsSquareAttackedBy checks instead of the more expensive
-    /// GetMinAttackerValue ray scans to keep the hot eval path affordable.
-    /// Reuses the piece buffer already populated by Evaluate() (via <paramref name="pieceCount"/>)
-    /// instead of re-scanning the whole board a second time.
-    /// Returns a White-positive score adjustment.
-    /// </summary>
-    private int EvaluateThreats(Board board, int pieceCount)
-    {
-        int score = 0;
-        // Reuse a single CheckDetector per Evaluator instance instead of allocating a new
-        // one on every Evaluate() call — Evaluate() runs at every leaf/quiescence node,
-        // so this was a major per-node heap allocation in the hot path.
-        // The detector is cached to avoid a per-node allocation on the hot path, but it binds
-        // to the Board it was constructed with. Caching it unconditionally meant that calling
-        // the same Evaluator with a *different* Board silently kept reading the first one and
-        // returned threat scores for the wrong position. Rebinding when the board instance
-        // changes keeps the allocation saving (the search reuses one Board throughout) while
-        // removing the silent-wrong-answer case.
-        if (_threatDetector is null || !ReferenceEquals(_threatDetectorBoard, board))
-        {
-            _threatDetector      = new CheckDetector(board);
-            _threatDetectorBoard = board;
-        }
-        var cd = _threatDetector;
-
-        for (int i = 0; i < pieceCount; i++)
-        {
-            var (square, piece) = _pieceBuffer[i];
-            if (piece.Type == PieceType.None
-                || piece.Type == PieceType.Pawn
-                || piece.Type == PieceType.King)
-                continue;
-
-            Color enemy = piece.Color.Opposite();
-
-            // Fast exit: not attacked at all
-            if (!cd.IsSquareAttackedBy(square, enemy))
-                continue;
-
-            int pieceValue = piece.Type.MaterialValue();
-            int sign       = piece.Color == Color.White ? 1 : -1;
-
-            if (!cd.IsSquareAttackedBy(square, piece.Color))
-            {
-                // Completely undefended and attacked: half-value penalty
-                score -= sign * pieceValue / 2;
-            }
-            // Defended pieces may still be in a losing exchange, but quiescence
-            // search handles those cases; omitting it here avoids expensive SEE.
-        }
-
-        return score;
     }
 }
