@@ -85,7 +85,6 @@ public record MoveRecord
     /// unevaluated legal fallback rather than a search result.
     /// </summary>
     public bool   IsUnsearchedFallbackMove { get; init; }
-    public bool   UsedPartialRootResult { get; init; }
     public int    PartialDepth          { get; init; }
     public long   BetaCutoffsFirstMove  { get; init; }
     // ── Partial-root coverage (reported for every cancelled iteration, even when the
@@ -93,7 +92,6 @@ public record MoveRecord
     public int    RootMovesCompleted    { get; init; }
     public int    RootMoveCount         { get; init; }
     public double RootCoveragePercent   { get; init; }
-    public bool   PartialScoreIsExact   { get; init; }
 }
 
 /// <summary>
@@ -232,13 +230,11 @@ public class GameRunner
             long[] lmrByDepth           = Array.Empty<long>();
             long[] lmrByMoveNumber      = Array.Empty<long>();
             bool   isUnsearchedFallback = false;
-            bool   usedPartialRootResult = false;
             int    partialDepth          = 0;
             long   betaCutoffsFirstMove  = 0;
             int    rootMovesCompleted    = 0;
             int    rootMoveCount         = 0;
             double rootCoveragePercent   = 0;
-            bool   partialScoreIsExact   = false;
 
             if (chessBotMoves)
             {
@@ -246,9 +242,8 @@ public class GameRunner
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 var settings = new SearchSettings
                 {
-                    MaxTimeMs             = _cfg.MoveTimeMs,
-                    Verbose               = false,
-                    UsePartialRootResult  = _cfg.UsePartialRootResult
+                    MaxTimeMs = _cfg.MoveTimeMs,
+                    Verbose   = false,
                 };
                 var searchResult = chessBotEngine.FindBestMove(settings, ct);
                 sw.Stop();
@@ -300,13 +295,11 @@ public class GameRunner
                 lmrByDepth             = searchResult.LmrReductionsByDepth;
                 lmrByMoveNumber        = searchResult.LmrReductionsByMoveNumber;
                 isUnsearchedFallback   = searchResult.IsUnsearchedFallbackMove;
-                usedPartialRootResult  = searchResult.UsedPartialRootResult;
                 partialDepth           = searchResult.PartialDepth;
                 betaCutoffsFirstMove   = searchResult.BetaCutoffsFirstMove;
                 rootMovesCompleted     = searchResult.RootMovesCompleted;
                 rootMoveCount          = searchResult.RootMoveCount;
                 rootCoveragePercent    = searchResult.RootCoveragePercent;
-                partialScoreIsExact    = searchResult.PartialScoreIsExact;
 
                 if (_cfg.Verbose)
                     Console.WriteLine($"  {(whiteToMove ? "W" : "B")} move {moveNumber,-3}: {uciMove,-8} " +
@@ -390,13 +383,11 @@ public class GameRunner
                 LmrReductionsByDepth      = lmrByDepth,
                 LmrReductionsByMoveNumber = lmrByMoveNumber,
                 IsUnsearchedFallbackMove = isUnsearchedFallback,
-                UsedPartialRootResult    = usedPartialRootResult,
                 PartialDepth             = partialDepth,
                 BetaCutoffsFirstMove     = betaCutoffsFirstMove,
                 RootMovesCompleted       = rootMovesCompleted,
                 RootMoveCount            = rootMoveCount,
                 RootCoveragePercent      = rootCoveragePercent,
-                PartialScoreIsExact      = partialScoreIsExact,
             });
 
             // Apply the move before recording it. The history is what the external engine is

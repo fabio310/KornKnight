@@ -242,7 +242,6 @@ public class PositionAnalyzer
             w.WriteLine($"  Iteration node ratio (per-move avg, {ratios.Count} moves): " +
                         $"{(ratios.Count > 0 ? ratios.Average() : 0):F2}");
             w.WriteLine($"  Moves with a cancelled iteration: {cbMoves.Count(m => m.PartialDepth > 0)}");
-            w.WriteLine($"  Moves using partial root result: {cbMoves.Count(m => m.UsedPartialRootResult)}");
             w.WriteLine($"  Unsearched fallback moves    : {cbMoves.Count(m => m.IsUnsearchedFallbackMove)}");
 
             // Where the LMR schedule actually fires. A single reduction total says nothing about
@@ -302,17 +301,13 @@ public class PositionAnalyzer
                 w.WriteLine($"  Nodes       : main {m.MainNodes:N0}  q {m.QNodes:N0}  total {m.Nodes:N0}  " +
                             $"lastIteration {m.LastIterationNodes:N0}");
 
-                // Partial-iteration facts are reported whenever an iteration was cancelled, not
-                // only when its candidate was selected: root coverage explains how much of the
-                // deeper iteration was actually seen regardless of which move was reported.
+                // Root coverage explains how much of the deeper iteration was actually seen
+                // before the budget ran out. The move always comes from the completed depth.
                 if (m.PartialDepth > 0)
                 {
-                    string selection = m.UsedPartialRootResult
-                        ? $"selected (score {(m.PartialScoreIsExact ? "exact" : "lower bound")})"
-                        : "not selected";
                     w.WriteLine($"  Partial     : depth {m.PartialDepth} cancelled, completed depth {m.Depth}, " +
                                 $"root coverage {m.RootMovesCompleted}/{m.RootMoveCount} " +
-                                $"({m.RootCoveragePercent:F1}%), {selection}");
+                                $"({m.RootCoveragePercent:F1}%)");
                 }
                 if (m.IsUnsearchedFallbackMove)
                     w.WriteLine("  Fallback    : budget too small for depth 1 — move is an unevaluated legal fallback");

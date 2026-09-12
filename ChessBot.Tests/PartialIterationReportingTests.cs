@@ -28,7 +28,6 @@ public class PartialIterationReportingTests
             MaxDepth              = 20,
             MaxNodes              = NodeCapThatStopsMidIteration,
             UseIterativeDeepening = true,
-            UsePartialRootResult  = true,
         };
 
         var result = engine.FindBestMove(settings);
@@ -49,47 +48,6 @@ public class PartialIterationReportingTests
             "Expected the partial iteration to have left some root moves unsearched.");
     }
 
-    [Fact]
-    public void Search_UsePartialRootResultDisabled_NeverReportsPartialMove()
-    {
-        var engine = new ChessEngine();
-        var settings = new SearchSettings
-        {
-            MaxDepth              = 20,
-            MaxNodes              = NodeCapThatStopsMidIteration,
-            UseIterativeDeepening = true,
-            UsePartialRootResult  = false,
-        };
-
-        var result = engine.FindBestMove(settings);
-
-        Assert.True(result.PartialDepth > 0, "Expected a mid-iteration cancellation to exercise this path.");
-        Assert.False(result.UsedPartialRootResult,
-            "UsePartialRootResult=false must never let a partial-iteration root move replace the completed result.");
-    }
-
-    [Fact]
-    public void Search_UsePartialRootResultEnabled_FlagMatchesWhetherPartialMoveWasUsed()
-    {
-        var engine = new ChessEngine();
-        var settings = new SearchSettings
-        {
-            MaxDepth              = 20,
-            MaxNodes              = NodeCapThatStopsMidIteration,
-            UseIterativeDeepening = true,
-            UsePartialRootResult  = true,
-        };
-
-        var result = engine.FindBestMove(settings);
-
-        Assert.True(result.PartialDepth > 0, "Expected a mid-iteration cancellation to exercise this path.");
-
-        // Whenever the partial result was used, DepthAchieved must still reflect only the
-        // last fully completed iteration — never the partial depth.
-        if (result.UsedPartialRootResult)
-            Assert.True(result.DepthAchieved < result.PartialDepth);
-    }
-
     /// <summary>
     /// Root coverage (RootMovesCompleted/RootMoveCount/RootCoveragePercent) must belong to the
     /// specific aspiration-window attempt that was cancelled, not to an earlier attempt within
@@ -107,7 +65,6 @@ public class PartialIterationReportingTests
             MaxDepth              = 20,
             MaxNodes              = NodeCapThatStopsMidIteration,
             UseIterativeDeepening = true,
-            UsePartialRootResult  = true,
             UseAspiration         = true,
         };
 
@@ -135,13 +92,11 @@ public class PartialIterationReportingTests
         {
             MaxDepth              = 3,
             UseIterativeDeepening = true,
-            UsePartialRootResult  = true,
         };
 
         var result = engine.FindBestMove(settings);
 
         Assert.Equal(0, result.PartialDepth);
-        Assert.False(result.UsedPartialRootResult);
         Assert.Equal(0, result.RootMovesCompleted);
         Assert.Equal(0, result.RootMoveCount);
         Assert.Equal(0, result.RootCoveragePercent);
@@ -166,8 +121,8 @@ public class PartialIterationReportingTests
         var result = engine.FindBestMove(settings);
 
         Assert.NotEqual(default, result.BestMove);
-        if (result.DepthAchieved == 0 && !result.UsedPartialRootResult)
+        if (result.DepthAchieved == 0)
             Assert.True(result.IsUnsearchedFallbackMove,
-                "A legal move returned without any completed iteration or partial substitution must be explicitly classified as an unsearched fallback.");
+                "A legal move returned without any completed iteration must be explicitly classified as an unsearched fallback.");
     }
 }

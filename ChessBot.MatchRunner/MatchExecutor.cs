@@ -332,7 +332,6 @@ public static class MatchExecutor
         var document = MatchResultDocument.From(outcome);
         document.RequestedGames       = cfg.TotalGames;
         document.ColorImbalance       = cfg.ColorImbalance;
-        document.UsePartialRootResult = cfg.UsePartialRootResult;
         document.EffectiveConfig      = cfg.Describe();
         document.ReferenceEngine      = referenceEngineInfo;
         document.Opponent = new OpponentEngineDto

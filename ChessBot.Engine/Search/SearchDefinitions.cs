@@ -71,22 +71,6 @@ public class SearchSettings
     public bool UseAspiration { get; set; } = true;
 
     /// <summary>
-    /// When true, if an iterative-deepening pass is cancelled mid-iteration but has already
-    /// found a root move that beats the previous (completed) iteration's score, that partial
-    /// result replaces the last completed iteration's move. When false, the search always
-    /// falls back to the last fully completed iteration, ignoring any partial-iteration root
-    /// move regardless of its score. Kept as a setting (rather than always-on) because the
-    /// partial score and the completed-iteration score come from different depths and not
-    /// every root move was searched at the partial depth, so the comparison is not always
-    /// sound — this flag exists to allow paired A/B testing of the behavior.
-    ///
-    /// Defaults to false: this is a strength-affecting heuristic that has not yet been
-    /// validated by a controlled A/B comparison, so it must be explicitly opted into rather
-    /// than silently changing search behavior for every caller.
-    /// </summary>
-    public bool UsePartialRootResult { get; set; } = false;
-
-    /// <summary>
     /// Optional override of the LMR schedule's base term (R = LmrBaseOverride + ln(depth)·ln(moveCount) / LmrDivisorOverride).
     /// Null = use the engine's built-in default (0.75). Exists solely to allow controlled
     /// A/B comparison of LMR schedules without recompiling; never set by normal callers.
@@ -104,15 +88,6 @@ public class SearchSettings
     /// before LMR starts reducing (built-in default: 4). See <see cref="LmrBaseOverride"/>.
     /// </summary>
     public int? LmrFullMovesOverride { get; set; }
-
-    /// <summary>
-    /// Reproduces the flat LMR schedule the engine used before the logarithmic table was
-    /// introduced: reduce by 1 from the fifth move onward, by 2 past the eighth, regardless
-    /// of depth. Exists so the current schedule can be A/B compared against the exact
-    /// implementation it replaced, rather than against another logarithmic parameterisation.
-    /// When true, <see cref="LmrBaseOverride"/> and <see cref="LmrDivisorOverride"/> are ignored.
-    /// </summary>
-    public bool UseLegacyFlatLmr { get; set; }
 
     /// <summary>
     /// Check extension (search one ply deeper when in check). Sound, but it changes the
@@ -288,9 +263,9 @@ public class SearchResult
     public List<Move> PrincipalVariation { get; set; } = new();
 
     /// <summary>
-    /// The last iterative-deepening depth that ran to completion. Never a partially searched
-    /// depth, even when a partial root result from a deeper, unfinished iteration was used as
-    /// the reported move (see <see cref="UsedPartialRootResult"/> and <see cref="PartialDepth"/>).
+    /// The last iterative-deepening depth that ran to completion, which is always the depth the
+    /// reported move comes from. A deeper iteration that was cancelled mid-flight contributes
+    /// nothing but coverage telemetry (see <see cref="PartialDepth"/>).
     /// </summary>
     public int DepthAchieved { get; set; }
 
@@ -300,14 +275,6 @@ public class SearchResult
     /// completed iteration, or hit the root-terminal-position case).
     /// </summary>
     public int PartialDepth { get; set; }
-
-    /// <summary>
-    /// True if <see cref="BestMove"/>/<see cref="Evaluation"/>/<see cref="PrincipalVariation"/> were
-    /// taken from a partially searched iteration (<see cref="PartialDepth"/>) rather than the last
-    /// fully completed one (<see cref="DepthAchieved"/>). Only ever true when
-    /// <see cref="SearchSettings.UsePartialRootResult"/> was enabled.
-    /// </summary>
-    public bool UsedPartialRootResult { get; set; }
 
     /// <summary>
     /// Number of root moves that finished searching in the iteration that was in progress when
@@ -328,14 +295,6 @@ public class SearchResult
     /// cancellation happened, not to any earlier attempt within the same depth.
     /// </summary>
     public double RootCoveragePercent { get; set; }
-
-    /// <summary>
-    /// True if the partial score used (when <see cref="UsedPartialRootResult"/> is true) is an
-    /// exact value — the candidate root move raised alpha without itself failing high against
-    /// the aspiration window in effect at the time. False means the score is only a lower bound
-    /// (the true value could be higher), so it should not be treated as a precise evaluation.
-    /// </summary>
-    public bool PartialScoreIsExact { get; set; }
 
     /// <summary>
     /// Total nodes visited: main-search nodes plus quiescence nodes. Identical to

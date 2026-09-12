@@ -70,11 +70,9 @@ public sealed class MoveRecordDto
 
     // ── Partial-iteration state ──────────────────────────────────────────────
     public int    PartialDepth          { get; set; }
-    public bool   UsedPartialRootResult { get; set; }
     public int    RootMovesCompleted    { get; set; }
     public int    RootMoveCount         { get; set; }
     public double RootCoveragePercent   { get; set; }
-    public bool   PartialScoreIsExact   { get; set; }
     /// <summary>Move made without any completed search because the budget was too small.</summary>
     public bool   IsUnsearchedFallbackMove { get; set; }
 
@@ -123,11 +121,9 @@ public sealed class MoveRecordDto
         IterationNodeRatio = m.IterationNodeRatio,
 
         PartialDepth             = m.PartialDepth,
-        UsedPartialRootResult    = m.UsedPartialRootResult,
         RootMovesCompleted       = m.RootMovesCompleted,
         RootMoveCount            = m.RootMoveCount,
         RootCoveragePercent      = m.RootCoveragePercent,
-        PartialScoreIsExact      = m.PartialScoreIsExact,
         IsUnsearchedFallbackMove = m.IsUnsearchedFallbackMove,
     };
 }
@@ -410,8 +406,6 @@ public sealed class MatchResultDocument
     /// <summary>Difference between games played as White and as Black (0 or 1).</summary>
     public int    ColorImbalance { get; set; }
 
-    /// <summary>Whether ChessBot's search was allowed to use partial-iteration root results.</summary>
-    public bool   UsePartialRootResult { get; set; }
 
     /// <summary>The configuration the invocation actually parsed to.</summary>
     public Dictionary<string, string> EffectiveConfig { get; set; } = new();

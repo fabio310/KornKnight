@@ -73,11 +73,9 @@ public class MatchResultDocumentRoundTripTests : IDisposable
         IterationNodeRatio = 3.25,
 
         PartialDepth             = 13,
-        UsedPartialRootResult    = true,
         RootMovesCompleted       = 4,
         RootMoveCount            = 20,
         RootCoveragePercent      = 20.0,
-        PartialScoreIsExact      = true,
         IsUnsearchedFallbackMove = false,
     };
 
@@ -124,7 +122,6 @@ public class MatchResultDocumentRoundTripTests : IDisposable
         Assert.Equal(100_000, actual.MainNodes);
         Assert.Equal(23_456,  actual.QNodes);
         Assert.Equal(13,      actual.PartialDepth);
-        Assert.True(actual.UsedPartialRootResult);
         Assert.Equal(20.0,    actual.RootCoveragePercent);
         Assert.Equal(3.25,    actual.IterationNodeRatio);
         Assert.Equal(24_000,  actual.BetaCutoffsFirstMove);
@@ -142,7 +139,6 @@ public class MatchResultDocumentRoundTripTests : IDisposable
         var doc = MatchResultDocument.From(outcome);
         doc.RequestedGames       = 5;
         doc.ColorImbalance       = 1;
-        doc.UsePartialRootResult = true;
         doc.EffectiveConfig      = new Dictionary<string, string> { ["TotalGames"] = "5", ["MoveTimeMs"] = "1000" };
         doc.Opponent = new OpponentEngineDto
         {
@@ -170,7 +166,6 @@ public class MatchResultDocumentRoundTripTests : IDisposable
         Assert.Equal(5, back.RequestedGames);
         Assert.Equal(4, back.ActualGames);                // requested and actual differ visibly
         Assert.Equal(1, back.ColorImbalance);
-        Assert.True(back.UsePartialRootResult);
         Assert.Equal("1000", back.EffectiveConfig["MoveTimeMs"]);
         Assert.Equal(1800, back.Opponent!.LimitedToElo);
         Assert.Equal("Stockfish 18", back.ReferenceEngine!.Name);
