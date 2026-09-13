@@ -58,7 +58,13 @@ public class SearchSettings
     /// <summary>Late move reductions.</summary>
     public bool UseLmr { get; set; } = true;
 
-    /// <summary>Futility pruning near the horizon.</summary>
+    /// <summary>
+    /// The static-evaluation pruning family: futility pruning near the horizon and reverse
+    /// futility pruning (static null move). One switch rather than two because they are the same
+    /// bet — that a static score can stand in for a search — made in opposite directions, and
+    /// the only caller that turns either off is the minimax equivalence gate, which has to turn
+    /// off both.
+    /// </summary>
     public bool UseFutility { get; set; } = true;
 
     /// <summary>Transposition table probes and cutoffs (stores still happen).</summary>
@@ -468,6 +474,13 @@ public class SearchResult
     public long LmrReductions      { get; set; }
     public long LmrReSearches      { get; set; }
     public long FutilitySkips      { get; set; }
+
+    /// <summary>
+    /// Nodes returned by reverse futility pruning — the static-null-move cutoff. Separate from
+    /// <see cref="FutilitySkips"/> because the two prune the same region of the tree from
+    /// opposite directions, and only separate counters can say which one did the work.
+    /// </summary>
+    public long ReverseFutilityCutoffs { get; set; }
 
     /// <summary>Captures skipped in quiescence because the exchange said they lose material.</summary>
     public long QSeeSkips          { get; set; }
