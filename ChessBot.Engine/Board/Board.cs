@@ -150,6 +150,14 @@ public class Board
     private readonly int[] _whitePawnFiles = new int[8];
     private readonly int[] _blackPawnFiles = new int[8];
 
+    // Pawn occupancy, one bit per square. The per-file counts above answer "how many pawns on
+    // this file", which is all doubled and isolated pawns need; a passed pawn is a question about
+    // ranks as well, so it needs to know where the pawns actually stand. Two ulongs maintained by
+    // the same add/remove path as the counts, so they cost one bit operation per pawn moved and
+    // survive make/undo the same way.
+    private ulong _whitePawnBitboard;
+    private ulong _blackPawnBitboard;
+
     /// <summary>White-positive incremental material score. Consumed by Evaluator.EvaluateFast.</summary>
     internal int IncrementalMaterialScore => _evalMaterial;
 
@@ -180,6 +188,12 @@ public class Board
 
     /// <summary>Per-file Black pawn counts (index 0 = a-file), maintained incrementally.</summary>
     internal ReadOnlySpan<int> BlackPawnFileCounts => _blackPawnFiles;
+
+    /// <summary>White pawn occupancy as a bitboard (bit n = square index n), maintained incrementally.</summary>
+    internal ulong WhitePawnBitboard => _whitePawnBitboard;
+
+    /// <summary>Black pawn occupancy as a bitboard (bit n = square index n), maintained incrementally.</summary>
+    internal ulong BlackPawnBitboard => _blackPawnBitboard;
 
     public Board()
     {
@@ -353,8 +367,8 @@ public class Board
 
         if (type == PieceType.Pawn)
         {
-            if (color == Color.White) _whitePawnFiles[square.File]++;
-            else                      _blackPawnFiles[square.File]++;
+            if (color == Color.White) { _whitePawnFiles[square.File]++; _whitePawnBitboard |= 1UL << square.Index; }
+            else                      { _blackPawnFiles[square.File]++; _blackPawnBitboard |= 1UL << square.Index; }
         }
     }
 
@@ -374,8 +388,8 @@ public class Board
 
         if (type == PieceType.Pawn)
         {
-            if (color == Color.White) _whitePawnFiles[square.File]--;
-            else                      _blackPawnFiles[square.File]--;
+            if (color == Color.White) { _whitePawnFiles[square.File]--; _whitePawnBitboard &= ~(1UL << square.Index); }
+            else                      { _blackPawnFiles[square.File]--; _blackPawnBitboard &= ~(1UL << square.Index); }
         }
     }
 
@@ -394,6 +408,8 @@ public class Board
         _evalPstEndgame = 0;
         Array.Clear(_whitePawnFiles, 0, 8);
         Array.Clear(_blackPawnFiles, 0, 8);
+        _whitePawnBitboard = 0UL;
+        _blackPawnBitboard = 0UL;
 
         for (int color = 0; color < 2; color++)
         {
@@ -864,6 +880,8 @@ public class Board
         copy._evalPstEndgame = _evalPstEndgame;
         Array.Copy(_whitePawnFiles, copy._whitePawnFiles, 8);
         Array.Copy(_blackPawnFiles, copy._blackPawnFiles, 8);
+        copy._whitePawnBitboard = _whitePawnBitboard;
+        copy._blackPawnBitboard = _blackPawnBitboard;
 
         // Note: History is not copied; the copy starts fresh
         return copy;
