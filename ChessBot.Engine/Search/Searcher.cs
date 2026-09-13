@@ -34,6 +34,13 @@ internal class Searcher
     private const int NMP_MIN_DEPTH  = 2;
     private const int NMP_BASE_R     = 3;   // reduction; use 2 when depth is 2-3
 
+    // Reverse futility pruning (static null move). The margin is charged per remaining ply
+    // because that is how much the opponent could plausibly claw back: one ply of freedom is
+    // worth roughly a pawn of swing in a position that is not tactical, and a node this far
+    // above beta is one the search would only confirm.
+    private const int RFP_MAX_DEPTH  = 7;
+    private const int RFP_MARGIN     = 75;  // centipawns per ply of remaining depth
+
     // Late Move Reduction
     private const int LMR_MIN_DEPTH  = 3;
     private const int LMR_FULL_MOVES = 4;   // search first N moves at full depth before reducing
@@ -119,6 +126,7 @@ internal class Searcher
     private long _lmrReductions;
     private long _lmrReSearches;
     private long _futilitySkips;
+    private long _reverseFutilityCutoffs;
     private long _qSeeSkips;
     private long _pvsReSearches;
     private long _aspirationFailLow;
@@ -285,6 +293,7 @@ internal class Searcher
         _lmrReductions        = 0;
         _lmrReSearches        = 0;
         _futilitySkips        = 0;
+        _reverseFutilityCutoffs = 0;
         _qSeeSkips            = 0;
         _pvsReSearches        = 0;
         _aspirationFailLow    = 0;
@@ -520,6 +529,7 @@ internal class Searcher
         result.LmrReductions         = _lmrReductions;
         result.LmrReSearches         = _lmrReSearches;
         result.FutilitySkips         = _futilitySkips;
+        result.ReverseFutilityCutoffs = _reverseFutilityCutoffs;
         result.QSeeSkips             = _qSeeSkips;
         result.PvsReSearches         = _pvsReSearches;
         result.AspirationFailLow     = _aspirationFailLow;
@@ -650,10 +660,30 @@ internal class Searcher
                 ? QuiescenceSearch(ply, alpha, beta)
                 : EvaluateStatic();
 
-        // ── Null-move pruning ─────────────────────────────────────────────
-        // Conditions: not in check, not a PV node, not already a null-move, sufficient depth,
-        // and not in a likely zugzwang (we must have non-pawn material).
-        int staticEval = EvaluateStatic();
+        // Static evaluation of this node, skipped entirely when in check. The score is
+        // meaningless there — it counts material for a side that is about to lose some or be
+        // mated — and every consumer below (reverse futility, null-move, futility) already
+        // guards on !inCheck, so computing it was paid for at every check node and read at none.
+        int staticEval = inCheck ? 0 : EvaluateStatic();
+
+        // ── Reverse futility pruning (static null move) ───────────────────
+        // Futility pruning asks whether a move can raise alpha. This asks the mirror question at
+        // the node: is the position so far above beta that the opponent cannot claw it back in
+        // the depth that remains? Charging a margin per remaining ply and still failing high
+        // means the subtree would do nothing but confirm the cutoff.
+        //
+        // Unsound in the same way futility is — it trusts a static score in place of a search —
+        // so it lives under the same switch and is therefore off for the minimax equivalence
+        // gate. The mate-band guard is not decoration: a beta inside the band is a claim about a
+        // forced mate, and no centipawn margin is evidence about one.
+        if (_settings.UseFutility && !pvNode && !inCheck
+            && depth <= RFP_MAX_DEPTH
+            && Math.Abs(beta) < MATE_THRESHOLD
+            && staticEval - RFP_MARGIN * depth >= beta)
+        {
+            _reverseFutilityCutoffs++;
+            return staticEval;
+        }
 
         // ── Futility pruning setup ────────────────────────────────────────
         // At depth 1-2, outside check / PV positions, quiet moves that cannot
@@ -661,6 +691,9 @@ internal class Searcher
         bool futilityActive = _settings.UseFutility && !inCheck && !pvNode && depth <= 2;
         int  futilityMargin = depth == 1 ? 200 : 450;
 
+        // ── Null-move pruning ─────────────────────────────────────────────
+        // Conditions: not in check, not a PV node, not already a null-move, sufficient depth,
+        // and not in a likely zugzwang (we must have non-pawn material).
         if (_settings.UseNullMove
             && !inCheck && !pvNode && !_nullMoveAtPly[ply] && depth >= NMP_MIN_DEPTH
             && staticEval >= beta && HasNonPawnMaterial(_board.State.ActiveColor))
