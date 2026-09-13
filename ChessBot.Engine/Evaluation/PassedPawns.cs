@@ -20,29 +20,35 @@ internal static class PassedPawns
 {
     /// <summary>
     /// Bonus by the pawn's own rank, counted from its side's first rank, on the midgame scale.
-    /// Index 0 and 7 are unreachable for a pawn and stay zero. The curve is deliberately steep at
-    /// the far end: a pawn on the sixth is a threat that ties down a piece, one on the third is
-    /// barely more than a pawn.
+    /// Index 0 and 7 are unreachable for a pawn and stay zero.
+    ///
+    /// This pays for being UNOPPOSED, not for being advanced. Advancement is already in the pawn
+    /// piece-square tables, which ramp to +30 on the seventh in the midgame and +90 in the
+    /// endgame for every pawn regardless of what stands in front of it. The first weighting here
+    /// ignored that and added another 100/190 on top, so a seventh-rank passer scored 380 cp in
+    /// an endgame and the term amplified the PST's shape instead of discriminating against it.
+    /// It measured -4.5 +/- 9.8 Elo over 4,000 games.
     /// </summary>
-    private static readonly int[] MidgameByRank = { 0, 5, 10, 20, 35, 60, 100, 0 };
+    private static readonly int[] MidgameByRank = { 0, 3, 6, 12, 20, 35, 55, 0 };
 
     /// <summary>
-    /// The same curve on the endgame scale, roughly doubled. With the pieces gone a runner is
-    /// often the whole game, which is exactly what the taper exists to say.
+    /// The same curve on the endgame scale. Larger than the midgame one, because a runner matters
+    /// more once the pieces that would blockade it are gone — but only about half what it was, for
+    /// the reason given above.
     /// </summary>
-    private static readonly int[] EndgameByRank = { 0, 10, 20, 40, 70, 120, 190, 0 };
+    private static readonly int[] EndgameByRank = { 0, 8, 14, 24, 40, 65, 100, 0 };
 
     /// <summary>Extra for a passer defended by one of its own pawns — it cannot simply be taken.</summary>
-    private const int ProtectedMidgame = 15;
-    private const int ProtectedEndgame = 25;
+    private const int ProtectedMidgame = 12;
+    private const int ProtectedEndgame = 20;
 
     /// <summary>
     /// Extra for a passer with a friendly pawn abreast of it on an adjacent file. Two connected
     /// passers support each other up the board and are far harder to blockade than two separate
     /// ones, which is why this is counted apart from being protected.
     /// </summary>
-    private const int ConnectedMidgame = 10;
-    private const int ConnectedEndgame = 20;
+    private const int ConnectedMidgame = 8;
+    private const int ConnectedEndgame = 15;
 
     /// <summary>
     /// For each square, the squares an enemy pawn would have to occupy to stop a White pawn there
