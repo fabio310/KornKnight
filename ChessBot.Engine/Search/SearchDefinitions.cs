@@ -482,6 +482,13 @@ public class SearchResult
     /// </summary>
     public long ReverseFutilityCutoffs { get; set; }
 
+    /// <summary>
+    /// Quiet moves dropped by late move pruning — skipped outright on move count rather than
+    /// searched at a reduced depth. Counted separately from <see cref="LmrReductions"/> because
+    /// the two act on the same tail and only separate counters say which one took it.
+    /// </summary>
+    public long LateMovePrunes { get; set; }
+
     /// <summary>Captures skipped in quiescence because the exchange said they lose material.</summary>
     public long QSeeSkips          { get; set; }
     public long PvsReSearches      { get; set; }

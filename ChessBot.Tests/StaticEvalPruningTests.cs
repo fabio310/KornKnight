@@ -80,4 +80,37 @@ public class StaticEvalPruningTests
 
         Assert.Equal((long)evasions, result.EvaluationCalls);
     }
+
+    /// <summary>
+    /// Late move pruning has to reach the tail of a wide quiet node. The threshold starts at four
+    /// quiet moves at depth 1, so a closed position with thirty-odd legal moves per side must
+    /// produce prunes in quantity; none at all would mean the threshold is never crossed and the
+    /// rule is decoration.
+    /// </summary>
+    [Fact]
+    public void LateMovePruningFires()
+    {
+        var engine = new ChessEngine();
+        engine.LoadFen(QuietAndWide);
+
+        var result = engine.FindBestMove(new SearchSettings { MaxDepth = 9, MaxTimeMs = 20_000 });
+
+        Assert.True(result.LateMovePrunes > 0,
+                    "late move pruning never fired in a closed position with a wide quiet tail");
+    }
+
+    /// <summary>
+    /// Unsound for the same reason as the rest of the family — it drops moves on their position in
+    /// the move list — so the minimax equivalence gate must be able to switch it off.
+    /// </summary>
+    [Fact]
+    public void LateMovePruningIsOffForThePlainAlphaBetaGate()
+    {
+        var engine = new ChessEngine();
+        engine.LoadFen(QuietAndWide);
+
+        var result = engine.FindBestMove(SearchSettings.PlainAlphaBeta(5));
+
+        Assert.Equal(0L, result.LateMovePrunes);
+    }
 }
