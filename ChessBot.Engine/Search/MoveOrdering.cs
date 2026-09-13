@@ -63,6 +63,13 @@ internal class MoveOrdering
     /// </summary>
     private readonly int[] _moveScores = new int[256];
 
+    /// <summary>
+    /// Per-move exchange verdict from the last scoring pass, kept parallel to _moveScores so it
+    /// survives the sort. See <see cref="SeeWinningAt"/> for why it is remembered rather than
+    /// recomputed.
+    /// </summary>
+    private readonly bool[] _seeWinning = new bool[256];
+
     // Precomputed direction/offset tables for the SEE attacker scan. These used to be allocated
     // as jagged int[][] literals (plus a LINQ .Select() enumerator) on every single call, and SEE
     // runs once per capture scored during move ordering, i.e. once per node. Flat static readonly
@@ -99,24 +106,45 @@ internal class MoveOrdering
     {
         // Score every move into the pre-allocated buffer (avoids List<(Move,int)> allocation)
         for (int i = 0; i < count; i++)
-            _moveScores[i] = CalculateMoveScore(moves[i], ttMove, lastOpponentMove, ply);
+            _moveScores[i] = CalculateMoveScore(moves[i], ttMove, lastOpponentMove, ply, out _seeWinning[i]);
 
-        // Insertion sort descending by score (O(N²) but N ≤ ~35 per node, fastest for small N)
+        // Insertion sort descending by score (O(N²) but N ≤ ~35 per node, fastest for small N).
+        // The exchange verdict rides along with its move, so a caller can still ask about the move
+        // now sitting at a given index.
         for (int i = 1; i < count; i++)
         {
             var m = moves[i];
             int s = _moveScores[i];
+            bool w = _seeWinning[i];
             int j = i - 1;
             while (j >= 0 && _moveScores[j] < s)
             {
                 moves[j + 1] = moves[j];
                 _moveScores[j + 1] = _moveScores[j];
+                _seeWinning[j + 1] = _seeWinning[j];
                 j--;
             }
             moves[j + 1] = m;
             _moveScores[j + 1] = s;
+            _seeWinning[j + 1] = w;
         }
     }
+
+    /// <summary>
+    /// Whether the tactical move now sitting at <paramref name="index"/> cleared SEE at a
+    /// threshold of zero, as computed by the last <see cref="OrderMoves"/> call.
+    ///
+    /// Handed back rather than recomputed. The exchange is the single most expensive thing move
+    /// ordering does — measured at 17.6% of the engine's node rate — and it has already been paid
+    /// for on every tactical move by the time the caller sees the ordered list. Asking the same
+    /// question a second time at a quiescence node would double that across the 54-61% of nodes
+    /// that live there, which is more than any pruning rule it could feed is likely to win back.
+    ///
+    /// Meaningful only for tactical moves, and only until the next <see cref="OrderMoves"/> call.
+    /// A move that scored as the TT move never reached the exchange and reports false; quiescence,
+    /// the only caller, passes no TT move.
+    /// </summary>
+    internal bool SeeWinningAt(int index) => _seeWinning[index];
 
     /// <summary>
     /// Overload for backward compatibility (used in quiescence search).
@@ -130,8 +158,11 @@ internal class MoveOrdering
     /// Calculates a score for move ordering; higher is searched earlier. See the class summary
     /// for the bands.
     /// </summary>
-    private int CalculateMoveScore(Move move, Move ttMove, Move lastOpponentMove, int ply)
+    private int CalculateMoveScore(Move move, Move ttMove, Move lastOpponentMove, int ply,
+                                   out bool seeWinning)
     {
+        seeWinning = false;
+
         // TT move: absolute highest priority (moves first)
         if (move == ttMove && ttMove != default)
             return 999999;
@@ -160,7 +191,9 @@ internal class MoveOrdering
             // of those calls answer without looking at the board at all. The rest of that 17.6%
             // is the ray scan itself and needs an attackers-to-square bitboard, not a cheaper
             // question — see the note on SeeGe.
-            return SeeGe(move, 0)
+            seeWinning = SeeGe(move, 0);
+
+            return seeWinning
                 ? 600000 + mvvScore
                 : 500000 + mvvScore;
         }
