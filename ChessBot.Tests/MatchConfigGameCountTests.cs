@@ -92,10 +92,12 @@ public class MatchConfigGameCountTests
     // ── Concurrency ──────────────────────────────────────────────────────────
 
     [Fact]
-    public void Concurrency_DefaultsToWhatTheMachineCanTake()
+    public void Concurrency_DefaultsToHalfThePhysicalCoresBecauseTheseGamesAreTimed()
     {
-        int machineLimit = Math.Min(MatchConfig.MaxAutoConcurrency,
-                                    Math.Max(1, Environment.ProcessorCount / 2));
+        // Half the PHYSICAL cores, not half the logical processors: two hyperthreads on one core
+        // do not run two searches at full speed, so sizing by Environment.ProcessorCount
+        // oversubscribes a timed run by a factor of two.
+        int machineLimit = Math.Max(1, MachineTopology.PhysicalCoreCount / 2);
 
         // Never more workers than there are games to play.
         Assert.Equal(1, new MatchConfig { TotalGames = 1 }.Concurrency);
@@ -103,7 +105,40 @@ public class MatchConfigGameCountTests
 
         // And never more than the machine's share, however many games are queued.
         Assert.Equal(machineLimit, new MatchConfig { TotalGames = 500 }.Concurrency);
-        Assert.True(new MatchConfig { TotalGames = 500 }.Concurrency <= MatchConfig.MaxAutoConcurrency);
+    }
+
+    [Fact]
+    public void Concurrency_HasNoFixedCeilingAboveTheMachine()
+    {
+        // The old harness capped automatic concurrency at 10 whatever the machine had, so a
+        // 32-core box ran a match at under a third of its capacity. The only ceiling now is the
+        // machine's own core count.
+        Assert.Equal(MachineTopology.PhysicalCoreCount, ConcurrencyPolicy.DefaultFor(BudgetKind.Nodes, 1_000));
+        Assert.True(ConcurrencyPolicy.DefaultFor(BudgetKind.Nodes, 1_000) >= 1);
+    }
+
+    [Fact]
+    public void Concurrency_NodeBudgetsTakeTwiceAsMuchOfTheMachineAsTimedOnes()
+    {
+        // A node budget is bit-identical at any concurrency, so there is no reason to leave a
+        // core idle. A time budget measures the scheduler alongside the engine, so it does not
+        // get the whole machine and says so when asked for more.
+        int nodes = ConcurrencyPolicy.DefaultFor(BudgetKind.Nodes, 1_000);
+        int timed = ConcurrencyPolicy.DefaultFor(BudgetKind.Time,  1_000);
+
+        Assert.True(nodes >= timed);
+        Assert.Equal(Math.Max(1, MachineTopology.PhysicalCoreCount / 2), timed);
+
+        Assert.Equal(string.Empty, ConcurrencyPolicy.WarnIfOversubscribed(BudgetKind.Nodes, 1_000));
+        Assert.NotEqual(string.Empty, ConcurrencyPolicy.WarnIfOversubscribed(BudgetKind.Time, timed + 1));
+        Assert.Equal(string.Empty, ConcurrencyPolicy.WarnIfOversubscribed(BudgetKind.Time, timed));
+    }
+
+    [Fact]
+    public void PhysicalCoreCount_IsAtMostTheLogicalCount()
+    {
+        Assert.InRange(MachineTopology.PhysicalCoreCount, 1, MachineTopology.LogicalProcessorCount);
+        Assert.False(string.IsNullOrWhiteSpace(MachineTopology.CoreCountSource));
     }
 
     [Fact]

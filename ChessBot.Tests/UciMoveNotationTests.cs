@@ -177,4 +177,50 @@ public class UciMoveNotationTests
         Assert.True(UciMoveNotation.TryParse("E2E4", engine.GetLegalMoves(), out Move move));
         Assert.Equal(Square.FromAlgebraic("e4"), move.To);
     }
+
+    /// <summary>
+    /// <see cref="Move.ToString"/> must render exactly what <see cref="UciMoveNotation.Format"/>
+    /// does, for every legal move in every one of the round-trip positions.
+    ///
+    /// This is not a tidiness check. The match runner compares an engine's UCI answer against
+    /// <c>Move.ToString()</c> over its own generated moves, so the day those two disagree it stops
+    /// being able to apply a legal move and aborts the game as illegal — silently, and only for the
+    /// move type they disagree about. <see cref="UciMoveNotation"/>'s own summary reserves the
+    /// right to change <c>ToString</c> as human-readable output; this test is what makes that
+    /// change visible as a failure here rather than as forfeits in a 2,000-game run.
+    ///
+    /// The promotion suffix is the whole risk. Rendering it as the first letter of the piece name
+    /// is the obvious shortcut and it is wrong for exactly one piece — a knight becomes "k" — which
+    /// is why an underpromotion is the only move that ever exposes it.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(RoundTripPositions))]
+    public void MoveToString_MatchesTheWireFormat(string fen)
+    {
+        var engine = new ChessEngine();
+        engine.LoadFen(fen);
+
+        foreach (var move in engine.GetLegalMoves())
+            Assert.Equal(UciMoveNotation.Format(move), move.ToString());
+    }
+
+    /// <summary>
+    /// A knight promotion is written "n". Spelled out separately from the round-trip theory
+    /// because that theory would still pass if both renderers were wrong in the same way.
+    /// </summary>
+    [Fact]
+    public void Format_KnightPromotion_IsNNotK()
+    {
+        var engine = new ChessEngine();
+        engine.LoadFen("r6k/1P6/8/8/8/8/8/4K3 w - - 0 1");
+
+        var rendered = engine.GetLegalMoves()
+                             .Where(m => m.IsPromotion)
+                             .Select(UciMoveNotation.Format)
+                             .ToList();
+
+        Assert.Contains("b7a8n", rendered);
+        Assert.Contains("b7b8n", rendered);
+        Assert.DoesNotContain(rendered, s => s.EndsWith("k", StringComparison.Ordinal));
+    }
 }

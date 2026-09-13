@@ -177,13 +177,11 @@ public sealed class SweepConfig
             return null;
         }
 
-        // Default: play the whole round at once where the machine can take it. Half the logical
-        // processors keeps the box usable and stays at or below the physical cores on a typical
-        // hyper-threaded CPU; each game also drives an opponent process of its own.
+        // Default: play the whole round at once where the machine can take it. Sweep games are
+        // timed, so the ceiling is half the PHYSICAL cores — hyperthreads do not run two searches
+        // at full speed, and each game also drives an opponent process of its own.
         if (cfg.ConcurrencyIsDefault)
-            cfg.Concurrency = Math.Clamp(
-                cfg.GamesPerRound, 1,
-                Math.Min(MatchConfig.MaxAutoConcurrency, Math.Max(1, Environment.ProcessorCount / 2)));
+            cfg.Concurrency = ConcurrencyPolicy.DefaultFor(BudgetKind.Time, cfg.GamesPerRound);
 
         if (cfg.Concurrency > 1)
             Console.WriteLine($"NOTE: playing {cfg.Concurrency} games of each round in parallel. " +

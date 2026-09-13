@@ -109,10 +109,28 @@ public static class MoveLossAnalyzer
     /// the same repetition history the game itself had — a bare FEN cannot encode how many times
     /// a position was already reached.
     /// </summary>
+    public static Task<List<MoveLossRecord>> AnalyzeGameAsync(
+        GameResult game,
+        UciAdapter referenceEngine,
+        int depth,
+        int maxRetries = 2,
+        CancellationToken ct = default)
+        => AnalyzeGameAsync(game, referenceEngine, depth, m => m.IsChessBotMove, maxRetries, ct);
+
+    /// <summary>
+    /// The same analysis over a chosen side's moves. An A/B run between two engine binaries wants
+    /// both sides measured, once per arm, which the fixed "ChessBot moved" filter cannot express:
+    /// in that record the flag marks arm A, and arm B's moves are the ones it does not mark.
+    /// </summary>
+    /// <param name="include">
+    /// Which moves to analyze. Every move still advances the reconstructed history, whether or
+    /// not it is analyzed, so the reference engine always sees the position the game reached.
+    /// </param>
     public static async Task<List<MoveLossRecord>> AnalyzeGameAsync(
         GameResult game,
         UciAdapter referenceEngine,
         int depth,
+        Func<MoveRecord, bool> include,
         int maxRetries = 2,
         CancellationToken ct = default)
     {
@@ -123,9 +141,9 @@ public static class MoveLossAnalyzer
         {
             ct.ThrowIfCancellationRequested();
 
-            if (!move.IsChessBotMove)
+            if (!include(move))
             {
-                // Still need to advance the reconstructed history for later ChessBot moves,
+                // Still need to advance the reconstructed history for later analyzed moves,
                 // even though this move itself isn't analyzed.
                 history.Add(move.UciMove);
                 continue;

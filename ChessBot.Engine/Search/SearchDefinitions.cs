@@ -71,22 +71,6 @@ public class SearchSettings
     public bool UseAspiration { get; set; } = true;
 
     /// <summary>
-    /// When true, if an iterative-deepening pass is cancelled mid-iteration but has already
-    /// found a root move that beats the previous (completed) iteration's score, that partial
-    /// result replaces the last completed iteration's move. When false, the search always
-    /// falls back to the last fully completed iteration, ignoring any partial-iteration root
-    /// move regardless of its score. Kept as a setting (rather than always-on) because the
-    /// partial score and the completed-iteration score come from different depths and not
-    /// every root move was searched at the partial depth, so the comparison is not always
-    /// sound — this flag exists to allow paired A/B testing of the behavior.
-    ///
-    /// Defaults to false: this is a strength-affecting heuristic that has not yet been
-    /// validated by a controlled A/B comparison, so it must be explicitly opted into rather
-    /// than silently changing search behavior for every caller.
-    /// </summary>
-    public bool UsePartialRootResult { get; set; } = false;
-
-    /// <summary>
     /// Optional override of the LMR schedule's base term (R = LmrBaseOverride + ln(depth)·ln(moveCount) / LmrDivisorOverride).
     /// Null = use the engine's built-in default (0.75). Exists solely to allow controlled
     /// A/B comparison of LMR schedules without recompiling; never set by normal callers.
@@ -106,71 +90,11 @@ public class SearchSettings
     public int? LmrFullMovesOverride { get; set; }
 
     /// <summary>
-    /// Reproduces the flat LMR schedule the engine used before the logarithmic table was
-    /// introduced: reduce by 1 from the fifth move onward, by 2 past the eighth, regardless
-    /// of depth. Exists so the current schedule can be A/B compared against the exact
-    /// implementation it replaced, rather than against another logarithmic parameterisation.
-    /// When true, <see cref="LmrBaseOverride"/> and <see cref="LmrDivisorOverride"/> are ignored.
-    /// </summary>
-    public bool UseLegacyFlatLmr { get; set; }
-
-    /// <summary>
     /// Check extension (search one ply deeper when in check). Sound, but it changes the
     /// shape of a fixed-depth tree, so it must be off when comparing against a fixed-depth
     /// minimax reference.
     /// </summary>
     public bool UseCheckExtension { get; set; } = true;
-
-    /// <summary>
-    /// The evaluator's hanging-piece term: a penalty of half its value for every attacked,
-    /// undefended non-pawn piece.
-    ///
-    /// Kept switchable because the term is doubtful on two counts. Quiescence search already
-    /// resolves hanging material, so the penalty double-counts what the search finds anyway,
-    /// and it does so in the static evaluation — which null-move and futility pruning compare
-    /// directly against beta, so the noise propagates into pruning decisions rather than
-    /// staying in the leaf score. It is also the most expensive term in the program: up to two
-    /// ray-based <c>IsSquareAttackedBy</c> calls per non-pawn piece, at every node, since the
-    /// static evaluation runs throughout the tree and not only at leaves.
-    ///
-    /// Defaults to true (current behaviour); the default only changes if a measurement says so.
-    /// </summary>
-    public bool UseThreatEval { get; set; } = true;
-
-    /// <summary>
-    /// Derive the opening-development term's weight from the material on the board instead of
-    /// from the move number.
-    ///
-    /// The move-number form makes the evaluation depend on something the position does not
-    /// contain. The Zobrist hash carries no move number, so transposition entries hold scores
-    /// that were only valid at the move number they were stored at; inside a tree that crosses
-    /// move 20 the score improves by up to 100 cp purely because plies elapsed, which pays the
-    /// engine to shuffle rather than develop; and the same position reached by a longer route
-    /// evaluates differently from itself.
-    ///
-    /// The phase form scales the term by the 24-point material phase, so it fades out smoothly
-    /// and depends only on the position.
-    ///
-    /// Defaults to false (current behaviour); the default only changes if a measurement says so.
-    /// </summary>
-    public bool UseGamePhaseDevelopment { get; set; }
-
-    /// <summary>
-    /// Blend separate midgame and endgame material values and piece-square tables on the game
-    /// phase, instead of scoring the whole game from one set.
-    ///
-    /// One table set has to describe two different games at once. A pawn on the sixth rank is a
-    /// small positional plus in the opening and nearly decisive in a pawn endgame; a knight is
-    /// worth more than a rook's difference in a closed middlegame and less once the board opens.
-    /// A single set splits those differences and is wrong at both ends.
-    ///
-    /// The midgame set is exactly the table the engine already used, so at full phase a tapered
-    /// evaluation reproduces the untapered score to the centipawn, and any measured difference
-    /// comes only from positions where material has actually left the board.
-    ///
-    /// Defaults to false (current behaviour); the default only changes if a measurement says so.
-    /// </summary>
-    public bool UseTaperedEval { get; set; }
 
     /// <summary>
     /// Invoked once per *completed* iterative-deepening iteration — never per node — so a
@@ -218,10 +142,17 @@ public static class SearchScores
     public const int Mate = 100_000;
 
     /// <summary>
-    /// Largest ply distance a mate score can carry (the search's maximum ply). Scores whose
-    /// magnitude is within this much of <see cref="Mate"/> are mates rather than evaluations.
+    /// Width of the mate band: scores whose magnitude is within this much of <see cref="Mate"/>
+    /// are mates rather than evaluations.
+    ///
+    /// This is not the search's stack depth — that is <c>Searcher.MAX_PLY</c>, and the two were
+    /// wrongly aliased. The only relationship between them is a lower bound: a mate found at the
+    /// deepest reachable ply scores <c>Mate - ply</c>, so the band must be at least as wide as
+    /// the stack or such a score would decode as a centipawn evaluation. The value below leaves
+    /// generous headroom above the stack, and no real evaluation comes within 99,000 centipawns
+    /// of it.
     /// </summary>
-    public const int MateDistanceLimit = 64;
+    public const int MateDistanceLimit = 256;
 
     /// <summary>Lowest magnitude that still denotes a mate rather than a centipawn evaluation.</summary>
     public const int MateThreshold = Mate - MateDistanceLimit;
@@ -241,7 +172,34 @@ public static class SearchScores
         int moves = (plies + 1) / 2;
         return score > 0 ? moves : -moves;
     }
+
+    /// <summary>
+    /// The single conversion from an internal search score to a reported one. Every surface that
+    /// shows a score to something outside the engine goes through here — the UCI "score" token,
+    /// the plain-text game log, the structured match result, the UI's eval panel — because a
+    /// second copy of this rule is a second place for two artifacts to disagree about the same
+    /// move. Three copies existed, with thresholds of 99,936, 99,000 and 90,000, alongside one
+    /// call site that applied no rule at all and recorded the raw mate constant as centipawns.
+    ///
+    /// A magnitude inside the mate band becomes a signed distance in full moves and the
+    /// centipawn field is zeroed, so nothing downstream can average a mate constant into an
+    /// evaluation; everything else passes through as centipawns.
+    /// </summary>
+    public static ReportedScore ToReported(int score) =>
+        IsMateScore(score)
+            ? new ReportedScore(0,     MateDistanceInMoves(score))
+            : new ReportedScore(score, null);
 }
+
+/// <summary>
+/// A search score in the form it is reported in: a centipawn evaluation or a distance to mate
+/// in moves, never both. <see cref="MateInMoves"/> is positive when the side to move delivers
+/// the mate and negative when it is mated; <see cref="Cp"/> is 0 whenever it has a value, which
+/// is the same convention UCI engines use when they emit "score mate".
+/// </summary>
+/// <param name="Cp">Centipawn evaluation, side-to-move positive. 0 for a mate score.</param>
+/// <param name="MateInMoves">Signed distance to mate in full moves, or null for an evaluation.</param>
+public readonly record struct ReportedScore(int Cp, int? MateInMoves);
 
 /// <summary>
 /// A snapshot of one completed iterative-deepening iteration, handed to
@@ -305,9 +263,9 @@ public class SearchResult
     public List<Move> PrincipalVariation { get; set; } = new();
 
     /// <summary>
-    /// The last iterative-deepening depth that ran to completion. Never a partially searched
-    /// depth, even when a partial root result from a deeper, unfinished iteration was used as
-    /// the reported move (see <see cref="UsedPartialRootResult"/> and <see cref="PartialDepth"/>).
+    /// The last iterative-deepening depth that ran to completion, which is always the depth the
+    /// reported move comes from. A deeper iteration that was cancelled mid-flight contributes
+    /// nothing but coverage telemetry (see <see cref="PartialDepth"/>).
     /// </summary>
     public int DepthAchieved { get; set; }
 
@@ -317,14 +275,6 @@ public class SearchResult
     /// completed iteration, or hit the root-terminal-position case).
     /// </summary>
     public int PartialDepth { get; set; }
-
-    /// <summary>
-    /// True if <see cref="BestMove"/>/<see cref="Evaluation"/>/<see cref="PrincipalVariation"/> were
-    /// taken from a partially searched iteration (<see cref="PartialDepth"/>) rather than the last
-    /// fully completed one (<see cref="DepthAchieved"/>). Only ever true when
-    /// <see cref="SearchSettings.UsePartialRootResult"/> was enabled.
-    /// </summary>
-    public bool UsedPartialRootResult { get; set; }
 
     /// <summary>
     /// Number of root moves that finished searching in the iteration that was in progress when
@@ -345,14 +295,6 @@ public class SearchResult
     /// cancellation happened, not to any earlier attempt within the same depth.
     /// </summary>
     public double RootCoveragePercent { get; set; }
-
-    /// <summary>
-    /// True if the partial score used (when <see cref="UsedPartialRootResult"/> is true) is an
-    /// exact value — the candidate root move raised alpha without itself failing high against
-    /// the aspiration window in effect at the time. False means the score is only a lower bound
-    /// (the true value could be higher), so it should not be treated as a precise evaluation.
-    /// </summary>
-    public bool PartialScoreIsExact { get; set; }
 
     /// <summary>
     /// Total nodes visited: main-search nodes plus quiescence nodes. Identical to
@@ -526,12 +468,28 @@ public class SearchResult
     public long LmrReductions      { get; set; }
     public long LmrReSearches      { get; set; }
     public long FutilitySkips      { get; set; }
+
+    /// <summary>Captures skipped in quiescence because the exchange said they lose material.</summary>
+    public long QSeeSkips          { get; set; }
     public long PvsReSearches      { get; set; }
     public long AspirationFailLow  { get; set; }
     public long AspirationFailHigh { get; set; }
 
     /// <summary>Draw scores returned for repetition, split out because they are path-dependent.</summary>
     public long RepetitionDraws    { get; set; }
+
+    /// <summary>Number of nodes whose depth was extended because the side to move was in check.</summary>
+    public long CheckExtensions    { get; set; }
+
+    /// <summary>
+    /// The largest number of check extensions accumulated on any single root-to-leaf line. The
+    /// extension adds a ply without consuming one, so this is the amount by which the deepest
+    /// line outran its nominal depth — and the quantity the per-line budget bounds.
+    /// </summary>
+    public int MaxCheckExtensionsInLine { get; set; }
+
+    /// <summary>Extensions the per-line budget refused. 0 means the budget never bound.</summary>
+    public long CheckExtensionsCapped { get; set; }
 }
 
 /// <summary>

@@ -85,7 +85,6 @@ public record MoveRecord
     /// unevaluated legal fallback rather than a search result.
     /// </summary>
     public bool   IsUnsearchedFallbackMove { get; init; }
-    public bool   UsedPartialRootResult { get; init; }
     public int    PartialDepth          { get; init; }
     public long   BetaCutoffsFirstMove  { get; init; }
     // ── Partial-root coverage (reported for every cancelled iteration, even when the
@@ -93,7 +92,6 @@ public record MoveRecord
     public int    RootMovesCompleted    { get; init; }
     public int    RootMoveCount         { get; init; }
     public double RootCoveragePercent   { get; init; }
-    public bool   PartialScoreIsExact   { get; init; }
 }
 
 /// <summary>
@@ -102,10 +100,28 @@ public record MoveRecord
 public class GameResult
 {
     public int GameNumber       { get; init; }
+
+    /// <summary>
+    /// Whether the measured player had White. In a match against an external opponent that
+    /// player is ChessBot. In an A/B run between two engine binaries it is arm A: the record is
+    /// shared so that the PGN writer, the position analyzer and the reference-engine move-loss
+    /// analysis serve both without a parallel set of types. <see cref="Outcome"/> and
+    /// <see cref="MoveRecord.IsChessBotMove"/> are relative to that same player, and
+    /// <see cref="MeasuredPlayerName"/> says who it was.
+    /// </summary>
     public bool ChessBotIsWhite { get; init; }
+
+    /// <summary>Name of the player <see cref="ChessBotIsWhite"/> and <see cref="Outcome"/> refer to.</summary>
+    public string MeasuredPlayerName { get; init; } = "ChessBot";
+
+    /// <summary>Name of the other player.</summary>
+    public string OpponentPlayerName { get; init; } = "External";
+
     public GameOutcome Outcome  { get; set; } = GameOutcome.Aborted;
     public List<MoveRecord> Moves { get; } = new();
-    public string InitialFen      { get; init; } = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+    public string InitialFen      { get; init; } = OpeningBook.StartFen;
+    /// <summary>Name of the opening this game was started from, for PGN tags and reports.</summary>
+    public string OpeningName     { get; init; } = "Start position";
     public string? TerminationReason { get; set; }
     /// <summary>Path of the PGN file written for this game.</summary>
     public string PgnPath { get; set; } = string.Empty;
@@ -117,7 +133,6 @@ public class GameResult
 /// </summary>
 public class GameRunner
 {
-    private const string StartFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
     private const int MaxMoves = 300;
 
     private readonly UciAdapter _externalEngine;
@@ -129,26 +144,47 @@ public class GameRunner
         _cfg = cfg;
     }
 
-    public async Task<GameResult> PlayGameAsync(bool chessBotIsWhite, int gameNumber, CancellationToken ct = default)
+    /// <param name="opening">
+    /// Start position for this game. Games no longer all begin from the initial position: two
+    /// near-deterministic engines replay the same few games from there, so the sample size of a
+    /// run was the number of distinct openings it stumbled into, not the number of games played.
+    /// </param>
+    public async Task<GameResult> PlayGameAsync(
+        bool chessBotIsWhite, int gameNumber, Opening opening, CancellationToken ct = default)
     {
+        string startFen = opening.Fen;
+
         var result = new GameResult
         {
             GameNumber      = gameNumber,
             ChessBotIsWhite = chessBotIsWhite,
-            InitialFen      = StartFen
+            InitialFen      = startFen,
+            OpeningName     = opening.Name,
         };
 
         var chessBotEngine = new ChessEngine();
-        chessBotEngine.LoadFen(StartFen);
+        chessBotEngine.LoadFen(startFen);
         await _externalEngine.NewGameAsync();
 
         var moveHistory = new List<string>();
-        string currentFen = StartFen;
-        bool whiteToMove = true;
+        string currentFen = startFen;
+
+        // Both taken from the start position rather than assumed: an opening set may hand a game
+        // a position with Black to move, and move numbers continue the book line's count so a
+        // PGN of the game lines up with the opening it came from.
+        bool whiteToMove = chessBotEngine.SideToMove == Color.White;
+        int firstMoveNumber = FullMoveNumberOf(startFen);
+        bool firstPlyIsWhite = whiteToMove;
+
+        // Threefold repetition was not adjudicated here at all, so a repeated position ran on
+        // until the fifty-move clock or the 300-move cap. Keyed on the position without the move
+        // counters, which is what "the same position" means for the rule.
+        var seenPositions = new Dictionary<string, int>();
 
         if (_cfg.Verbose)
         {
             Console.WriteLine($"  ChessBot plays {(chessBotIsWhite ? "White" : "Black")}");
+            Console.WriteLine($"  Opening: {opening.Name}");
             Console.WriteLine($"  Move time: {_cfg.MoveTimeMs}ms per move");
         }
 
@@ -156,7 +192,7 @@ public class GameRunner
         {
             ct.ThrowIfCancellationRequested();
 
-            int moveNumber = plyCount / 2 + 1;
+            int moveNumber = firstMoveNumber + (plyCount + (firstPlyIsWhite ? 0 : 1)) / 2;
             bool chessBotMoves = (whiteToMove == chessBotIsWhite);
             string uciMove;
             int    scoreCp    = 0;
@@ -194,13 +230,11 @@ public class GameRunner
             long[] lmrByDepth           = Array.Empty<long>();
             long[] lmrByMoveNumber      = Array.Empty<long>();
             bool   isUnsearchedFallback = false;
-            bool   usedPartialRootResult = false;
             int    partialDepth          = 0;
             long   betaCutoffsFirstMove  = 0;
             int    rootMovesCompleted    = 0;
             int    rootMoveCount         = 0;
             double rootCoveragePercent   = 0;
-            bool   partialScoreIsExact   = false;
 
             if (chessBotMoves)
             {
@@ -208,9 +242,8 @@ public class GameRunner
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 var settings = new SearchSettings
                 {
-                    MaxTimeMs             = _cfg.MoveTimeMs,
-                    Verbose               = false,
-                    UsePartialRootResult  = _cfg.UsePartialRootResult
+                    MaxTimeMs = _cfg.MoveTimeMs,
+                    Verbose   = false,
                 };
                 var searchResult = chessBotEngine.FindBestMove(settings, ct);
                 sw.Stop();
@@ -222,8 +255,14 @@ public class GameRunner
                 }
 
                 uciMove   = searchResult.BestMove.ToString();
-                scoreCp   = searchResult.Evaluation;
-                scoreMate = null; // ChessBot reports mate via high cp value, not UCI mate score
+
+                // The search returns a ply-relative mate score inside the mate band, which is not
+                // a centipawn value and must not be recorded as one: every consumer that averages
+                // ScoreCp, or diffs it against the opponent's, would be reading a 100,000-unit
+                // constant as an evaluation. Same conversion the UCI layer uses.
+                var reported = SearchScores.ToReported(searchResult.Evaluation);
+                scoreCp   = reported.Cp;
+                scoreMate = reported.MateInMoves;
                 depth     = searchResult.DepthAchieved;
                 selDepth  = searchResult.SelDepth;
                 nodes     = searchResult.NodesSearched;
@@ -256,13 +295,11 @@ public class GameRunner
                 lmrByDepth             = searchResult.LmrReductionsByDepth;
                 lmrByMoveNumber        = searchResult.LmrReductionsByMoveNumber;
                 isUnsearchedFallback   = searchResult.IsUnsearchedFallbackMove;
-                usedPartialRootResult  = searchResult.UsedPartialRootResult;
                 partialDepth           = searchResult.PartialDepth;
                 betaCutoffsFirstMove   = searchResult.BetaCutoffsFirstMove;
                 rootMovesCompleted     = searchResult.RootMovesCompleted;
                 rootMoveCount          = searchResult.RootMoveCount;
                 rootCoveragePercent    = searchResult.RootCoveragePercent;
-                partialScoreIsExact    = searchResult.PartialScoreIsExact;
 
                 if (_cfg.Verbose)
                     Console.WriteLine($"  {(whiteToMove ? "W" : "B")} move {moveNumber,-3}: {uciMove,-8} " +
@@ -276,7 +313,7 @@ public class GameRunner
                 // reconstructs the position from scratch. Passing currentFen (the
                 // already-advanced position) together with moveHistory would cause the
                 // moves to be applied twice, producing an illegal board state.
-                var uciResult = await _externalEngine.GetBestMoveAsync(StartFen, moveHistory, _cfg.MoveTimeMs, ct);
+                var uciResult = await _externalEngine.GetBestMoveAsync(startFen, moveHistory, _cfg.MoveTimeMs, ct);
 
                 if (string.IsNullOrEmpty(uciResult.BestMove))
                 {
@@ -346,25 +383,47 @@ public class GameRunner
                 LmrReductionsByDepth      = lmrByDepth,
                 LmrReductionsByMoveNumber = lmrByMoveNumber,
                 IsUnsearchedFallbackMove = isUnsearchedFallback,
-                UsedPartialRootResult    = usedPartialRootResult,
                 PartialDepth             = partialDepth,
                 BetaCutoffsFirstMove     = betaCutoffsFirstMove,
                 RootMovesCompleted       = rootMovesCompleted,
                 RootMoveCount            = rootMoveCount,
                 RootCoveragePercent      = rootCoveragePercent,
-                PartialScoreIsExact      = partialScoreIsExact,
             });
 
-            // Apply move to both ChessBot board and move history
-            moveHistory.Add(uciMove);
-
+            // Apply the move before recording it. The history is what the external engine is
+            // replayed from, so a move that will not apply must never enter it — and the report
+            // below has to show the history as it stood when the move was produced.
             bool applied = TryApplyMove(chessBotEngine, uciMove);
             if (!applied)
             {
+                new RejectedMoveReport
+                {
+                    Player        = chessBotMoves ? "ChessBot" : _externalEngine.EngineName,
+                    Colour        = whiteToMove ? "white" : "black",
+                    MoveText      = uciMove,
+                    FenBeforeMove = currentFen,
+                    StartFen      = startFen,
+                    MoveHistory   = moveHistory.ToArray(),
+                    LegalMoves    = chessBotEngine.GetLegalMoves().Select(m => m.ToString()).ToArray(),
+                    MoveNumber    = moveNumber,
+                    Depth         = depth,
+                    Score         = scoreMate is int m ? $"mate {m}" : $"{scoreCp} cp",
+                    Nodes         = nodes,
+                    ElapsedMs     = elapsedMs,
+                    BudgetMs      = _cfg.MoveTimeMs,
+                    // Only an external engine has a protocol conversation to show; ChessBot is
+                    // called directly, so its side is deliberately empty rather than faked.
+                    MoverTrace    = chessBotMoves ? Array.Empty<string>() : _externalEngine.ProtocolTrace,
+                    OpponentTrace = chessBotMoves ? _externalEngine.ProtocolTrace : Array.Empty<string>(),
+                }
+                .Save(Path.Combine(_cfg.PgnOutputDir, "rejected-moves.txt"));
+
                 result.TerminationReason = $"Illegal move: {uciMove}";
                 result.Outcome = GameOutcome.Aborted;
                 break;
             }
+
+            moveHistory.Add(uciMove);
 
             currentFen = chessBotEngine.ExportFen();
             whiteToMove = !whiteToMove;
@@ -395,6 +454,22 @@ public class GameRunner
                 result.TerminationReason = "50-move rule";
                 break;
             }
+
+            if (chessBotEngine.GetBoardSnapshot().HasInsufficientMaterial)
+            {
+                result.Outcome = GameOutcome.Draw;
+                result.TerminationReason = "Insufficient material";
+                break;
+            }
+
+            string repetitionKey = string.Join(' ', currentFen.Split(' ').Take(4));
+            seenPositions[repetitionKey] = seenPositions.GetValueOrDefault(repetitionKey) + 1;
+            if (seenPositions[repetitionKey] >= 3)
+            {
+                result.Outcome = GameOutcome.Draw;
+                result.TerminationReason = "Threefold repetition";
+                break;
+            }
         }
 
         if (result.Outcome == GameOutcome.Aborted && string.IsNullOrEmpty(result.TerminationReason))
@@ -413,6 +488,16 @@ public class GameRunner
             Console.WriteLine($"  PGN saved: {pgnPath}");
 
         return result;
+    }
+
+    /// <summary>
+    /// Fullmove counter from a FEN, so a game that starts eight plies into a book is numbered
+    /// from move 5 rather than restarting at 1. Defaults to 1 for a FEN without one.
+    /// </summary>
+    private static int FullMoveNumberOf(string fen)
+    {
+        var fields = fen.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return fields.Length >= 6 && int.TryParse(fields[5], out int n) && n >= 1 ? n : 1;
     }
 
     private static bool TryApplyMove(ChessEngine engine, string uciMove)

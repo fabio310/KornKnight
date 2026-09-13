@@ -35,10 +35,12 @@ public class TacticalSearchTests
     [Fact]
     public void MateIn2_WhiteQueenAndRook_FindsForcedMate()
     {
-        // White: Kg1, Qf7, Re1.  Black: Kg8.
-        // 1.Qf8+ Kh7 2.Rh1#  (or 1.Qg7+ Kh8 2.Rh1#, etc.)
+        // White: Kd5, Rf6, Qh5.  Black: Ka7.
+        // 1.Qh7+ drives the black king onto the eighth rank, where 2.Rf8# follows: the rook
+        // covers the rank and the queen the seventh. No mate in one exists, so the score has
+        // to come from the second move.
         var engine = new ChessEngine();
-        engine.LoadFen("6k1/5Q2/8/8/8/8/8/4R1K1 w - - 0 1");
+        engine.LoadFen("8/k7/5R2/3K3Q/8/8/8/8 w - - 0 1");
 
         var result = engine.FindBestMove(new SearchSettings { MaxDepth = 4, MaxTimeMs = 5000 });
 
@@ -80,9 +82,11 @@ public class TacticalSearchTests
     public void Search_BlackAdvantage_ReturnsPositiveForBlack()
     {
         // Black queen vs lone White king — Black (side-to-move) should get a large positive score.
-        // FEN: Black queen e4, Black king e6, White king h1.  Black to move.
+        // FEN: Black queen d4, Black king e6, White king h1.  Black to move.
+        // The queen stands off the a8-h1 diagonal: with Black to move, White must not already
+        // be in check, or the position could not have been reached.
         var engine = new ChessEngine();
-        engine.LoadFen("8/8/4k3/8/4q3/8/8/7K b - - 0 1");
+        engine.LoadFen("8/8/4k3/8/3q4/8/8/7K b - - 0 1");
 
         var result = engine.FindBestMove(new SearchSettings { MaxDepth = 3, MaxTimeMs = 3000 });
 

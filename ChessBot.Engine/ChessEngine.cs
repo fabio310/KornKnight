@@ -34,6 +34,11 @@ public class ChessEngine
     /// <summary>
     /// Loads a position from FEN notation.
     /// </summary>
+    /// <exception cref="ArgumentException">Thrown if the FEN is malformed.</exception>
+    /// <exception cref="Types.IllegalPositionException">
+    /// Thrown if the FEN parses but describes a position the rules of chess cannot produce.
+    /// The board is left at the starting position, not at the rejected one.
+    /// </exception>
     public void LoadFen(string fen)
     {
         lock (_boardLock)

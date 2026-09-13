@@ -9,8 +9,9 @@ using ChessBot.Engine.Evaluation;
 /// without recomputation. Stores the move made, the piece that moved (its pre-promotion identity),
 /// the captured piece and the exact square it stood on (which differs from the move's target for en
 /// passant), the rook's from/to squares for castling, the game state and Zobrist hash before the
-/// move, and a snapshot of the incremental evaluation accumulators (material, PST, total material)
-/// so those are restored exactly on undo. Backing store for Board's preallocated undo stack.
+/// move, and a snapshot of the incremental evaluation accumulators (midgame and endgame material
+/// and PST, plus the game phase) so those are restored exactly on undo. Backing store for Board's
+/// preallocated undo stack.
 /// </summary>
 internal readonly struct UndoState
 {
@@ -24,7 +25,6 @@ internal readonly struct UndoState
     public readonly ulong Hash;
     public readonly int EvalMaterial;
     public readonly int EvalPst;
-    public readonly int EvalTotalMaterial;
     public readonly int EvalPhase;
     public readonly int EvalMaterialEndgame;
     public readonly int EvalPstEndgame;
@@ -40,7 +40,6 @@ internal readonly struct UndoState
         ulong hash,
         int evalMaterial,
         int evalPst,
-        int evalTotalMaterial,
         int evalPhase,
         int evalMaterialEndgame,
         int evalPstEndgame)
@@ -55,7 +54,6 @@ internal readonly struct UndoState
         Hash = hash;
         EvalMaterial = evalMaterial;
         EvalPst = evalPst;
-        EvalTotalMaterial = evalTotalMaterial;
         EvalPhase = evalPhase;
         EvalMaterialEndgame = evalMaterialEndgame;
         EvalPstEndgame = evalPstEndgame;
@@ -133,32 +131,38 @@ public class Board
 
     // ── Incremental evaluation state (hot-path optimization) ───────────────────────────────
     // White-positive accumulators mirrored on every AddPiece/RemovePiece so Evaluator.EvaluateFast
-    // can skip the per-node full-board material/PST/pawn scan. Kings contribute nothing to material
-    // or PST (the full Evaluate scan skips them), so they are excluded here too. Initialized from a
-    // full scan by RecomputeIncrementalEval after ResetToStartingPosition/LoadFromFen and then kept
-    // exactly consistent through the direct-mutation MakeMove/UndoMove path.
-    private int _evalMaterial;        // Σ sign * MaterialValue over non-king pieces (White +, Black -)
-    private int _evalPst;             // Σ sign * PST[rank][file] over non-king pieces
-    private int _evalTotalMaterial;   // Σ MaterialValue over non-king pieces (unsigned)
+    // can skip the per-node full-board material/PST/pawn scan. Every piece type is included,
+    // kings among them: a king's material value is 0 on both scales, so it moves the PST
+    // accumulators only — which is what puts its midgame-to-endgame transition inside the taper
+    // instead of beside it. Initialized from a full scan by RecomputeIncrementalEval after
+    // ResetToStartingPosition/LoadFromFen and then kept exactly consistent through the
+    // direct-mutation MakeMove/UndoMove path.
+    private int _evalMaterial;        // Σ sign * MaterialValue (White +, Black -)
+    private int _evalPst;             // Σ sign * PST[rank][file]
     private int _evalPhase;           // Σ GamePhase.WeightFor over all pieces (24 at the start)
 
     // Endgame counterparts of _evalMaterial/_evalPst, for tapered evaluation. There is no
     // separate midgame pair: the midgame tables and values are the ones the engine already
     // used, so _evalMaterial and _evalPst are the midgame accumulators. Only the endgame side
     // needs adding, which keeps the per-move cost of make/unmake to two extra additions.
-    private int _evalMaterialEndgame; // Σ sign * EndgameMaterialValue over non-king pieces
-    private int _evalPstEndgame;      // Σ sign * EndgamePST[rank][file] over non-king pieces
+    private int _evalMaterialEndgame; // Σ sign * EndgameMaterialValue
+    private int _evalPstEndgame;      // Σ sign * EndgamePST[rank][file]
     private readonly int[] _whitePawnFiles = new int[8];
     private readonly int[] _blackPawnFiles = new int[8];
 
-    /// <summary>White-positive incremental material score (non-king). Consumed by Evaluator.EvaluateFast.</summary>
+    // Pawn occupancy, one bit per square. The per-file counts above answer "how many pawns on
+    // this file", which is all doubled and isolated pawns need; a passed pawn is a question about
+    // ranks as well, so it needs to know where the pawns actually stand. Two ulongs maintained by
+    // the same add/remove path as the counts, so they cost one bit operation per pawn moved and
+    // survive make/undo the same way.
+    private ulong _whitePawnBitboard;
+    private ulong _blackPawnBitboard;
+
+    /// <summary>White-positive incremental material score. Consumed by Evaluator.EvaluateFast.</summary>
     internal int IncrementalMaterialScore => _evalMaterial;
 
-    /// <summary>White-positive incremental piece-square-table score (non-king). Consumed by Evaluator.EvaluateFast.</summary>
+    /// <summary>White-positive incremental piece-square-table score. Consumed by Evaluator.EvaluateFast.</summary>
     internal int IncrementalPstScore => _evalPst;
-
-    /// <summary>Total (unsigned) non-king material on the board, used for the endgame phase test.</summary>
-    internal int IncrementalTotalMaterial => _evalTotalMaterial;
 
     /// <summary>
     /// The 24-point material game phase (see <see cref="GamePhase"/>), maintained incrementally
@@ -168,13 +172,13 @@ public class Board
     internal int IncrementalPhase => _evalPhase;
 
     /// <summary>
-    /// White-positive incremental material score on the endgame scale (non-king). Pairs with
+    /// White-positive incremental material score on the endgame scale. Pairs with
     /// <see cref="IncrementalMaterialScore"/>, which is the midgame scale.
     /// </summary>
     internal int IncrementalEndgameMaterialScore => _evalMaterialEndgame;
 
     /// <summary>
-    /// White-positive incremental endgame piece-square score (non-king). Pairs with
+    /// White-positive incremental endgame piece-square score. Pairs with
     /// <see cref="IncrementalPstScore"/>, which is the midgame one.
     /// </summary>
     internal int IncrementalEndgamePstScore => _evalPstEndgame;
@@ -184,6 +188,12 @@ public class Board
 
     /// <summary>Per-file Black pawn counts (index 0 = a-file), maintained incrementally.</summary>
     internal ReadOnlySpan<int> BlackPawnFileCounts => _blackPawnFiles;
+
+    /// <summary>White pawn occupancy as a bitboard (bit n = square index n), maintained incrementally.</summary>
+    internal ulong WhitePawnBitboard => _whitePawnBitboard;
+
+    /// <summary>Black pawn occupancy as a bitboard (bit n = square index n), maintained incrementally.</summary>
+    internal ulong BlackPawnBitboard => _blackPawnBitboard;
 
     public Board()
     {
@@ -339,31 +349,26 @@ public class Board
 
     /// <summary>
     /// Applies the White-positive incremental-eval contribution of a piece entering the board.
-    /// Kings are excluded (they contribute no material and are skipped by the PST scan), matching
-    /// Evaluator.Evaluate exactly so EvaluateFast returns identical scores.
+    /// Every piece type goes through here, kings included: a king's material value is 0 on both
+    /// scales, so it contributes only its piece-square term, and that term has to be in the
+    /// accumulators for the taper to reach it. Mirrors Evaluator.Evaluate exactly, which is what
+    /// makes EvaluateFast return identical scores.
     /// </summary>
     private void AddPieceEval(Color color, PieceType type, Square square)
     {
-        // Phase counts every piece type that gets traded off, so it is maintained before the
-        // king early-out below (kings weigh nothing, so including them would be harmless, but
-        // the accumulator's definition is "all pieces" and it should read that way).
         _evalPhase += GamePhase.WeightFor(type);
 
-        if (type == PieceType.King) return;
-
         int sign = color == Color.White ? 1 : -1;
-        int matVal = type.MaterialValue();
-        _evalMaterial += sign * matVal;
-        _evalTotalMaterial += matVal;
-        _evalPst += sign * PieceSquareTables.Value(color, type, square);
+        _evalMaterial += sign * type.MaterialValue();
+        _evalPst      += sign * PieceSquareTables.Value(color, type, square);
 
         _evalMaterialEndgame += sign * PieceSquareTables.EndgameMaterialValue(type);
         _evalPstEndgame      += sign * PieceSquareTables.EndgameValue(color, type, square);
 
         if (type == PieceType.Pawn)
         {
-            if (color == Color.White) _whitePawnFiles[square.File]++;
-            else                      _blackPawnFiles[square.File]++;
+            if (color == Color.White) { _whitePawnFiles[square.File]++; _whitePawnBitboard |= 1UL << square.Index; }
+            else                      { _blackPawnFiles[square.File]++; _blackPawnBitboard |= 1UL << square.Index; }
         }
     }
 
@@ -374,21 +379,17 @@ public class Board
     {
         _evalPhase -= GamePhase.WeightFor(type);
 
-        if (type == PieceType.King) return;
-
         int sign = color == Color.White ? 1 : -1;
-        int matVal = type.MaterialValue();
-        _evalMaterial -= sign * matVal;
-        _evalTotalMaterial -= matVal;
-        _evalPst -= sign * PieceSquareTables.Value(color, type, square);
+        _evalMaterial -= sign * type.MaterialValue();
+        _evalPst      -= sign * PieceSquareTables.Value(color, type, square);
 
         _evalMaterialEndgame -= sign * PieceSquareTables.EndgameMaterialValue(type);
         _evalPstEndgame      -= sign * PieceSquareTables.EndgameValue(color, type, square);
 
         if (type == PieceType.Pawn)
         {
-            if (color == Color.White) _whitePawnFiles[square.File]--;
-            else                      _blackPawnFiles[square.File]--;
+            if (color == Color.White) { _whitePawnFiles[square.File]--; _whitePawnBitboard &= ~(1UL << square.Index); }
+            else                      { _blackPawnFiles[square.File]--; _blackPawnBitboard &= ~(1UL << square.Index); }
         }
     }
 
@@ -402,12 +403,13 @@ public class Board
     {
         _evalMaterial = 0;
         _evalPst = 0;
-        _evalTotalMaterial = 0;
         _evalPhase = 0;
         _evalMaterialEndgame = 0;
         _evalPstEndgame = 0;
         Array.Clear(_whitePawnFiles, 0, 8);
         Array.Clear(_blackPawnFiles, 0, 8);
+        _whitePawnBitboard = 0UL;
+        _blackPawnBitboard = 0UL;
 
         for (int color = 0; color < 2; color++)
         {
@@ -489,6 +491,44 @@ public class Board
     }
 
     /// <summary>
+    /// True when neither side has enough material to force mate: K vs K, K+B vs K, K+N vs K.
+    /// These are dead draws, and without this the extra minor reads as a material advantage —
+    /// so the engine plays on for the full fifty moves in a position it cannot win, and has
+    /// lost games doing it.
+    ///
+    /// Read once per node by the search, so the common case must be free: the compact piece
+    /// lists give the total piece count directly, and any position with more than one non-king
+    /// piece leaves on the first comparison without touching a square.
+    ///
+    /// Deliberately not the full FIDE "dead position" test. K+B vs K+B on the same colour and
+    /// K+N+N vs K are also unwinnable against any defence, but they need a square-colour or
+    /// pair test that costs more than the case it catches is worth.
+    /// </summary>
+    public bool HasInsufficientMaterial
+    {
+        get
+        {
+            int pieces = _pieceListCount[0] + _pieceListCount[1];
+            if (pieces > 3) return false;
+            if (pieces < 3) return true;         // both kings, nothing else
+
+            // Exactly one non-king piece: only a lone minor is unable to mate.
+            for (int color = 0; color < 2; color++)
+            {
+                Piece[] list = _pieceListPieces[color];
+                for (int i = 0; i < _pieceListCount[color]; i++)
+                {
+                    PieceType type = list[i].Type;
+                    if (type == PieceType.King) continue;
+                    return type == PieceType.Knight || type == PieceType.Bishop;
+                }
+            }
+
+            return true;
+        }
+    }
+
+    /// <summary>
     /// Makes a move on the board, updating all state (piece positions, castling rights, en passant,
     /// halfmove clock, fullmove number, Zobrist hash, and incremental eval) through a single direct
     /// mutation path (AddPiece/RemovePiece/MovePiece) instead of repeated SetPiece calls. Pushes a
@@ -538,7 +578,7 @@ public class Board
         // Snapshot everything needed to reverse this move before mutating the board.
         PushHistory(new UndoState(
             move, movingPiece, capturedPiece, capturedSquare, rookFrom, rookTo,
-            preMoveState, preHash, _evalMaterial, _evalPst, _evalTotalMaterial, _evalPhase,
+            preMoveState, preHash, _evalMaterial, _evalPst, _evalPhase,
             _evalMaterialEndgame, _evalPstEndgame));
 
         // ── Apply piece movement through the single mutation path ──
@@ -682,7 +722,6 @@ public class Board
         _hash = undo.Hash;
         _evalMaterial = undo.EvalMaterial;
         _evalPst = undo.EvalPst;
-        _evalTotalMaterial = undo.EvalTotalMaterial;
         _evalPhase = undo.EvalPhase;
         _evalMaterialEndgame = undo.EvalMaterialEndgame;
         _evalPstEndgame = undo.EvalPstEndgame;
@@ -698,7 +737,7 @@ public class Board
         var savedState = _gameState;
         PushHistory(new UndoState(
             default, Piece.Empty, Piece.Empty, default, default, default,
-            savedState, _hash, _evalMaterial, _evalPst, _evalTotalMaterial, _evalPhase,
+            savedState, _hash, _evalMaterial, _evalPst, _evalPhase,
             _evalMaterialEndgame, _evalPstEndgame));
 
         // Update hash: XOR out old EP (if any), toggle color; castling is unchanged
@@ -731,7 +770,6 @@ public class Board
         // restoring them from the snapshot is a harmless no-op that keeps the code uniform.
         _evalMaterial = undo.EvalMaterial;
         _evalPst = undo.EvalPst;
-        _evalTotalMaterial = undo.EvalTotalMaterial;
         _evalPhase = undo.EvalPhase;
         _evalMaterialEndgame = undo.EvalMaterialEndgame;
         _evalPstEndgame = undo.EvalPstEndgame;
@@ -837,12 +875,13 @@ public class Board
         // without a rebuild (the copy also starts with a fresh, empty history).
         copy._evalMaterial = _evalMaterial;
         copy._evalPst = _evalPst;
-        copy._evalTotalMaterial = _evalTotalMaterial;
         copy._evalPhase = _evalPhase;
         copy._evalMaterialEndgame = _evalMaterialEndgame;
         copy._evalPstEndgame = _evalPstEndgame;
         Array.Copy(_whitePawnFiles, copy._whitePawnFiles, 8);
         Array.Copy(_blackPawnFiles, copy._blackPawnFiles, 8);
+        copy._whitePawnBitboard = _whitePawnBitboard;
+        copy._blackPawnBitboard = _blackPawnBitboard;
 
         // Note: History is not copied; the copy starts fresh
         return copy;
@@ -902,8 +941,13 @@ public class Board
     /// <summary>
     /// Loads a position from FEN notation.
     /// Format: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+    /// A FEN that parses but describes an impossible position is rejected too; see
+    /// <see cref="RejectIfIllegal"/> for which rules are checked and why.
     /// </summary>
     /// <exception cref="ArgumentException">Thrown if FEN is malformed.</exception>
+    /// <exception cref="IllegalPositionException">
+    /// Thrown if the FEN parses but the position cannot occur in a game of chess.
+    /// </exception>
     public void LoadFromFen(string fen)
     {
         if (string.IsNullOrWhiteSpace(fen))
@@ -999,6 +1043,73 @@ public class Board
 
         // Initialize incremental eval accumulators from the freshly placed pieces.
         RecomputeIncrementalEval();
+
+        RejectIfIllegal(fen);
+    }
+
+    /// <summary>
+    /// Rejects a position that parsed cleanly but that the rules of chess cannot produce.
+    ///
+    /// This is the boundary the search relies on. Move generation, make/unmake and check
+    /// detection all assume each side has exactly one king and that the position was arrived at
+    /// by legal moves; when it was not, the assumption fails somewhere deep in the tree and
+    /// reports the symptom rather than the cause (a corpus FEN with adjacent kings surfaced as
+    /// "Cannot make move: no piece on h1" four frames inside negamax, naming neither the
+    /// position nor what was wrong with it). Checking costs one board scan and one attack query
+    /// per FEN load, both off the hot path.
+    ///
+    /// The four rules checked are the ones whose violation breaks those assumptions. Castling
+    /// rights and en passant targets that no legal move could have produced are left alone:
+    /// they make a position wrong, not unsearchable.
+    /// </summary>
+    private void RejectIfIllegal(string fen)
+    {
+        int whiteKings = 0, blackKings = 0;
+        int backRankPawn = -1;
+
+        for (int i = 0; i < 64; i++)
+        {
+            Piece p = _pieces[i];
+            if (p.Type == PieceType.King)
+            {
+                if (p.Color == Color.White) whiteKings++;
+                else blackKings++;
+            }
+            else if (p.Type == PieceType.Pawn && (i < 8 || i >= 56) && backRankPawn < 0)
+            {
+                backRankPawn = i;
+            }
+        }
+
+        if (whiteKings != 1 || blackKings != 1)
+            Reject(PositionViolation.KingCount, fen,
+                   $"White has {whiteKings} king(s) and Black has {blackKings}; each side must have exactly one");
+
+        Square whiteKing = _kingPositions[(int)Color.White];
+        Square blackKing = _kingPositions[(int)Color.Black];
+        if (Math.Abs(whiteKing.File - blackKing.File) <= 1 && Math.Abs(whiteKing.Rank - blackKing.Rank) <= 1)
+            Reject(PositionViolation.AdjacentKings, fen,
+                   $"the kings stand on {whiteKing} and {blackKing}");
+
+        if (backRankPawn >= 0)
+            Reject(PositionViolation.PawnOnBackRank, fen,
+                   $"a pawn stands on {new Square(backRankPawn)}");
+
+        Color waiting = _gameState.ActiveColor.Opposite();
+        if (IsKingInCheck(waiting))
+            Reject(PositionViolation.SideNotToMoveInCheck, fen,
+                   $"{waiting} is in check with {_gameState.ActiveColor} to move, so the previous move was illegal");
+    }
+
+    /// <summary>
+    /// Throws for an illegal position, after restoring the starting position. A caller that
+    /// catches the exception and carries on — the UCI front end answering a bad `position fen`,
+    /// a harness skipping a corpus entry — must not be left holding the rejected board.
+    /// </summary>
+    private void Reject(PositionViolation violation, string fen, string detail)
+    {
+        ResetToStartingPosition();
+        throw new IllegalPositionException(violation, fen, detail);
     }
 
     /// <summary>

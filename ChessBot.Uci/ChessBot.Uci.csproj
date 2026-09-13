@@ -16,4 +16,33 @@
 	<InternalsVisibleTo Include="ChessBot.Tests" />
   </ItemGroup>
 
+  <!--
+    Stamps the commit this binary was built from into its informational version, which the
+    engine then reports in its UCI "id name" line.
+
+    An A/B run compares two engine BINARIES, so a result is only traceable if each binary can
+    say what it is. Asking git at measurement time answers a different question — it describes
+    the harness's working tree, not the tree either arm was built from, and the two are routinely
+    different commits. A dirty tree is marked as such, because a build with uncommitted changes
+    is not traceable to a commit at all and must not be recorded as if it were.
+  -->
+  <Target Name="StampBuildCommit" BeforeTargets="AddSourceRevisionToInformationalVersion;GetAssemblyVersion">
+    <Exec Command="git rev-parse --short=12 HEAD" ConsoleToMSBuild="true" ContinueOnError="true"
+          StandardOutputImportance="low" StandardErrorImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_BuildCommitId" />
+      <Output TaskParameter="ExitCode" PropertyName="_BuildCommitExitCode" />
+    </Exec>
+    <Exec Command="git status --porcelain --untracked-files=no" ConsoleToMSBuild="true" ContinueOnError="true"
+          StandardOutputImportance="low" StandardErrorImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_BuildWorkingTreeStatus" />
+    </Exec>
+
+    <PropertyGroup>
+      <_BuildCommitId Condition="'$(_BuildCommitExitCode)' != '0'">nogit</_BuildCommitId>
+      <_BuildCommitId Condition="'$(_BuildCommitId)' == ''">nogit</_BuildCommitId>
+      <_BuildCommitId Condition="'$(_BuildWorkingTreeStatus)' != ''">$(_BuildCommitId).dirty</_BuildCommitId>
+      <SourceRevisionId>$(_BuildCommitId)</SourceRevisionId>
+    </PropertyGroup>
+  </Target>
+
 </Project>

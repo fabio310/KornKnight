@@ -20,7 +20,7 @@ The solution (`ChessBot.sln`) contains six projects:
 - **Board**: 8x8 mailbox (`Piece[64]`), with per-color piece lists for O(pieceCount) iteration, a preallocated undo-state stack for O(1) make/unmake, and incrementally maintained Zobrist hash + material/PST evaluation state.
 - **Move generation** (`Board/MoveGenerator.cs`): generates fully legal moves directly in one pass (no pseudo-legal filtering step), using bitboards internally for checkers/pins/attacked squares. Handles check evasion, pins, castling, en passant (including the discovered-check edge case).
 - **Search** (`Search/Searcher.cs`): negamax with alpha-beta pruning, iterative deepening, a transposition table, quiescence search, null-move pruning, late move reductions, aspiration windows, and check extensions. Move ordering via TT move → PV move → MVV-LVA/SEE captures → killer moves → history/counter-move heuristics.
-- **Evaluation** (`Evaluation/Evaluator.cs`): material, piece-square tables, pawn structure, hanging-piece/threat detection, development and endgame king centralization; both a full recompute path and an incremental fast path used during search.
+- **Evaluation** (`Evaluation/Evaluator.cs`): material, tapered piece-square tables (kings included), pawn structure and development; both a full recompute path and an incremental fast path used during search.
 - **API**: `ChessEngine` is the public, thread-safe facade — `LoadFen`/`ExportFen`, `GetLegalMoves`, `MakeMove`/`UndoMove`, `FindBestMove`, `Evaluate`, `RunPerft`/`RunPerftDivide`, `NewGame`. The engine core itself does not speak UCI; `ChessBot.Uci` wraps this API in the protocol, and `ChessBot.MatchRunner` uses UCI only to talk to an *external* opponent engine.
 
 ### ChessBot.Uci
@@ -84,47 +84,191 @@ dotnet run --project ChessBot.Wpf
 
 dotnet run --project ChessBot.Uci
 
-dotnet run --project ChessBot.MatchRunner -- --engine <path-to-uci-engine> [--time <ms>] [--games <n>] [--pgn-dir <dir>] [--disagreement-threshold <cp>] [--reference-engine <path>]
+dotnet run --project ChessBot.MatchRunner -- --engine <path-to-uci-engine> [--time <ms>] [--games <n>] [--openings <path>] [--pgn-dir <dir>] [--disagreement-threshold <cp>] [--reference-engine <path>]
 
 dotnet run --project ChessBot.EloEvaluator -- --pgn-dir pgns --out-dir elo-reports
 ```
 
-### A/B harness
+If either engine ever plays a move the board will not accept, the game is aborted and a full
+report is appended to `<pgn-dir>/rejected-moves.txt` and echoed to stderr: the position the mover
+was given, the move it answered with, the legal moves it was chosen from, what the engine claimed
+about it (depth, score, nodes, time against the budget), and the last 40 protocol lines exchanged
+with each engine. A rejected move otherwise looks like an ordinary loss in the summary, so in a
+long run it would inject silent forfeits into the measurement.
 
-`ChessBot.MatchRunner --ab-harness` compares two search configurations under identical
-conditions, without an external engine. Modes: `partial-root`, `lmr`, `threat-eval`.
+### Rating anchor — what the engine is worth today
+
+One command, fixed opponent strength and fixed openings, so this is a number to look up rather
+than a run to design:
 
 ```powershell
-# Search-shape comparison at a fixed node budget (reproducible; isolates decisions)
-dotnet run -c Release --project ChessBot.MatchRunner -- --ab-harness --ab-mode threat-eval `
-  --ab-corpus-size 400 --ab-depth 12 --ab-nodes 200000
-
-# Same corpus at a fixed time budget — the only way a cheaper evaluation shows up as depth
-dotnet run -c Release --project ChessBot.MatchRunner -- --ab-harness --ab-mode threat-eval `
-  --ab-corpus-size 400 --ab-depth 30 --ab-time 500
-
-# Head-to-head games between the two configurations (both colours per opening)
-dotnet run -c Release --project ChessBot.MatchRunner -- --ab-harness --ab-mode threat-eval `
-  --ab-games 200 --ab-game-ms 100 --ab-concurrency 10
+dotnet run -c Release --project ChessBot.MatchRunner -- `
+  --engine "C:\Tools\stockfish\stockfish-windows-x86-64-avx2.exe" `
+  --engine-elo 2300 --time 100 --games 200 --concurrency 1 --quiet `
+  --openings openings/generated-500.epd `
+  --pgn-dir matches/anchor
 ```
 
-Games are independent and run in parallel by default (half the logical processors); the two
-colour-reversed games of an opening always run together on one worker. `--ab-concurrency 1`
-measures at full machine speed, which matters for timed games: concurrent games leave each
-engine less CPU per millisecond.
+Last measured: **~2253 Elo, 95% CI [2204, 2300]** — +83 =7 -110 over 200 games, 36 min at
+concurrency 1.
 
-The same applies to real matches and to the Elo sweep, whose rounds are independent games:
+The opponent was re-pitched from 2100 to 2300 for this measurement. Against 2100 the engine now
+scores far enough above 50% that the interval widens and the limiter is doing most of the talking;
+an anchor is only informative while the opponent is close. The previous **~2058 Elo, CI
+[2009, 2105]** was measured against 2100 and is superseded — both are estimates on Stockfish's
+own `UCI_Elo` scale so the two numbers can be compared as ratings, but `UCI_LimitStrength` is not
+linear, so a change of anchor opponent carries uncertainty the intervals above do not show.
+
+Run-to-run spread is larger than the interval suggests. Three measurements of this same build
+scored 55.8% (60 games, concurrency 1), 49.25% (200 games, concurrency 7) and 43.25% (200 games,
+concurrency 1). They are mutually consistent, but a single 200-game anchor moves by several score
+points between runs, so treat a change under about 50 Elo as unmeasured rather than real.
+
+The opponent Elo, the time control and the opening suite are all fixed parts: change any of them
+and the result is not comparable to the last anchor. `--engine-elo 2300` caps Stockfish through
+`UCI_LimitStrength`, which is a crude limiter and not a FIDE-calibrated rating, so treat the
+absolute number as a repeatable yardstick rather than a rating. The 500-opening suite is used
+rather than the built-in sixteen because 200 games over sixteen openings replays each one six
+times per colour. Everything needed to reproduce the run — the opponent's Elo, the openings and
+their SHA-256, the concurrency, the core count, and whether the process was pinned and promoted —
+is written to `matches/anchor/run_manifest.json`.
+
+`--concurrency 1` is what makes the number an anchor rather than an anchor *at some speed*; a
+larger `--games` narrows the interval, at a cost this table sets:
+
+| Sample | Resolution |
+|---|---|
+| 34 games | ±130 Elo |
+| 200 games | CI [+3, +86] on a ~+44 effect |
+| ~2,000 games | roughly +30 Elo under SPRT |
+| several thousand | +10 Elo |
+
+Ten games cannot distinguish anything below roughly +200 Elo and are not a rating. These are
+figures measured on this project, not borrowed rules of thumb; `docs/ENGINEERING.md` is where
+they are maintained.
+
+### Openings
+
+Games no longer all start from the initial position. Against an external engine both sides are
+near-deterministic there, so two ten-game runs produced only four distinct openings across ten
+games: the runs had a third of the sample size their confidence intervals were computed from.
+
+The default is a built-in set of sixteen mainline openings, four moves deep, each played once
+with each colour and cycled round-robin. `--openings <path>` takes an EPD/FEN list (one position
+per line, `id "..."` naming it) or a PGN file, from which `--opening-plies` (default 8) plies are
+replayed — SAN or long algebraic both work. The schedule is a pure function of the game index, so
+game *n* is always the same position with the same colour, and colours are balanced at every even
+prefix, which is what makes a killed run's partial result usable. `--start-position-only` restores
+the old behaviour deliberately.
+
+A run longer than twice the opening count replays positions, and the runner warns when it will.
+Sixteen openings cover 32 games; for a thousand-game run, generate a suite:
+
+```powershell
+dotnet run -c Release --project ChessBot.MatchRunner -- `
+  --make-openings 500 --openings-out openings/generated-500.epd
+```
+
+Those are balanced positions from a seeded random walk, not book lines: what a calibration or a
+large A/B run needs is many independent, unbiased starts, and sixteen mainlines replayed sixty
+times each are neither. The seed is printed and recorded in the file header, so the suite is
+reproducible without keeping the file. For the rating anchor, where the question is how the engine
+plays real chess, the built-in mainline set is the better instrument.
+
+### A/B: comparing two builds
+
+`ChessBot.MatchRunner --ab` plays two **engine binaries** against each other. An arm is a binary
+plus its UCI options — not a settings flag inside the engine — which is what lets a decision
+actually be made: the winner is kept and the loser is deleted, and nothing is left behind to
+configure.
+
+The workflow is the point:
+
+```powershell
+# 1. Branch, and build the baseline arm from the commit you are comparing against
+git switch -c experiment/king-pst
+dotnet build -c Release ChessBot.Uci
+Copy-Item ChessBot.Uci/bin/Release/net8.0 arms/base -Recurse
+
+# 2. Change exactly one thing, and build that as the other arm
+#    (edit the engine, then:)
+dotnet build -c Release ChessBot.Uci
+Copy-Item ChessBot.Uci/bin/Release/net8.0 arms/change -Recurse
+
+# 3. Run, with SPRT so it stops as soon as the answer is known
+dotnet run -c Release --project ChessBot.MatchRunner -- --ab `
+  --arm-a arms/base/ChessBot.Uci.exe `
+  --arm-b arms/change/ChessBot.Uci.exe `
+  --ab-games 4000 --ab-nodes 50000 --sprt --ab-out ab_runs/king-pst
+
+# 4. Keep or discard. Exit code 0 = adopt B, 4 = discard B, 5 = still unknown.
+```
+
+Change **one** thing per run. Two changes measured together give one number and no way to tell
+which of them earned it.
+
+Each arm reports the commit and build configuration it was built from in its UCI `id name` line,
+and the run records both — plus each binary's SHA-256 — so a result is traceable to two commits.
+An arm built from a working tree with uncommitted changes is flagged as such, because it is not
+traceable to the commit it names.
+
+**SPRT.** `--sprt` tests H0 "B is `--sprt-elo0` stronger" against H1 "B is `--sprt-elo1`
+stronger" (default 0 and 5) at `--sprt-alpha`/`--sprt-beta` (default 0.05 each), and stops the
+run the moment the log-likelihood ratio crosses a bound. The running LLR is printed after every
+game. The test only ever stops at a colour-balanced point: ending mid-pair would leave one arm
+having had White more often, and that bias would land in the score. The LLR is the standard
+normal approximation over per-game scores and treats games as independent, which
+colour-reversed pairs are not quite — that makes it slightly conservative, never over-eager.
+
+**Resumability.** Every finished game is appended to `games.jsonl` and flushed before the next
+one starts, so a killed run keeps everything it finished. Re-running the same command against
+the same `--ab-out` resumes from there; a truncated final line costs one game, not the file.
+Pointing it at a directory holding a *different* run — a rebuilt arm, other openings, another
+budget — is refused rather than silently spliced. Two measurement attempts in this project have
+already been lost to a process dying mid-run.
+
+A run directory holds `run_state.json` (written once, and what resume checks), `games.jsonl`
+(the durable record), one PGN per game, and `ab_report.log` / `ab_result.json`, rewritten after
+every game so a killed run still leaves a readable result.
+
+With `--ab-reference-engine`, each finished game is also analysed for per-arm move loss, so a run
+can say not only which arm won but how much each of them threw away. Median and 95th percentile
+stay per game: an order statistic cannot be combined across games, so the run-level summary
+reports the exact mean and counts and leaves the quantiles to the per-game reports.
+
+Openings, budget and concurrency flags work as they do for matches — `--ab --help` lists them.
+
+### How much of the machine a run may take
+
+The budget decides it, because the two budgets are not comparable.
+
+A **node budget** is deterministic and immune to CPU contention: concurrency 32 gives
+bit-identical results to concurrency 1, just sooner. It defaults to every physical core. A **time
+budget** measures the scheduler as much as the engine, so it defaults to half the physical cores
+and warns above that. Most A/B questions here — evaluation terms, the LMR schedule, piece-square
+tables — are node-budget questions, which is what makes a large machine worth having; only the
+cost questions (the threat term, mobility, SEE pruning) need a time budget and a quiet machine.
+
+Physical cores, counted from the OS topology, not `Environment.ProcessorCount`, which counts
+hyperthreads — two hyperthreads on one core do not run two searches at full speed. There is no
+fixed ceiling: a 32-core machine is allowed to be a 32-core machine.
+
+Timed runs also pin each game's worker to a core and raise the process above Normal. Without it
+the scheduler migrates a search between cores mid-game and its transposition and history tables
+land in a cold cache: one past run's NPS varied between 367k and 2,373k within itself for that
+reason alone. `--no-pin` (`--ab-no-pin` for the A/B harness) turns both off. What the OS actually
+granted is recorded in the manifest, not what was asked for.
 
 ```powershell
 dotnet run -c Release --project ChessBot.MatchRunner -- --engine <path> --games 20 --concurrency 8
 dotnet run -c Release --project ChessBot.EloEvaluator -- sweep --games-per-round 2 --concurrency 2
 ```
 
-Matches and sweeps both play in parallel by default: as many games at once as the machine can
-usefully take — the match's game count, capped at half the logical processors and at 10. Both
-say what they used, because the games are timed and concurrent games leave each engine less CPU
-per move: the contest stays fair, but the strength measured is strength at that speed. Pass
-`--concurrency 1` to measure at the machine's full speed.
+Every run records the concurrency, the budget kind and the core count it saw, because they
+qualify every timing-derived number in it: concurrent games leave each engine less CPU per move,
+so the contest stays fair but the strength measured is strength at that speed. Pass
+`--concurrency 1` to measure at the machine's full speed, and never quote NPS from a run with
+high concurrency.
 
 A node budget makes runs reproducible but gives an expensive evaluation its cost back for
 free; a time budget charges for it. Both readings are needed, and each report states which

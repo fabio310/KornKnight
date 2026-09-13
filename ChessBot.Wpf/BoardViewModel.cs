@@ -492,15 +492,19 @@ public sealed class BoardViewModel : INotifyPropertyChanged, IDisposable
         // So White-positive = result.Evaluation * (ActiveColor==Black ? 1 : -1)
         int displayScore = result.Evaluation * (ActiveColor == Color.Black ? 1 : -1);
 
-        float evalPawns = displayScore / 100f;
+        // Mate detection and the ply-to-moves conversion belong to the score encoding, not to
+        // the view: this used to carry its own 90,000 threshold and its own rounding, which
+        // classified a 95,000 centipawn evaluation as a mate that the UCI layer called a score.
+        var reported = SearchScores.ToReported(displayScore);
+
         string evalStr;
-        if (Math.Abs(displayScore) >= 90000)
+        if (reported.MateInMoves is int mateDist)
         {
-            int mateDist = (100000 - Math.Abs(displayScore) + 1) / 2;
-            evalStr = displayScore > 0 ? $"Mate in {mateDist}" : $"Mated in {mateDist}";
+            evalStr = mateDist > 0 ? $"Mate in {mateDist}" : $"Mated in {-mateDist}";
         }
         else
         {
+            float evalPawns = reported.Cp / 100f;
             evalStr = evalPawns >= 0 ? $"+{evalPawns:F2}" : $"{evalPawns:F2}";
         }
 

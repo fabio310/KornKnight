@@ -242,7 +242,6 @@ public class PositionAnalyzer
             w.WriteLine($"  Iteration node ratio (per-move avg, {ratios.Count} moves): " +
                         $"{(ratios.Count > 0 ? ratios.Average() : 0):F2}");
             w.WriteLine($"  Moves with a cancelled iteration: {cbMoves.Count(m => m.PartialDepth > 0)}");
-            w.WriteLine($"  Moves using partial root result: {cbMoves.Count(m => m.UsedPartialRootResult)}");
             w.WriteLine($"  Unsearched fallback moves    : {cbMoves.Count(m => m.IsUnsearchedFallbackMove)}");
 
             // Where the LMR schedule actually fires. A single reduction total says nothing about
@@ -302,17 +301,13 @@ public class PositionAnalyzer
                 w.WriteLine($"  Nodes       : main {m.MainNodes:N0}  q {m.QNodes:N0}  total {m.Nodes:N0}  " +
                             $"lastIteration {m.LastIterationNodes:N0}");
 
-                // Partial-iteration facts are reported whenever an iteration was cancelled, not
-                // only when its candidate was selected: root coverage explains how much of the
-                // deeper iteration was actually seen regardless of which move was reported.
+                // Root coverage explains how much of the deeper iteration was actually seen
+                // before the budget ran out. The move always comes from the completed depth.
                 if (m.PartialDepth > 0)
                 {
-                    string selection = m.UsedPartialRootResult
-                        ? $"selected (score {(m.PartialScoreIsExact ? "exact" : "lower bound")})"
-                        : "not selected";
                     w.WriteLine($"  Partial     : depth {m.PartialDepth} cancelled, completed depth {m.Depth}, " +
                                 $"root coverage {m.RootMovesCompleted}/{m.RootMoveCount} " +
-                                $"({m.RootCoveragePercent:F1}%), {selection}");
+                                $"({m.RootCoveragePercent:F1}%)");
                 }
                 if (m.IsUnsearchedFallbackMove)
                     w.WriteLine("  Fallback    : budget too small for depth 1 — move is an unevaluated legal fallback");
@@ -414,15 +409,16 @@ public class PositionAnalyzer
     }
 
     /// <summary>
-    /// True when a move's score is a mate score rather than a centipawn evaluation: either the
-    /// external engine reported "score mate N", or the internal engine returned a value in the
-    /// mate band (it encodes mate as ±100000 minus the ply). Such values are not centipawns and
-    /// must never be averaged with them.
+    /// True when a move's score is a mate score rather than a centipawn evaluation. Such values
+    /// are not centipawns and must never be averaged with them.
+    ///
+    /// A mate distance is the only thing that marks one: both score sources — the external
+    /// engine's "score mate N" and ChessBot's own, via <see cref="SearchScores.ToReported"/> —
+    /// now record it in ScoreMate and leave ScoreCp at 0. This used to fall back to a private
+    /// 99,000 threshold on the raw centipawn field, which was a second definition of the mate
+    /// band and disagreed with the score encoding's own.
     /// </summary>
-    private static bool IsMateScored(MoveRecord m)
-        => m.ScoreMate.HasValue || Math.Abs(m.ScoreCp) >= MateScoreThreshold;
-
-    private const int MateScoreThreshold = 99_000;
+    internal static bool IsMateScored(MoveRecord m) => m.ScoreMate.HasValue;
 
     private static double Median(IEnumerable<double> values)
     {
