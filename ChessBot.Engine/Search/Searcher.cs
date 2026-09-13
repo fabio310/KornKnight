@@ -41,6 +41,18 @@ internal class Searcher
     private const int RFP_MAX_DEPTH  = 7;
     private const int RFP_MARGIN     = 75;  // centipawns per ply of remaining depth
 
+    // Late move pruning (move count pruning). Indexed by remaining depth: once this many quiet
+    // moves have been searched at a shallow non-PV node without raising alpha, the rest of the
+    // tail is dropped rather than reduced.
+    //
+    // The curve is 3 + depth², so it opens quadratically: at depth 1 four quiet moves are
+    // enough to conclude the node, at depth 8 sixty-seven are not. That shape is the point —
+    // move ordering is trusted in proportion to how little depth is left to contradict it, and a
+    // flat count would either strangle depth 8 or do nothing at depth 1. Index 0 is unused; the
+    // move loop is never reached at depth 0.
+    private const int LMP_MAX_DEPTH  = 8;
+    private static readonly int[] LMP_COUNT = { 0, 4, 7, 12, 19, 28, 39, 52, 67 };
+
     // Late Move Reduction
     private const int LMR_MIN_DEPTH  = 3;
     private const int LMR_FULL_MOVES = 4;   // search first N moves at full depth before reducing
@@ -127,6 +139,7 @@ internal class Searcher
     private long _lmrReSearches;
     private long _futilitySkips;
     private long _reverseFutilityCutoffs;
+    private long _lateMovePrunes;
     private long _qSeeSkips;
     private long _pvsReSearches;
     private long _aspirationFailLow;
@@ -294,6 +307,7 @@ internal class Searcher
         _lmrReSearches        = 0;
         _futilitySkips        = 0;
         _reverseFutilityCutoffs = 0;
+        _lateMovePrunes       = 0;
         _qSeeSkips            = 0;
         _pvsReSearches        = 0;
         _aspirationFailLow    = 0;
@@ -530,6 +544,7 @@ internal class Searcher
         result.LmrReSearches         = _lmrReSearches;
         result.FutilitySkips         = _futilitySkips;
         result.ReverseFutilityCutoffs = _reverseFutilityCutoffs;
+        result.LateMovePrunes        = _lateMovePrunes;
         result.QSeeSkips             = _qSeeSkips;
         result.PvsReSearches         = _pvsReSearches;
         result.AspirationFailLow     = _aspirationFailLow;
@@ -691,6 +706,12 @@ internal class Searcher
         bool futilityActive = _settings.UseFutility && !inCheck && !pvNode && depth <= 2;
         int  futilityMargin = depth == 1 ? 200 : 450;
 
+        // ── Late move pruning setup ───────────────────────────────────────
+        // Same family, same switch: a move-count threshold is the claim that the ordering is
+        // right about the tail, which is a bet rather than a proof.
+        bool lmpActive    = _settings.UseFutility && !inCheck && !pvNode && depth <= LMP_MAX_DEPTH;
+        int  lmpThreshold = lmpActive ? LMP_COUNT[depth] : int.MaxValue;
+
         // ── Null-move pruning ─────────────────────────────────────────────
         // Conditions: not in check, not a PV node, not already a null-move, sufficient depth,
         // and not in a likely zugzwang (we must have non-pawn material).
@@ -745,10 +766,44 @@ internal class Searcher
             bool isPromotion = (move.MoveType & MoveType.Promotion) != 0;
             bool isQuiet     = !isCapture && !isPromotion;
 
+            // ── Late move pruning: candidate ──────────────────────────────
+            // Enough quiet moves have been tried here without raising alpha, so the rest of the
+            // tail is a candidate to be dropped outright rather than reduced. Only a candidate:
+            // the verdict needs the move made, see below.
+            //
+            // Never while the best score so far is a mate against us — there the tail is the
+            // search for an escape, and the ordering has no opinion worth trusting about which
+            // move saves a lost position. bestScore is always set by the time the threshold is
+            // reached, because the first move at a node is never pruned by anything.
+            bool lmpCandidate = lmpActive && isQuiet && moveCount > lmpThreshold
+                             && bestScore > -MATE_THRESHOLD;
+
             // ── Futility pruning ──────────────────────────────────────────
             if (futilityActive && isQuiet && moveCount > 1 && staticEval + futilityMargin <= alpha)
             {
                 _futilitySkips++;
+                continue;
+            }
+
+            // Record for counter-move heuristic (child nodes read _lastMoveAtPly[ply])
+            _lastMoveAtPly[ply] = move;
+            _board.MakeMove(move);
+
+            // ── Late move pruning ─────────────────────────────────────────
+            // Made first, then judged, because the one quiet move that must never be dropped on
+            // its position in the move list is a check. A mate is delivered by a quiet checking
+            // move as often as by a capture, and nothing in the ordering promotes such a move
+            // before it has ever cut: the mate in "8/k7/5R2/3K3Q/8/8/8/8 w" is 1.Qh7+ Kb8 2.Rf8#,
+            // and pruning the tail on move count alone loses it at depth 4 outright.
+            //
+            // The engine has no "does this move give check" predicate, and the cheapest correct
+            // one is this: make the move and ask the check detector, which is a pattern test plus
+            // at most eight short ray walks. Paid once per pruned move, against a subtree — a
+            // reduced search plus its quiescence — that is an order of magnitude more work.
+            if (lmpCandidate && !_checkDetector.IsInCheck(_board.State.ActiveColor))
+            {
+                _board.UndoMove();
+                _lateMovePrunes++;
                 continue;
             }
 
@@ -778,14 +833,10 @@ internal class Searcher
                 }
             }
 
-            // Recorded only for moves that are actually searched, so a futility-pruned move is
-            // never blamed for failing to cut a search it never had.
+            // Recorded only for moves that are actually searched, so a futility- or move-count-
+            // pruned move is never blamed for failing to cut a search it never had.
             if (isQuiet && quietCount < MAX_QUIETS_TRACKED)
                 _quietsTried[ply][quietCount++] = move;
-
-            // Record for counter-move heuristic (child nodes read _lastMoveAtPly[ply])
-            _lastMoveAtPly[ply] = move;
-            _board.MakeMove(move);
 
             int score;
             if (moveCount == 1)
