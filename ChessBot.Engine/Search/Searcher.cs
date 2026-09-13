@@ -119,6 +119,7 @@ internal class Searcher
     private long _lmrReductions;
     private long _lmrReSearches;
     private long _futilitySkips;
+    private long _qSeeSkips;
     private long _pvsReSearches;
     private long _aspirationFailLow;
     private long _aspirationFailHigh;
@@ -284,6 +285,7 @@ internal class Searcher
         _lmrReductions        = 0;
         _lmrReSearches        = 0;
         _futilitySkips        = 0;
+        _qSeeSkips            = 0;
         _pvsReSearches        = 0;
         _aspirationFailLow    = 0;
         _aspirationFailHigh   = 0;
@@ -518,6 +520,7 @@ internal class Searcher
         result.LmrReductions         = _lmrReductions;
         result.LmrReSearches         = _lmrReSearches;
         result.FutilitySkips         = _futilitySkips;
+        result.QSeeSkips             = _qSeeSkips;
         result.PvsReSearches         = _pvsReSearches;
         result.AspirationFailLow     = _aspirationFailLow;
         result.AspirationFailHigh    = _aspirationFailHigh;
@@ -935,6 +938,48 @@ internal class Searcher
         // Order moves in-place (no allocation) so the best captures/promotions are tried first
         _moveOrdering.OrderMoves(moves, count, default, ply);
 
+        // ── SEE pruning ───────────────────────────────────────────────────
+        // A capture the exchange says loses material is dropped before the search starts.
+        // Quiescence exists to resolve tactics, not to play out every capture on the board: one
+        // that hangs the capturing piece resolves to something worse than standing pat, so the
+        // subtree under it is nodes spent confirming what the exchange already said.
+        //
+        // Done as a pass over the list rather than a test inside the loop, because the verdicts
+        // belong to the ordering's shared buffer and the first child to order its own moves
+        // overwrites them. Compacting here reads them all while they are still this node's.
+        //
+        // Not while in check — there every legal move is an escape, and the alternative to a
+        // losing capture may be being mated. Not for promotions either: the exchange scores the
+        // promoted piece, and a promotion that looks like it hangs a queen is the move a lost
+        // position most often turns on.
+        //
+        // The verdict is the one move ordering already computed to choose this move's band, so
+        // the rule costs no extra exchange at all (see MoveOrdering.SeeWinningAt).
+        if (!inCheck)
+        {
+            int kept = 0;
+            for (int mi = 0; mi < count; mi++)
+            {
+                var candidate = moves[mi];
+
+                if (candidate.MoveType.IsCapture()
+                    && (candidate.MoveType & MoveType.Promotion) == 0
+                    && !_moveOrdering.SeeWinningAt(mi))
+                {
+                    _qSeeSkips++;
+                    continue;
+                }
+
+                moves[kept++] = candidate;
+            }
+
+            count = kept;
+
+            // Every capture available loses material, so standing pat is the answer.
+            if (count == 0)
+                return alpha;
+        }
+
         for (int mi = 0; mi < count; mi++)
         {
             var move = moves[mi];
@@ -951,6 +996,7 @@ internal class Searcher
                 if (standPat + gain + DELTA_MARGIN <= alpha)
                     continue;
             }
+
 
             _board.MakeMove(move);
             int score = -QuiescenceSearch(ply + 1, -beta, -alpha);

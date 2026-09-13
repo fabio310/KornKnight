@@ -468,6 +468,9 @@ public class SearchResult
     public long LmrReductions      { get; set; }
     public long LmrReSearches      { get; set; }
     public long FutilitySkips      { get; set; }
+
+    /// <summary>Captures skipped in quiescence because the exchange said they lose material.</summary>
+    public long QSeeSkips          { get; set; }
     public long PvsReSearches      { get; set; }
     public long AspirationFailLow  { get; set; }
     public long AspirationFailHigh { get; set; }
