@@ -15,10 +15,19 @@ using System.Diagnostics;
 internal class Searcher
 {
     // ── Constants ─────────────────────────────────────────────────────────────
-    // Shared with SearchScores so a protocol layer can decode mate scores without duplicating
-    // the encoding; MAX_PLY doubles as the ply distance a mate score can carry.
+    // Mate encoding is shared with SearchScores so a protocol layer can decode mate scores
+    // without duplicating it.
     private const int MATE_SCORE     = SearchScores.Mate;
-    private const int MAX_PLY        = SearchScores.MateDistanceLimit;
+    private const int MATE_THRESHOLD = SearchScores.MateThreshold;
+
+    // Depth of the ply-indexed search stack: the PV table, PV lengths, per-ply move buffers,
+    // and the last-move/null-move flags are all sized by it, so it is a memory decision and
+    // nothing else. It used to be aliased to SearchScores.MateDistanceLimit, which tied the
+    // stack depth to the width of the mate band — two unrelated quantities — and left the
+    // stack 64 plies deep. That is reachable in a real game: the check extension holds depth
+    // constant across a check/evasion pair, so ply grows at roughly twice the nominal depth,
+    // and a check-heavy endgame already reaches ply 62 in 25 seconds.
+    internal const int MAX_PLY       = 128;
     private const int INFINITY       = MATE_SCORE + 1;
 
     // Null-move pruning
@@ -37,7 +46,6 @@ internal class Searcher
     private int    _lmrFullMoves;
     private double _lmrTableBase;
     private double _lmrTableDivisor;
-    private bool   _useLegacyFlatLmr;
     private bool   _inAspirationRetry;
     private bool   _cancelledDuringAspirationRetry;
 
@@ -47,6 +55,10 @@ internal class Searcher
     private long _lmrPliesSaved;
     private readonly long[] _lmrByDepth      = new long[SearchResult.LmrBucketCount];
     private readonly long[] _lmrByMoveNumber = new long[SearchResult.LmrBucketCount];
+
+    // Check extension budget: the largest number of check extensions one root-to-leaf line may
+    // accumulate.
+    internal const int MAX_EXTENSIONS = 16;
 
     // Delta pruning in quiescence
     private const int DELTA_MARGIN   = 200; // centipawns
@@ -107,58 +119,38 @@ internal class Searcher
     private long _lmrReductions;
     private long _lmrReSearches;
     private long _futilitySkips;
+    private long _qSeeSkips;
     private long _pvsReSearches;
     private long _aspirationFailLow;
     private long _aspirationFailHigh;
     private long _repetitionDraws;
+    private long _checkExtensions;
+    private long _checkExtensionsCapped;
+    private int  _maxExtensionsInLine;
 
     /// <summary>Static evaluation with a call counter, so evaluation cost is measurable.</summary>
     private int EvaluateStatic()
     {
         _evaluationCalls++;
-        return _evaluator.EvaluateFast(_board, _settings.UseThreatEval,
-                                       _settings.UseGamePhaseDevelopment, _settings.UseTaperedEval);
+        return _evaluator.EvaluateFast(_board);
     }
 
-    // ── Partial-iteration root results ────────────────────────────────────────
-    // When an iterative-deepening pass runs out of time it is abandoned, but the root
-    // moves it *did* finish are still valid: a partially searched depth N that has
-    // examined the best few moves usually beats a completed depth N-1. These fields
-    // capture the best root move of the iteration currently in progress, recorded only
-    // when a root move actually raises alpha (so the score is a real improvement rather
-    // than a fail-low bound). Reset at the start of every depth iteration.
-    private Move   _rootPartialMove;
-    private int    _rootPartialScore;
-    private readonly Move[] _rootPartialPv;
-    private int    _rootPartialPvLength;
-
-    // True when _rootPartialScore is an exact value (the move was the new best and did not
-    // itself trigger a beta cutoff at the root). False means the score is only a lower bound
-    // (the root move raised alpha and then immediately failed high against the *current*
-    // aspiration window) — the true value could be higher. Kept separate from ScoreBound
-    // strings used elsewhere because this is specifically about the *partial* root candidate.
-    private bool   _rootPartialIsExact;
-
-    // Number of root moves that finished searching in the iteration currently in progress —
-    // separate from the partial best-move fields above because it must be reported even when
-    // no root move ever raised alpha (i.e. every root move so far failed low).
+    // ── Root coverage of the iteration in progress ────────────────────────────
+    // How far the cancelled iteration got, reported so a caller can see how much of a depth
+    // was actually examined before the budget ran out. Telemetry only: the search always
+    // falls back to the last fully completed iteration.
     private int    _rootMovesCompleted;
     private int    _rootMoveCount;
 
     /// <summary>
-    /// Resets all partial-root-candidate and root-coverage state. Must be called before
-    /// *every* root search attempt — including each aspiration-window retry within the same
-    /// iterative-deepening depth — so that a cancellation during e.g. the fail-high re-search
-    /// cannot report a candidate or coverage count left over from the fail-low attempt that
-    /// preceded it in the same depth.
+    /// Resets root-coverage state. Must be called before *every* root search attempt —
+    /// including each aspiration-window retry within the same iterative-deepening depth — so
+    /// that a cancellation during e.g. the fail-high re-search cannot report a coverage count
+    /// left over from the fail-low attempt that preceded it in the same depth.
     /// </summary>
     private void ResetRootPartialState()
     {
-        _rootPartialMove     = default;
-        _rootPartialScore     = -INFINITY;
-        _rootPartialPvLength = 0;
-        _rootPartialIsExact  = false;
-        _rootMovesCompleted  = 0;
+        _rootMovesCompleted = 0;
     }
 
     /// <summary>Precomputed LMR reductions indexed by [depth, moveNumber]; built in the constructor.</summary>
@@ -172,6 +164,18 @@ internal class Searcher
     // so NMP only blocks two *consecutive* null moves, rather than disabling null-move
     // pruning for an entire subtree once a real move is made deeper in the tree.
     private readonly bool[] _nullMoveAtPly;
+
+    // Quiet moves already searched at each ply, so that when one of them finally causes a cutoff
+    // the others can be told they failed. Fixed per-ply buffers keep the node allocation-free; a
+    // node that searches more quiet moves than this before cutting simply stops recording them,
+    // which costs a few malus updates and nothing else.
+    private const int MAX_QUIETS_TRACKED = 64;
+    private readonly Move[][] _quietsTried;
+
+    // Check extensions accumulated on the path from the root down to each ply. Indexed by ply
+    // because the search is depth-first: a node writes its own slot before it recurses, so the
+    // slot below it always holds the count for the line currently being walked.
+    private readonly int[] _extensionsAtPly;
 
     // ── Constructor ───────────────────────────────────────────────────────────
     public Searcher(Board board, Evaluator evaluator, ZobristHasher zobristHasher)
@@ -188,12 +192,16 @@ internal class Searcher
         _checkDetector  = new CheckDetector(board);
         _lastMoveAtPly  = new Move[MAX_PLY];
         _nullMoveAtPly  = new bool[MAX_PLY];
+        _extensionsAtPly = new int[MAX_PLY];
+
+        _quietsTried = new Move[MAX_PLY][];
+        for (int i = 0; i < MAX_PLY; i++)
+            _quietsTried[i] = new Move[MAX_QUIETS_TRACKED];
 
         _moveBuffers = new Move[MAX_PLY][];
         for (int i = 0; i < MAX_PLY; i++)
             _moveBuffers[i] = new Move[MoveGenerator.MaxMoves];
 
-        _rootPartialPv = new Move[MAX_PLY];
 
         // ── Late Move Reduction table ─────────────────────────────────────────
         // R = 0.75 + ln(depth)·ln(moveNumber) / 2.25, the standard logarithmic schedule.
@@ -237,11 +245,6 @@ internal class Searcher
         _ct              = ct;
 
         // ── Controlled A/B override of the LMR schedule (see SearchSettings.LmrBaseOverride) ──
-        // UseLegacyFlatLmr reproduces the pre-table schedule exactly and takes precedence over
-        // the parametric overrides, so the current schedule can be compared against the
-        // implementation it actually replaced.
-        _useLegacyFlatLmr = _settings.UseLegacyFlatLmr;
-
         double wantBase    = _settings.LmrBaseOverride    ?? LMR_BASE_DEFAULT;
         double wantDivisor = _settings.LmrDivisorOverride ?? LMR_DIVISOR_DEFAULT;
         int    wantFullMoves = _settings.LmrFullMovesOverride ?? LMR_FULL_MOVES;
@@ -282,15 +285,19 @@ internal class Searcher
         _lmrReductions        = 0;
         _lmrReSearches        = 0;
         _futilitySkips        = 0;
+        _qSeeSkips            = 0;
         _pvsReSearches        = 0;
         _aspirationFailLow    = 0;
         _aspirationFailHigh   = 0;
         _repetitionDraws      = 0;
+        _checkExtensions      = 0;
+        _checkExtensionsCapped = 0;
+        _maxExtensionsInLine  = 0;
 
         var result      = new SearchResult();
         int prevScore   = 0;
 
-        _moveOrdering.Clear();
+        _moveOrdering.NewSearch();
         _transpositionTable.NewSearch();
 
         // ── Root terminal-position check ───────────────────────────────────
@@ -337,7 +344,19 @@ internal class Searcher
 
             int score;
 
-            if (depth <= 4 || !_settings.UseAspiration)
+            // A mate-band prevScore gets a full window, not an aspiration one. A ±50 window
+            // around ±99900 sits inside the mate band, where the true score is a different mate
+            // distance thousands of units away: it would fail every time and walk the whole
+            // 1x → 4x → infinite ladder for nothing.
+            //
+            // This used to be guaranteed instead by an early exit at the bottom of the loop that
+            // stopped iterating the moment a mate was found, so no mate score ever survived into
+            // the next iteration's window. That exit made the engine report and play whichever
+            // mate it happened to find first rather than the shortest one — in
+            // "8/k7/5R2/3K3Q/8/8/8/8 w" it stopped at depth 4 with a mate in 3, while the mate in
+            // 2 only becomes visible at depth 7 — so it is gone, and the guard it stood in for is
+            // written out explicitly here.
+            if (depth <= 4 || !_settings.UseAspiration || SearchScores.IsMateScore(prevScore))
             {
                 // Full window for early depths — aspiration windows unreliable here
                 score = NegamaxSearch(0, depth, -INFINITY, INFINITY);
@@ -405,26 +424,6 @@ internal class Searcher
                 result.RootCoveragePercent = _rootMoveCount > 0
                     ? 100.0 * _rootMovesCompleted / _rootMoveCount : 0;
 
-                // If enabled, and the iteration already found a root move that beats the
-                // previous (completed) iteration's score, that move can replace the completed
-                // iteration's answer. A fail-low re-search cannot get here: its scores never
-                // exceed prevScore. This is a heuristic substitution — the partial score and
-                // the completed score come from different depths and not every root move was
-                // searched at the partial depth, so it must remain independently switchable.
-                if (_settings.UsePartialRootResult &&
-                    result.DepthAchieved > 0 &&
-                    _rootPartialMove != default &&
-                    _rootPartialScore > prevScore)
-                {
-                    result.BestMove              = _rootPartialMove;
-                    result.Evaluation            = _rootPartialScore;
-                    result.UsedPartialRootResult = true;
-                    result.PartialScoreIsExact   = _rootPartialIsExact;
-
-                    result.PrincipalVariation.Clear();
-                    for (int i = 0; i < _rootPartialPvLength; i++)
-                        result.PrincipalVariation.Add(_rootPartialPv[i]);
-                }
                 break;
             }
 
@@ -472,13 +471,9 @@ internal class Searcher
 
             // Check hard cap at end of iteration too
             if (_searchTimer.ElapsedMilliseconds > timeLimit) break;
-
-            // Early exit if a forced mate is found
-            if (Math.Abs(score) >= MATE_SCORE - MAX_PLY) break;
         }
 
-        // Extremely small node/time budgets can expire before even depth 1 completes and
-        // before UsePartialRootResult ever finds a root move that raises alpha, leaving
+        // Extremely small node/time budgets can expire before even depth 1 completes, leaving
         // BestMove at its default value. A legal move must still be returned — fall back to
         // the first move produced by move ordering (root move 0) and flag this explicitly so
         // callers never mistake it for an evaluated result.
@@ -525,10 +520,14 @@ internal class Searcher
         result.LmrReductions         = _lmrReductions;
         result.LmrReSearches         = _lmrReSearches;
         result.FutilitySkips         = _futilitySkips;
+        result.QSeeSkips             = _qSeeSkips;
         result.PvsReSearches         = _pvsReSearches;
         result.AspirationFailLow     = _aspirationFailLow;
         result.AspirationFailHigh    = _aspirationFailHigh;
         result.RepetitionDraws       = _repetitionDraws;
+        result.CheckExtensions       = _checkExtensions;
+        result.CheckExtensionsCapped = _checkExtensionsCapped;
+        result.MaxCheckExtensionsInLine = _maxExtensionsInLine;
         result.HashFull       = _transpositionTable.GetFillPermille();
 
         return result;
@@ -536,8 +535,14 @@ internal class Searcher
 
     // ── Negamax with alpha-beta ───────────────────────────────────────────────
 
-    private int NegamaxSearch(int ply, int depth, int alpha, int beta)
+    internal int NegamaxSearch(int ply, int depth, int alpha, int beta)
     {
+        // Stack bound first, before anything ply-indexed. Every array below is sized MAX_PLY,
+        // so this has to be the first statement in the function: it used to sit seventy lines
+        // down, under the draw checks, which made it unreachable — the _pvLength write on the
+        // next line threw before the guard could return.
+        if (ply >= MAX_PLY) return EvaluateStatic();
+
         _nodesSearched++;
         _pvLength[ply] = 0;
 
@@ -562,6 +567,20 @@ internal class Searcher
         }
 
         bool pvNode = beta - alpha > 1;
+
+        // ── Draw ──────────────────────────────────────────────────────────
+        // Before the transposition probe, not after it. The Zobrist hash covers the pieces, the
+        // side to move, castling rights and the en passant file — it carries neither the
+        // repetition history nor the halfmove clock. Two positions with the same key can
+        // therefore be a win in one game and a dead draw in another, and a probe that answers
+        // first hands back the stored win: the engine repeats away a won game, or walks past a
+        // saving perpetual because the table already "knows" the position is lost.
+        //
+        // A draw is decided by the board in front of us, so it is cheap and exact, and it has to
+        // win over anything remembered.
+        if (_board.State.IsFiftyMoveRuleDraw) return 0;
+        if (_board.HasInsufficientMaterial) return 0;
+        if (IsDrawByRepetition(RepetitionsToDraw(ply))) { _repetitionDraws++; return 0; }
 
         // ── Transposition table lookup ─────────────────────────────────────
         // Use the board's incremental hash (O(1)) instead of recomputing from scratch (O(32)).
@@ -605,16 +624,26 @@ internal class Searcher
             }
         }
 
-        // ── Draw / horizon ────────────────────────────────────────────────
-        if (_board.State.IsFiftyMoveRuleDraw) return 0;
-        if (IsDrawByRepetition()) { _repetitionDraws++; return 0; }
-        if (ply >= MAX_PLY) return EvaluateStatic();
-
         // ── Check detection ───────────────────────────────────────────────
         bool inCheck = _checkDetector.IsInCheck(_board.State.ActiveColor);
 
-        // Check extension: add 1 ply when in check to avoid missing short tactics
-        if (inCheck && _settings.UseCheckExtension) depth++;
+        // Check extension: add 1 ply when in check to avoid missing short tactics, up to a fixed
+        // budget per root-to-leaf line. Without the budget the extension gives back exactly the
+        // ply it costs, so remaining depth never falls along a check/evasion sequence and the
+        // line's length is bounded only by the search stack. The budget is per line rather than
+        // per search because a global one would be exhausted by the first check-heavy subtree
+        // and leave the rest of the tree unextended.
+        int  extensionsSoFar = ply > 0 ? _extensionsAtPly[ply - 1] : 0;
+        bool wantExtend      = inCheck && _settings.UseCheckExtension;
+        bool extend          = wantExtend && extensionsSoFar < MAX_EXTENSIONS;
+        if (extend)          { depth++; _checkExtensions++; }
+        else if (wantExtend) { _checkExtensionsCapped++; }
+
+        // Every node records its running total before recursing, so a child reads its parent's
+        // slot rather than having a counter threaded through six recursive call sites.
+        int extensions = extensionsSoFar + (extend ? 1 : 0);
+        _extensionsAtPly[ply] = extensions;
+        if (extensions > _maxExtensionsInLine) _maxExtensionsInLine = extensions;
 
         if (depth <= 0)
             return _settings.UseQuiescence
@@ -666,10 +695,11 @@ internal class Searcher
         Move lastOpponentMove = ply > 0 ? _lastMoveAtPly[ply - 1] : default;
         _moveOrdering.OrderMoves(moves, legalCount, ttMove, lastOpponentMove, ply);
 
-        int bestScore = -INFINITY;
-        var bestMove  = moves[0];
-        var ttFlag2   = TranspositionTable.ScoreFlag.UpperBound;
-        int moveCount = 0;
+        int bestScore  = -INFINITY;
+        var bestMove   = moves[0];
+        var ttFlag2    = TranspositionTable.ScoreFlag.UpperBound;
+        int moveCount  = 0;
+        int quietCount = 0;   // quiet moves actually searched at this node, for the history malus
 
         for (int moveIndex = 0; moveIndex < legalCount; moveIndex++)
         {
@@ -694,28 +724,17 @@ internal class Searcher
             if (_settings.UseLmr
                 && !inCheck && depth >= LMR_MIN_DEPTH && moveCount > _lmrFullMoves && isQuiet)
             {
-                if (_useLegacyFlatLmr)
-                {
-                    // The pre-table schedule, reproduced exactly: depth-independent, and with
-                    // no PV-node relief. Kept verbatim so an A/B run compares against the real
-                    // previous behaviour rather than a re-parameterised version of the new one.
-                    reduction = moveCount > 8 ? 2 : 1;
-                    reduction = Math.Clamp(reduction, 0, depth - 2);
-                }
-                else
-                {
-                    reduction = _lmrTable[Math.Min(depth, MAX_PLY - 1),
-                                          Math.Min(moveCount, LMR_MAX_MOVES - 1)];
+                reduction = _lmrTable[Math.Min(depth, MAX_PLY - 1),
+                                      Math.Min(moveCount, LMR_MAX_MOVES - 1)];
 
-                    // PV nodes carry the principal variation; reduce them one ply less so the
-                    // main line keeps its accuracy while the rest of the tree is cut harder.
-                    if (pvNode) reduction--;
+                // PV nodes carry the principal variation; reduce them one ply less so the
+                // main line keeps its accuracy while the rest of the tree is cut harder.
+                if (pvNode) reduction--;
 
-                    // Leave at least one real ply below the reduction: the null-window probe has
-                    // to be a search, not a jump straight into quiescence, or the full-depth
-                    // re-search that recovers accuracy is never triggered.
-                    reduction = Math.Clamp(reduction, 0, depth - 2);
-                }
+                // Leave at least one real ply below the reduction: the null-window probe has
+                // to be a search, not a jump straight into quiescence, or the full-depth
+                // re-search that recovers accuracy is never triggered.
+                reduction = Math.Clamp(reduction, 0, depth - 2);
 
                 if (reduction > 0)
                 {
@@ -725,6 +744,11 @@ internal class Searcher
                     _lmrByMoveNumber[Math.Min(moveCount, SearchResult.LmrBucketCount - 1)]++;
                 }
             }
+
+            // Recorded only for moves that are actually searched, so a futility-pruned move is
+            // never blamed for failing to cut a search it never had.
+            if (isQuiet && quietCount < MAX_QUIETS_TRACKED)
+                _quietsTried[ply][quietCount++] = move;
 
             // Record for counter-move heuristic (child nodes read _lastMoveAtPly[ply])
             _lastMoveAtPly[ply] = move;
@@ -783,18 +807,6 @@ internal class Searcher
                     alpha   = score;
                     ttFlag2 = TranspositionTable.ScoreFlag.Exact;
 
-                    // Root move that raised alpha: remember it so the iteration is still
-                    // worth something if we run out of time before finishing it.
-                    if (ply == 0)
-                    {
-                        _rootPartialMove     = move;
-                        _rootPartialScore    = score;
-                        _rootPartialPvLength = _pvLength[0];
-                        _rootPartialIsExact  = true;
-                        for (int i = 0; i < _rootPartialPvLength; i++)
-                            _rootPartialPv[i] = _pvTable[0, i];
-                    }
-
                     if (alpha >= beta)
                     {
                         _betaCutoffs++;
@@ -804,18 +816,30 @@ internal class Searcher
                         {
                             _moveOrdering.RecordKillerMove(move, ply);
                             _moveOrdering.RecordHistoryMove(move, depth);
+
+                            // The quiet moves searched ahead of this one were ordered above it and
+                            // did not cut, so they were ranked too highly. Saying so is what stops
+                            // the table from only ever learning which moves are good.
+                            //
+                            // Not at a node in check: there the quiet moves are forced evasions,
+                            // and which evasion cuts depends entirely on where the check came
+                            // from, which a from/to table cannot represent. Blaming the others
+                            // writes noise into the squares a king most often flees to — measured
+                            // at -1.4 ply on check-heavy positions with no corpus gain to show
+                            // for it.
+                            if (!inCheck)
+                            {
+                                for (int q = 0; q < quietCount; q++)
+                                    if (_quietsTried[ply][q] != move)
+                                        _moveOrdering.RecordHistoryFailure(_quietsTried[ply][q], depth);
+                            }
+
                             // Counter-move: remember this quiet move as the best response to
                             // the opponent's last move (feeds the counter-move heuristic)
                             if (ply > 0)
                                 _moveOrdering.RecordCounterMove(_lastMoveAtPly[ply - 1], move);
                         }
                         ttFlag2 = TranspositionTable.ScoreFlag.LowerBound;
-
-                        // The root move that just triggered a beta cutoff is only known to be
-                        // *at least* this good against the current aspiration window — the
-                        // window was too narrow to prove an exact value, so the partial
-                        // candidate captured above must be flagged as a bound, not exact.
-                        if (ply == 0) _rootPartialIsExact = false;
                         break;
                     }
                 }
@@ -824,9 +848,9 @@ internal class Searcher
 
         // Adjust mate scores before storing (ply-relative) so they're consistent across tree depth
         int scoreToStore = bestScore;
-        if (bestScore > MATE_SCORE - MAX_PLY)  // Mate in N for us
+        if (bestScore > MATE_THRESHOLD)  // Mate in N for us
             scoreToStore = bestScore + ply;
-        else if (bestScore < -MATE_SCORE + MAX_PLY)  // Mate in N for opponent
+        else if (bestScore < -MATE_THRESHOLD)  // Mate in N for opponent
             scoreToStore = bestScore - ply;
 
         _transpositionTable.Store(hash, depth, scoreToStore, ttFlag2, bestMove);
@@ -836,8 +860,14 @@ internal class Searcher
 
     // ── Quiescence search ─────────────────────────────────────────────────────
 
-    private int QuiescenceSearch(int ply, int alpha, int beta)
+    internal int QuiescenceSearch(int ply, int alpha, int beta)
     {
+        // Same stack bound as NegamaxSearch, and for the same reason it is the first statement:
+        // _moveBuffers[ply] below is sized MAX_PLY. Quiescence is where the bound is actually
+        // reached, because it has no depth counter at all — a check evasion sequence recurses
+        // on ply alone until this returns.
+        if (ply >= MAX_PLY) return EvaluateStatic();
+
         _qnodesSearched++;
         if (ply > _selDepth) _selDepth = ply;
 
@@ -861,6 +891,12 @@ internal class Searcher
             return 0;
         }
 
+        // Quiescence is where a dead draw is usually entered: it searches captures, and the
+        // last capture is what empties the board. Without this the stand-pat below scores the
+        // surviving lone minor as material won, which is how a drawn ending gets played for
+        // fifty moves.
+        if (_board.HasInsufficientMaterial) return 0;
+
         // Check detection (cached instance – no allocation)
         bool inCheck = _checkDetector.IsInCheck(_board.State.ActiveColor);
 
@@ -872,8 +908,6 @@ internal class Searcher
             if (standPat >= beta)  return beta;
             if (standPat > alpha)  alpha = standPat;
         }
-
-        if (ply >= MAX_PLY - 1) return standPat;
 
         // Generate moves into the pre-allocated per-ply buffer (no allocation). When not in check,
         // only tactical moves (captures/en passant/promotions) are generated: quiet moves can never
@@ -904,23 +938,65 @@ internal class Searcher
         // Order moves in-place (no allocation) so the best captures/promotions are tried first
         _moveOrdering.OrderMoves(moves, count, default, ply);
 
+        // ── SEE pruning ───────────────────────────────────────────────────
+        // A capture the exchange says loses material is dropped before the search starts.
+        // Quiescence exists to resolve tactics, not to play out every capture on the board: one
+        // that hangs the capturing piece resolves to something worse than standing pat, so the
+        // subtree under it is nodes spent confirming what the exchange already said.
+        //
+        // Done as a pass over the list rather than a test inside the loop, because the verdicts
+        // belong to the ordering's shared buffer and the first child to order its own moves
+        // overwrites them. Compacting here reads them all while they are still this node's.
+        //
+        // Not while in check — there every legal move is an escape, and the alternative to a
+        // losing capture may be being mated. Not for promotions either: the exchange scores the
+        // promoted piece, and a promotion that looks like it hangs a queen is the move a lost
+        // position most often turns on.
+        //
+        // The verdict is the one move ordering already computed to choose this move's band, so
+        // the rule costs no extra exchange at all (see MoveOrdering.SeeWinningAt).
+        if (!inCheck)
+        {
+            int kept = 0;
+            for (int mi = 0; mi < count; mi++)
+            {
+                var candidate = moves[mi];
+
+                if (candidate.MoveType.IsCapture()
+                    && (candidate.MoveType & MoveType.Promotion) == 0
+                    && !_moveOrdering.SeeWinningAt(mi))
+                {
+                    _qSeeSkips++;
+                    continue;
+                }
+
+                moves[kept++] = candidate;
+            }
+
+            count = kept;
+
+            // Every capture available loses material, so standing pat is the answer.
+            if (count == 0)
+                return alpha;
+        }
+
         for (int mi = 0; mi < count; mi++)
         {
             var move = moves[mi];
 
-            // Delta pruning (captures only — a hopeless capture can't raise alpha).
-            // IsCapture() includes en passant; its victim is always a pawn (the target square
-            // itself is empty), so the material gain is computed explicitly below.
-            if (!inCheck && move.MoveType.IsCapture())
+            // Delta pruning: a tactical move that cannot raise alpha even with a generous margin
+            // is skipped. The gain is the full material swing — the same figure move ordering
+            // scored the move by — so a capture-promotion is charged at the victim plus the
+            // promotion rather than the victim alone. Charging exd8=Q at 320 instead of 1,120
+            // pruned it whenever standPat + 520 fell under alpha, which is exactly the lost
+            // position with a passer on the seventh that the promotion exists to rescue.
+            if (!inCheck && move.MoveType.IsTactical())
             {
-                Piece victim = _board.GetPiece(move.To);
-                if ((move.MoveType & MoveType.EnPassant) != 0)
-                    victim = new Piece(_board.State.ActiveColor.Opposite(), PieceType.Pawn);
-
-                int gain = victim.Type.MaterialValue();
+                int gain = MoveOrdering.MaterialSwing(_board, move);
                 if (standPat + gain + DELTA_MARGIN <= alpha)
                     continue;
             }
+
 
             _board.MakeMove(move);
             int score = -QuiescenceSearch(ply + 1, -beta, -alpha);
@@ -963,24 +1039,42 @@ internal class Searcher
     /// </summary>
     private int AdjustMateScore(int ttScore, int currentPly)
     {
-        if (ttScore > MATE_SCORE - MAX_PLY)  // Mate in N for us
+        if (ttScore > MATE_THRESHOLD)  // Mate in N for us
             return ttScore - currentPly;
-        if (ttScore < -MATE_SCORE + MAX_PLY)  // Mate in N for opponent
+        if (ttScore < -MATE_THRESHOLD)  // Mate in N for opponent
             return ttScore + currentPly;
         return ttScore;
     }
 
     /// <summary>
-    /// Detects a draw by threefold repetition via the position hash history.
+    /// How many earlier occurrences of the current position count as a draw at
+    /// <paramref name="ply"/>.
+    ///
+    /// Inside the tree, one is enough. A position reached for the second time is already a
+    /// draw for search purposes: whichever side wants it can repeat the cycle once more, so
+    /// scoring it 0 is exact, and it is seen four plies earlier than a threefold test sees it.
+    /// Those four plies are the difference between finding a saving perpetual and walking past
+    /// it.
+    ///
+    /// The root keeps the real rule. NegamaxSearch is entered at ply 0 on the position the
+    /// engine has to move from; returning 0 there because it once occurred before would
+    /// abandon the search without a move, and the game is not drawn until the third occurrence
+    /// is actually claimed.
+    /// </summary>
+    private static int RepetitionsToDraw(int ply) => ply == 0 ? 2 : 1;
+
+    /// <summary>
+    /// Detects a repetition draw via the position hash history: true once the current position
+    /// appears <paramref name="occurrencesNeeded"/> times among the earlier positions.
     /// Uses indexed array access (no List<T>, no ToArray() allocation) and iterates
     /// newest→oldest, stopping at the first irreversible move (capture) to bound the search.
     /// Zobrist hashes encode the active color, so only same-color-to-move positions
     /// can ever match, making the color check implicit.
     /// </summary>
-    private bool IsDrawByRepetition()
+    private bool IsDrawByRepetition(int occurrencesNeeded)
     {
         int count = _board.HistoryCount; // preallocated array – O(1) indexed access
-        if (count < 4) return false;
+        if (count < 2 * occurrencesNeeded) return false;
 
         ulong currentHash     = _board.ZobristHash;
         int   repetitionCount = 0;
@@ -995,7 +1089,7 @@ internal class Searcher
             if (entry.Hash == currentHash)
             {
                 repetitionCount++;
-                if (repetitionCount >= 2) // 3 identical positions (current + 2 in history)
+                if (repetitionCount >= occurrencesNeeded)
                     return true;
             }
 

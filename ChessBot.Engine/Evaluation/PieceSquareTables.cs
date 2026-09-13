@@ -79,17 +79,27 @@ internal static class PieceSquareTables
         new[] { -20, -10, -10, -5, -5, -10, -10, -20 }
     };
 
-    // King PST (keep safe in opening/middlegame, centralize in endgame)
+    /// <summary>
+    /// Midgame king table: shelter behind the castled pawns, and a penalty that deepens the
+    /// further the king walks up the board.
+    ///
+    /// Like every table here it is White-perspective and mirrored for Black, so it must fall
+    /// away monotonically from rank 1 rather than being symmetric about the middle. It was
+    /// previously written by mirroring the bottom four ranks into the top four, which scored a
+    /// White king on g8 the same +30 as a White king castled on g1 — an invitation to march the
+    /// king into the enemy camp with queens still on. That was harmless only because kings were
+    /// excluded from the piece-square accumulators entirely and this table was never read.
+    /// </summary>
     private static readonly int[][] King =
     {
         new[] { 20, 30, 10, 0, 0, 10, 30, 20 },
         new[] { 20, 20, 0, 0, 0, 0, 20, 20 },
         new[] { -10, -20, -20, -20, -20, -20, -20, -10 },
         new[] { -20, -30, -30, -40, -40, -30, -30, -20 },
-        new[] { -20, -30, -30, -40, -40, -30, -30, -20 },
-        new[] { -10, -20, -20, -20, -20, -20, -20, -10 },
-        new[] { 20, 20, 0, 0, 0, 0, 20, 20 },
-        new[] { 20, 30, 10, 0, 0, 10, 30, 20 }
+        new[] { -30, -40, -40, -50, -50, -40, -40, -30 },
+        new[] { -30, -40, -40, -50, -50, -40, -40, -30 },
+        new[] { -30, -40, -40, -50, -50, -40, -40, -30 },
+        new[] { -30, -40, -40, -50, -50, -40, -40, -30 }
     };
 
     /// <summary>
@@ -127,11 +137,9 @@ internal static class PieceSquareTables
     // board has emptied. Evaluator interpolates between them on the 24-point material phase, so
     // the transition is continuous rather than a threshold the search can see itself crossing.
     //
-    // Only the endgame side is new: the midgame tables and values are exactly the ones the
-    // engine already used, so at full phase a tapered evaluation reproduces the untapered score
-    // to the centipawn. That is deliberate — it makes the change a pure addition at the opening
-    // end, and confines any measured difference to positions where material has actually left
-    // the board.
+    // At full phase the interpolation returns the midgame set alone, so the tables above still
+    // describe the opening exactly as they always did; the endgame set only takes weight as
+    // material actually leaves the board.
 
     /// <summary>
     /// Endgame pawn table: the advance gradient is much steeper than in the midgame, because a
@@ -217,9 +225,14 @@ internal static class PieceSquareTables
     };
 
     /// <summary>
-    /// Endgame king table. Unused while kings stay out of the PST accumulators (the evaluator
-    /// scores the endgame king through its own centralisation term), kept here so the endgame
-    /// set is complete and the two are not silently different shapes.
+    /// Endgame king table: the king is a piece again once the queens are off, so it wants the
+    /// middle of the board and the corners are close to lost.
+    ///
+    /// This replaces the evaluator's separate centralisation term, which applied a 0-9 point
+    /// bonus per king behind a hard "non-king material below 1,000 centipawns" threshold. The
+    /// threshold was a step the search could see itself crossing — one capture flipped the king's
+    /// score by the full amount — and it described the same idea twice, in a shape the taper
+    /// already expresses continuously and with the weight the transition actually deserves.
     /// </summary>
     private static readonly int[][] KingEndgame =
     {
@@ -264,8 +277,8 @@ internal static class PieceSquareTables
     /// prospect; a knight loses value as the board opens and it can no longer reach both wings,
     /// while a rook gains it. Bishops gain slightly, and the queen is close to flat.
     ///
-    /// The midgame values remain <see cref="PieceTypeExtensions.MaterialValue"/>, unchanged, so
-    /// a tapered evaluation at full phase equals the untapered one exactly.
+    /// The midgame values are <see cref="PieceTypeExtensions.MaterialValue"/>, which the
+    /// interpolation returns on its own at full phase.
     /// </summary>
     public static int EndgameMaterialValue(PieceType type) => type switch
     {

@@ -48,16 +48,16 @@ public class SearchTests
     {
         var engine = new ChessEngine();
 
-        // Position where White can checkmate in 1: Qb7#
-        engine.LoadFen("6k1/5Q2/6K1/8/8/8/8/8 w - - 0 1");
+        // Position where White can checkmate in 1: Qa8# (Qg7# also mates)
+        engine.LoadFen("6k1/Q7/6K1/8/8/8/8/8 w - - 0 1");
 
         var settings = new SearchSettings { MaxDepth = 2, MaxTimeMs = 1000 };
         var result = engine.FindBestMove(settings);
 
-        // Best move should be Qb7 (checkmate)
+        // Best move should be Qa8 (checkmate)
         var expectedMove = new Move(
-            Square.FromAlgebraic("f7"),
-            Square.FromAlgebraic("b7"),
+            Square.FromAlgebraic("a7"),
+            Square.FromAlgebraic("a8"),
             MoveType.Quiet
         );
 
@@ -113,7 +113,12 @@ public class SearchTests
         Assert.True(result.NodesSearched > 0);
         Assert.NotEmpty(result.PrincipalVariation);
         Assert.True(result.ElapsedTimeMs >= 0);
-        Assert.True(result.NodesPerSecond > 0);
+
+        // A depth-2 search from the starting position routinely finishes inside one millisecond,
+        // and the elapsed clock has millisecond resolution — so a rate is only defined when the
+        // clock actually moved. Asserting it unconditionally made this test fail whenever the
+        // process was warm enough to beat the timer.
+        Assert.True(result.ElapsedTimeMs > 0 ? result.NodesPerSecond > 0 : result.NodesPerSecond == 0);
     }
 
     [Fact]
@@ -163,5 +168,24 @@ public class SearchTests
         // Should respect time limit (give 500ms buffer for OS scheduling overhead)
         Assert.True(stopwatch.ElapsedMilliseconds < 1000, 
             $"Expected elapsed time < 1000ms, got {stopwatch.ElapsedMilliseconds}ms");
+    }
+
+    [Fact]
+    public void FindBestMove_ReportsTheShortestMate_NotTheFirstOneFound()
+    {
+        // Iterative deepening used to break out of the loop the moment any mate score appeared.
+        // A mate that shows up at a shallow depth is not necessarily the shortest one: here the
+        // search reaches a mate in 3 at depth 4, while the mate in 2 (1.Qh7+ K~8 2.Rf8#) only
+        // becomes visible at depth 7 — quiescence does not generate the quiet mating rook move,
+        // so nothing shorter can be seen until the main search is deep enough to play it. The
+        // engine therefore announced, and would have played, a slower mate than it had found.
+        var engine = new ChessEngine();
+        engine.LoadFen("8/k7/5R2/3K3Q/8/8/8/8 w - - 0 1");
+
+        var result = engine.FindBestMove(new SearchSettings { MaxDepth = 8, MaxTimeMs = 30_000 });
+
+        Assert.Equal(2, SearchScores.ToReported(result.Evaluation).MateInMoves);
+        Assert.True(result.DepthAchieved >= 7,
+            $"the search must keep deepening past the first mate it sees, stopped at depth {result.DepthAchieved}");
     }
 }
