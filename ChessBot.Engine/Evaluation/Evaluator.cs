@@ -31,9 +31,11 @@ internal class Evaluator
         int midgame = 0;
         int endgame = 0;
 
-        // Single-pass over all pieces: material + PST + pawn file counts
+        // Single-pass over all pieces: material + PST + pawn file counts + pawn occupancy
         Span<int> whitePawnFiles = stackalloc int[8];
         Span<int> blackPawnFiles = stackalloc int[8];
+        ulong whitePawns = 0UL;
+        ulong blackPawns = 0UL;
 
         int pieceCount = board.GetAllPiecesInto(_pieceBuffer);
         for (int i = 0; i < pieceCount; i++)
@@ -63,8 +65,8 @@ internal class Evaluator
             // Track pawn files for structure evaluation
             if (piece.Type == PieceType.Pawn)
             {
-                if (piece.Color == Color.White) whitePawnFiles[square.File]++;
-                else                            blackPawnFiles[square.File]++;
+                if (piece.Color == Color.White) { whitePawnFiles[square.File]++; whitePawns |= 1UL << square.Index; }
+                else                            { blackPawnFiles[square.File]++; blackPawns |= 1UL << square.Index; }
             }
         }
 
@@ -73,6 +75,9 @@ internal class Evaluator
 
         // Pawn structure
         score += EvaluatePawnStructureFromCounts(whitePawnFiles, blackPawnFiles);
+
+        // Passed pawns, from the occupancy this scan just built.
+        score += PassedPawns.Evaluate(whitePawns, blackPawns, phase);
 
         // Opening development
         score += EvaluateOpeningDevelopment(board, phase);
@@ -105,6 +110,11 @@ internal class Evaluator
 
         // Pawn structure from the incrementally maintained per-file pawn counts.
         score += EvaluatePawnStructureFromCounts(board.WhitePawnFileCounts, board.BlackPawnFileCounts);
+
+        // Passed pawns from the incrementally maintained pawn occupancy — the same two bitboards
+        // Evaluate() rebuilds by scanning, so the two agree by construction.
+        score += PassedPawns.Evaluate(board.WhitePawnBitboard, board.BlackPawnBitboard,
+                                      board.IncrementalPhase);
 
         // Opening development. The phase comes from the Board's incremental accumulator rather
         // than a scan — the same quantity Evaluate() sums piece by piece.
