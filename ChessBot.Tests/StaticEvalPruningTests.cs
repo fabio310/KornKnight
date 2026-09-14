@@ -25,8 +25,8 @@ public class StaticEvalPruningTests
 
     /// <summary>
     /// Nodes above beta by more than the margin must produce static-null-move cutoffs. Without
-    /// this the rule
-    /// could be dead code and the A/B match would be measuring a build identical to its baseline.
+    /// this the rule could be dead code and the A/B match would be comparing a build with its
+    /// own baseline.
     /// </summary>
     [Fact]
     public void ReverseFutilityPruningFires()
