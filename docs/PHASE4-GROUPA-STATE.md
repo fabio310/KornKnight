@@ -197,3 +197,42 @@ said; here the scaling was calibrated against a table's nominal ceiling rather
 than the range it actually occupies. Both produce a change that measures as
 nothing. Before scaling anything by a table, measure what the table actually
 holds.
+
+---
+
+## A5 — Deeper futility with a depth-proportional margin: INCONCLUSIVE
+
+| Comparison | Result | Score | Elo | SPRT |
+|---|---|---|---|---|
+| A5 vs A2 `4fbf5eb` | +360 =251 −389 | 48.55% ± 2.68% | −10.1 ± 18.7 | **Continue** at 1,000 |
+
+**TIME budget**, 50 ms/move, concurrency 7 of 14, LLR −0.696 inside
+[−2.944, 2.944]. Run directory `ab_runs/a5-futility`. Not adopted; the baseline
+stayed at A2.
+
+Cap 2 → 6, margins 200/450 flat → 150 + 175 per ply. The `improving` gate the
+group prompt specified for this task was dropped with A3, so this arm is the depth
+cap and the margin curve only.
+
+Inconclusive, with the point estimate on the wrong side. Unlike A4 the trend here
+does not favour it, so a longer run is a weaker bet.
+
+### It needed the same check exemption late move pruning did
+
+Deepening the cap put futility pruning in reach of quiet checking moves that a
+depth-2 rule never saw. `ShortForcedMateIsStillFound` failed: in
+`8/k7/5R2/3K3Q/8/8/8/8 w` the search returned a **mate in 3 instead of the mate in
+2**, having pruned 1.Qh7+.
+
+The fix is A2's, in the same place — make the move, then judge it — and the two
+rules now share one check-detector call, so the exemption costs nothing beyond
+what A2 was already paying. A move both rules would drop is counted against late
+move pruning as the broader of the two.
+
+**This is now a pattern rather than an incident, and it is the group's most
+transferable finding.** Two of the three move-dropping rules written here pruned
+away a mate delivered by a quiet check, each caught by an existing mate test
+rather than by review. The engine has no `GivesCheck` predicate — the group prompt
+lists it among the techniques verified absent — so every such rule has to pay for
+a make/unmake to get the answer. If more move-dropping rules are coming, that
+predicate stops being an optimisation and becomes infrastructure.
