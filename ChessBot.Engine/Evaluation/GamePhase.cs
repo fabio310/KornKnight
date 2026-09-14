@@ -42,14 +42,4 @@ internal static class GamePhase
     /// opening is not a meaningful thing for a term to scale by.
     /// </summary>
     public static int Clamp(int phase) => Math.Clamp(phase, 0, Max);
-
-    /// <summary>
-    /// Scales <paramref name="score"/> by how much opening is left: the full value at the
-    /// starting array, nothing once the pieces are gone, and a smooth ramp between.
-    ///
-    /// Integer division truncates towards zero, so a score and its negation scale to exact
-    /// opposites — the evaluation stays colour-symmetric, which a rounding rule that favoured
-    /// one direction would silently break.
-    /// </summary>
-    public static int ScaleByOpening(int score, int phase) => score * Clamp(phase) / Max;
 }

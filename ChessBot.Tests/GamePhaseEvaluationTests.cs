@@ -8,21 +8,22 @@ using ChessBot.Engine.Types;
 using Xunit;
 
 /// <summary>
-/// Gates for the development term, whose weight is a function of the material game phase.
+/// Gates for the material game phase, and for the property that the evaluation is a function of
+/// the position and nothing else.
 ///
-/// The defect being fixed is that the evaluation was not a function of the position: the
-/// development term read the move number, which the Zobrist hash does not encode. Two positions
-/// with identical pieces then evaluate differently, a transposition-table entry holds a score
-/// that was only valid at one move number, and a search crossing move 20 sees the score improve
-/// because plies elapsed rather than because anything happened on the board.
+/// The defect these were written for is that the evaluation once read the move number, which the
+/// Zobrist hash does not encode. Two positions with identical pieces then evaluate differently, a
+/// transposition-table entry holds a score that was only valid at one move number, and a search
+/// crossing move 20 sees the score improve because plies elapsed rather than because anything
+/// happened on the board.
 ///
-/// The central test here is therefore the one that evaluates the same FEN at different move
-/// numbers and demands the same answer.
+/// The rule that read the move number was the development term, which is now gone; the property
+/// it violated is not, so the tests that evaluate the same FEN at different move numbers stay.
 /// </summary>
 public class GamePhaseEvaluationTests
 {
-    // An opening position: both kings uncastled on e1/e8, every minor piece still at home, so
-    // both halves of the development term are active and any move-number dependence shows up.
+    // An opening position with the full starting array, so every phase-scaled term is at full
+    // weight and any move-number dependence would show up.
     private const string OpeningFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - {0} {1}";
 
     private static Board BoardAt(string fenTemplate, int halfmoveClock, int fullmoveNumber)
@@ -42,7 +43,7 @@ public class GamePhaseEvaluationTests
     [InlineData(50, 20)]    // the legacy cut-off
     [InlineData(60, 21)]    // one move past it
     [InlineData(99, 40)]
-    public void PhaseDevelopment_ScoresTheSamePositionIdenticallyAtEveryMoveNumber(
+    public void Evaluation_ScoresTheSamePositionIdenticallyAtEveryMoveNumber(
         int halfmoveClock, int fullmoveNumber)
     {
         var evaluator = new Evaluator();
@@ -59,7 +60,7 @@ public class GamePhaseEvaluationTests
         "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQ1BKR w kq - {0} {1}";
 
     [Fact]
-    public void PhaseDevelopment_ScoresTheAsymmetricPositionIdenticallyAtEveryMoveNumber()
+    public void Evaluation_ScoresTheAsymmetricPositionIdenticallyAtEveryMoveNumber()
     {
         var evaluator = new Evaluator();
 
@@ -70,7 +71,7 @@ public class GamePhaseEvaluationTests
     }
 
     [Fact]
-    public void PhaseDevelopment_SurvivesATranspositionToTheSamePosition()
+    public void Evaluation_SurvivesATranspositionToTheSamePosition()
     {
         // Reaching one position by two routes of different lengths must not change its score —
         // this is the property the transposition table silently assumes.
@@ -89,92 +90,6 @@ public class GamePhaseEvaluationTests
         Assert.Equal(
             evaluator.Evaluate(direct.GetBoardSnapshot()),
             evaluator.Evaluate(viaShuffle.GetBoardSnapshot()));
-    }
-
-    // ── The term still does its job ──────────────────────────────────────────
-
-    /// <summary>
-    /// Evaluates a FEN with the phase-based development term, White-positive.
-    ///
-    /// Every position passed here has White to move, and the evaluator returns a side-to-move
-    /// relative score, so no sign correction is needed.
-    /// </summary>
-    private static int Eval(string fen)
-    {
-        var engine = new ChessEngine();
-        engine.LoadFen(fen);
-        return new Evaluator().Evaluate(engine.GetBoardSnapshot());
-    }
-
-    // Two positions identical in every piece except where White's king stands: e1 (uncastled)
-    // versus g1 (castled). The king is in the piece-square accumulator now, so that part of the
-    // difference is subtracted out (as in the knight pair above) to leave the development term
-    // alone — which is what these tests are about.
-    private const string KingOnE1Fen = "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 0 1";
-    private const string KingOnG1Fen = "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQ1BKR w kq - 0 1";
-
-    /// <summary>The development term's own contribution to a difference between two positions.</summary>
-    private static int DevelopmentDelta(string from, string to)
-        => (Eval(to) - Eval(from)) - (PstOf(to) - PstOf(from));
-
-    [Fact]
-    public void PhaseDevelopment_StillRewardsCastling()
-    {
-        // A full starting array is phase 24, so the term applies at full weight.
-        Assert.Equal(40, DevelopmentDelta(KingOnE1Fen, KingOnG1Fen));
-    }
-
-    [Fact]
-    public void PhaseDevelopment_StillRewardsDeveloping()
-    {
-        // Knight home on b1 versus developed to c3. This pair does differ in piece-square value,
-        // so that part is subtracted out to leave the development term alone.
-        const string KnightHomeFen      = "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 0 1";
-        const string KnightDevelopedFen = "rnbqkbnr/pppppppp/8/8/8/2N2N2/PPPPPPPP/R1BQKB1R w KQkq - 0 1";
-
-        int scoreDelta = Eval(KnightDevelopedFen) - Eval(KnightHomeFen);
-        int pstDelta   = PstOf(KnightDevelopedFen) - PstOf(KnightHomeFen);
-
-        // The b1 knight's home-square penalty is 30, at full phase weight.
-        Assert.Equal(30, scoreDelta - pstDelta);
-    }
-
-    [Fact]
-    public void PhaseDevelopment_FadesAsMaterialLeavesTheBoard()
-    {
-        // The same castling difference, measured with a full army and with only rooks left.
-        // Rooks and pawns only: phase 8 of 24, so the term keeps a third of its weight.
-        const string EndgameKingOnE1Fen = "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1";
-        const string EndgameKingOnG1Fen = "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R4RK1 w kq - 0 1";
-
-        int openingDelta = DevelopmentDelta(KingOnE1Fen, KingOnG1Fen);
-        int endgameDelta = DevelopmentDelta(EndgameKingOnE1Fen, EndgameKingOnG1Fen);
-
-        Assert.Equal(40, openingDelta);            // phase 24/24
-        Assert.Equal(40 * 8 / 24, endgameDelta);   // phase  8/24
-
-        Assert.True(endgameDelta > 0 && endgameDelta < openingDelta,
-            $"the term should fade rather than switch off: {openingDelta} → {endgameDelta}");
-    }
-
-    /// <summary>
-    /// The material-and-piece-square part of the score, interpolated on the phase exactly as the
-    /// evaluation does it, so a comparison can subtract out what is not under test.
-    ///
-    /// Reading the midgame accumulator alone was right only while the evaluation was untapered.
-    /// Now it over-subtracts at any phase below 24: the castling pair below moves the midgame
-    /// king table by 30 and the endgame one by 0, so at phase 8 the score only sees 10 of it.
-    /// </summary>
-    private static int PstOf(string fen)
-    {
-        var engine = new ChessEngine();
-        engine.LoadFen(fen);
-        var board = engine.GetBoardSnapshot();
-
-        return PieceSquareTables.Interpolate(
-            board.IncrementalMaterialScore + board.IncrementalPstScore,
-            board.IncrementalEndgameMaterialScore + board.IncrementalEndgamePstScore,
-            board.IncrementalPhase);
     }
 
     // ── The phase itself ─────────────────────────────────────────────────────
@@ -249,18 +164,6 @@ public class GamePhaseEvaluationTests
         // opening" is not a thing a term should scale by.
         Assert.Equal(GamePhase.Max, GamePhase.Clamp(GamePhase.Max + 8));
         Assert.Equal(0, GamePhase.Clamp(-1));
-        Assert.Equal(100, GamePhase.ScaleByOpening(100, GamePhase.Max + 8));
-    }
-
-    [Fact]
-    public void ScaleByOpening_IsColourSymmetric()
-    {
-        // Integer division must not favour one sign, or mirroring a position would change the
-        // White-minus-Black difference.
-        for (int phase = 0; phase <= GamePhase.Max; phase++)
-            for (int score = -120; score <= 120; score += 7)
-                Assert.Equal(-GamePhase.ScaleByOpening(score, phase),
-                              GamePhase.ScaleByOpening(-score, phase));
     }
 
     // ── The two evaluation paths stay in step ────────────────────────────────
@@ -271,7 +174,7 @@ public class GamePhaseEvaluationTests
     [InlineData("r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10")]
     [InlineData("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1")]
     [InlineData("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1")]
-    public void EvaluateFast_MatchesEvaluate_WithPhaseDevelopment(string fen)
+    public void EvaluateFast_MatchesEvaluate(string fen)
     {
         var engine = new ChessEngine();
         engine.LoadFen(fen);

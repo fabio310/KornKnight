@@ -79,9 +79,6 @@ internal class Evaluator
         // Passed pawns, from the occupancy this scan just built.
         score += PassedPawns.Evaluate(whitePawns, blackPawns, phase);
 
-        // Opening development
-        score += EvaluateOpeningDevelopment(board, phase);
-
         // Negamax convention: return score relative to the side to move.
         int sideSign = board.State.ActiveColor == Color.White ? 1 : -1;
         return score * sideSign;
@@ -89,11 +86,9 @@ internal class Evaluator
 
     /// <summary>
     /// Fast static evaluation used on the search hot path (leaf, stand-pat, null-move staticEval).
-    /// Numerically identical to <see cref="Evaluate"/>, but the material, piece-square-table, and
-    /// pawn-file terms are read from the Board's incrementally maintained make/unmake eval state
-    /// instead of being recomputed by a full piece scan every node. Only the opening-development
-    /// term still requires board context, and it is computed the same way as
-    /// <see cref="Evaluate"/>.
+    /// Numerically identical to <see cref="Evaluate"/>, but every term is read from the Board's
+    /// incrementally maintained make/unmake eval state instead of being recomputed by a full piece
+    /// scan every node.
     ///
     /// Nothing here scans the board any more. The hanging-piece term was the last caller that
     /// needed the piece list, so removing it took the per-node board scan with it.
@@ -115,10 +110,6 @@ internal class Evaluator
         // Evaluate() rebuilds by scanning, so the two agree by construction.
         score += PassedPawns.Evaluate(board.WhitePawnBitboard, board.BlackPawnBitboard,
                                       board.IncrementalPhase);
-
-        // Opening development. The phase comes from the Board's incremental accumulator rather
-        // than a scan — the same quantity Evaluate() sums piece by piece.
-        score += EvaluateOpeningDevelopment(board, board.IncrementalPhase);
 
         // Negamax convention: return score relative to the side to move.
         int sideSign = board.State.ActiveColor == Color.White ? 1 : -1;
@@ -211,71 +202,4 @@ internal class Evaluator
     /// </summary>
     private int GetPieceSquareTableValue(Piece piece, Square square)
         => PieceSquareTables.Value(piece.Color, piece.Type, square);
-
-    /// <summary>
-    /// Evaluates development quality:
-    ///   • Penalises minor pieces still on their home squares (encourages developing ALL pieces)
-    ///   • Penalises the king lingering in the centre (encourages castling)
-    ///
-    /// The evaluation is symmetric: equal positions score 0.
-    /// Penalties are intentionally mild so that tactical play still dominates.
-    ///
-    /// How much the term applies is a function of the material phase: full weight with the
-    /// starting array on the board, fading smoothly to nothing as pieces come off. It depends
-    /// only on the position, so it survives a transposition and cannot change as a search
-    /// descends.
-    ///
-    /// The rule this replaced read the move number instead — full value to move 20, nothing
-    /// after, with the king penalty switched on at move 10 — which made the evaluation a
-    /// function of something the position does not contain. The Zobrist hash does not include
-    /// the move number, so a transposition entry carried a score that was only valid at the move
-    /// number it was stored at; inside a search tree crossing move 20 the score jumped by up to
-    /// 100 cp because plies elapsed, which paid the engine to shuffle rather than develop; and
-    /// the same position reached by a longer route evaluated differently from itself.
-    /// </summary>
-    /// <param name="phase">The position's 24-point material phase (see <see cref="GamePhase"/>).</param>
-    private static int EvaluateOpeningDevelopment(Board board, int phase)
-    {
-        int score = 0;
-
-        // — Undeveloped minor pieces on home squares —
-        // Each piece still on its starting square gets a fixed penalty.
-        // This rewards developing ALL minor pieces, not just repeatedly moving one.
-
-        // White minor pieces (rank 0)
-        Piece wb1 = board.GetPiece(new Square(1, 0)); // b1 knight
-        Piece wg1 = board.GetPiece(new Square(6, 0)); // g1 knight
-        Piece wc1 = board.GetPiece(new Square(2, 0)); // c1 bishop
-        Piece wf1 = board.GetPiece(new Square(5, 0)); // f1 bishop
-
-        if (wb1.Color == Color.White && wb1.Type == PieceType.Knight) score -= 30;
-        if (wg1.Color == Color.White && wg1.Type == PieceType.Knight) score -= 30;
-        if (wc1.Color == Color.White && wc1.Type == PieceType.Bishop) score -= 20;
-        if (wf1.Color == Color.White && wf1.Type == PieceType.Bishop) score -= 20;
-
-        // Black minor pieces (rank 7)
-        Piece bb8 = board.GetPiece(new Square(1, 7)); // b8 knight
-        Piece bg8 = board.GetPiece(new Square(6, 7)); // g8 knight
-        Piece bc8 = board.GetPiece(new Square(2, 7)); // c8 bishop
-        Piece bf8 = board.GetPiece(new Square(5, 7)); // f8 bishop
-
-        if (bb8.Color == Color.Black && bb8.Type == PieceType.Knight) score += 30;
-        if (bg8.Color == Color.Black && bg8.Type == PieceType.Knight) score += 30;
-        if (bc8.Color == Color.Black && bc8.Type == PieceType.Bishop) score += 20;
-        if (bf8.Color == Color.Black && bf8.Type == PieceType.Bishop) score += 20;
-
-        // — King safety: penalise an uncastled king in the centre —
-        // The rule this replaced waited until move 10 to give the engine time to castle first.
-        // There is nothing to wait for here: material barely changes in ten moves, so no phase
-        // threshold could reproduce that gate. The penalty simply applies while there is still an
-        // army on the board to be afraid of, and fades with it.
-        Square wKing = board.GetKingPosition(Color.White);
-        Square bKing = board.GetKingPosition(Color.Black);
-
-        // King on e-file and on its original rank = still on starting square, not castled
-        if (wKing.File == 4 && wKing.Rank == 0) score -= 40;
-        if (bKing.File == 4 && bKing.Rank == 7) score += 40;
-
-        return GamePhase.ScaleByOpening(score, phase);
-    }
 }
