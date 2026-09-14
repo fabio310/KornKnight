@@ -174,6 +174,12 @@ public class GamePhaseEvaluationTests
     [InlineData("r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10")]
     [InlineData("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1")]
     [InlineData("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1")]
+    // Rooks doubled on an open file, a rook on the seventh, and a bishop pair against two knights
+    // — the positions that exercise the terms whose state is maintained incrementally rather than
+    // read from the piece list.
+    [InlineData("2r3k1/pp2Rppp/8/8/8/8/PP3PPP/2R3K1 w - - 0 1")]
+    [InlineData("4k3/8/8/8/8/2n2n2/1B2B3/4K3 w - - 0 1")]
+    [InlineData("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1")]
     public void EvaluateFast_MatchesEvaluate(string fen)
     {
         var engine = new ChessEngine();

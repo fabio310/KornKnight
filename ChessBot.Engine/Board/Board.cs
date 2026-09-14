@@ -158,6 +158,18 @@ public class Board
     private ulong _whitePawnBitboard;
     private ulong _blackPawnBitboard;
 
+    // Rook occupancy, on the same add/remove path and for the same reason as the pawn bitboards:
+    // whether a rook stands on an open file, a half-open one, or the seventh rank is a question
+    // about squares, and walking the piece list to find at most four rooks per side would cost
+    // more per node than the one bit operation that keeps these current.
+    private ulong _whiteRookBitboard;
+    private ulong _blackRookBitboard;
+
+    // Bishops per colour. The bishop pair is a property of the count alone, so this is an int
+    // rather than a bitboard — one increment per bishop entering or leaving the board.
+    private int _whiteBishopCount;
+    private int _blackBishopCount;
+
     /// <summary>White-positive incremental material score. Consumed by Evaluator.EvaluateFast.</summary>
     internal int IncrementalMaterialScore => _evalMaterial;
 
@@ -194,6 +206,18 @@ public class Board
 
     /// <summary>Black pawn occupancy as a bitboard (bit n = square index n), maintained incrementally.</summary>
     internal ulong BlackPawnBitboard => _blackPawnBitboard;
+
+    /// <summary>White rook occupancy as a bitboard (bit n = square index n), maintained incrementally.</summary>
+    internal ulong WhiteRookBitboard => _whiteRookBitboard;
+
+    /// <summary>Black rook occupancy as a bitboard (bit n = square index n), maintained incrementally.</summary>
+    internal ulong BlackRookBitboard => _blackRookBitboard;
+
+    /// <summary>How many bishops White has on the board, maintained incrementally.</summary>
+    internal int WhiteBishopCount => _whiteBishopCount;
+
+    /// <summary>How many bishops Black has on the board, maintained incrementally.</summary>
+    internal int BlackBishopCount => _blackBishopCount;
 
     public Board()
     {
@@ -370,6 +394,16 @@ public class Board
             if (color == Color.White) { _whitePawnFiles[square.File]++; _whitePawnBitboard |= 1UL << square.Index; }
             else                      { _blackPawnFiles[square.File]++; _blackPawnBitboard |= 1UL << square.Index; }
         }
+        else if (type == PieceType.Rook)
+        {
+            if (color == Color.White) _whiteRookBitboard |= 1UL << square.Index;
+            else                      _blackRookBitboard |= 1UL << square.Index;
+        }
+        else if (type == PieceType.Bishop)
+        {
+            if (color == Color.White) _whiteBishopCount++;
+            else                      _blackBishopCount++;
+        }
     }
 
     /// <summary>
@@ -391,13 +425,23 @@ public class Board
             if (color == Color.White) { _whitePawnFiles[square.File]--; _whitePawnBitboard &= ~(1UL << square.Index); }
             else                      { _blackPawnFiles[square.File]--; _blackPawnBitboard &= ~(1UL << square.Index); }
         }
+        else if (type == PieceType.Rook)
+        {
+            if (color == Color.White) _whiteRookBitboard &= ~(1UL << square.Index);
+            else                      _blackRookBitboard &= ~(1UL << square.Index);
+        }
+        else if (type == PieceType.Bishop)
+        {
+            if (color == Color.White) _whiteBishopCount--;
+            else                      _blackBishopCount--;
+        }
     }
 
     /// <summary>
-    /// Rebuilds the incremental evaluation accumulators (material, PST, total material, per-file
-    /// pawn counts) from a full scan of the compact piece lists. Called after
-    /// ResetToStartingPosition/LoadFromFen populate the board, so the incremental state is exactly
-    /// consistent with the position before any make/unmake occurs.
+    /// Rebuilds the incremental evaluation accumulators (material, PST, phase, per-file pawn
+    /// counts, pawn and rook occupancy, bishop counts) from a full scan of the compact piece
+    /// lists. Called after ResetToStartingPosition/LoadFromFen populate the board, so the
+    /// incremental state is exactly consistent with the position before any make/unmake occurs.
     /// </summary>
     private void RecomputeIncrementalEval()
     {
@@ -410,6 +454,10 @@ public class Board
         Array.Clear(_blackPawnFiles, 0, 8);
         _whitePawnBitboard = 0UL;
         _blackPawnBitboard = 0UL;
+        _whiteRookBitboard = 0UL;
+        _blackRookBitboard = 0UL;
+        _whiteBishopCount = 0;
+        _blackBishopCount = 0;
 
         for (int color = 0; color < 2; color++)
         {
@@ -882,6 +930,10 @@ public class Board
         Array.Copy(_blackPawnFiles, copy._blackPawnFiles, 8);
         copy._whitePawnBitboard = _whitePawnBitboard;
         copy._blackPawnBitboard = _blackPawnBitboard;
+        copy._whiteRookBitboard = _whiteRookBitboard;
+        copy._blackRookBitboard = _blackRookBitboard;
+        copy._whiteBishopCount = _whiteBishopCount;
+        copy._blackBishopCount = _blackBishopCount;
 
         // Note: History is not copied; the copy starts fresh
         return copy;
