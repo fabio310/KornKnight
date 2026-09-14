@@ -126,3 +126,74 @@ gives: a move that was never searched must not be blamed for failing to cut.
 Two in `StaticEvalPruningTests` — the rule fires in a closed wide position, and it
 is off under `PlainAlphaBeta`. The mate above is the regression test, and it is an
 existing one that failed first.
+
+---
+
+## A1 + A2 measured cumulatively against the pre-A1 build
+
+| Comparison | Result | Score | Elo | SPRT |
+|---|---|---|---|---|
+| **A1+A2 vs base `40f7462`** | +261 =85 −112 | 66.27% ± 3.86% | **+117.3 ± 30.1** | **AcceptH1** at 458 |
+
+**TIME budget**, 50 ms/move, concurrency 7 of 14. Run directory
+`ab_runs/a1a2-cumulative`.
+
+This is the figure to quote for the group, not the sum of +70.0 and +38.3. Both of
+those stopped at an SPRT bound, so both are biased away from zero, and Elo does
+not compose additively in any case. The group prompt asked for A1+A2+A3 as a
+triple; A3 was rejected, so this is the pair.
+
+---
+
+## A4 — History-scaled reductions: INCONCLUSIVE
+
+| Comparison | Result | Score | Elo | SPRT |
+|---|---|---|---|---|
+| A4 vs A2 `4fbf5eb` | +388 =265 −347 | 52.05% ± 2.66% | +14.3 ± 18.5 | **Continue** at 1,000 |
+
+**TIME budget**, 50 ms/move, concurrency 7 of 14, LLR 0.663 inside
+[−2.944, 2.944]. Run directory `ab_runs/a4-histlmr`. Not adopted; the baseline
+stayed at A2.
+
+Inconclusive at 1,000 games, which is the finding — not "worthless". At 52.05%
+the LLR was rising at a rate that would have reached the accept bound somewhere
+near 4,000–4,500 games, so the sample cap is the reason there is no verdict here,
+and this is the arm most worth re-running at 4,000 if the group is revisited.
+
+### The divisor was scaled to the wrong number, and the test caught it
+
+The first attempt divided the history score by 5,000 — a fraction of
+`MoveOrdering.HistoryMax`, which is 16,384. That made the rule a near-no-op, and
+the targeted test failed on exactly the assertion written to catch it: history
+never once *deepened* a reduction.
+
+A histogram of the history score of every LMR-eligible move, two positions at
+depth 10, says why:
+
+| Band | closed position | middlegame |
+|---|---|---|
+| < −250 | 0% | 0% |
+| −250 … −100 | 10.3% | 0% |
+| −100 … 0 | 65.3% | 44.2% |
+| exactly 0 | 14.4% | 43.9% |
+| 0 … 250 | 8.4% | 11.2% |
+| > 250 | 1.6% | 0.7% |
+
+98% of entries sit inside ±250 and none reach −250. Everything divided by 5,000
+truncated to zero.
+
+The entries stay small because of the update, not the ceiling. The bonus is
+`min(depth², 1200)` — 9 at depth 3, 100 at depth 10 — and the gravity term only
+pulls an entry toward ±16,384 when the updates are consistently signed. A from/to
+table shared across piece types is churned by both bonus and malus, so it
+random-walks near zero in steps of tens.
+
+The divisor is now **100**, set from that measured range: the ±250 tails reach the
+±2 clamp and the mass between −100 and +100 is left alone.
+
+**The lesson generalises, and it is the same one the passed pawns taught in a
+different costume.** There the term amplified what the piece-square table already
+said; here the scaling was calibrated against a table's nominal ceiling rather
+than the range it actually occupies. Both produce a change that measures as
+nothing. Before scaling anything by a table, measure what the table actually
+holds.
