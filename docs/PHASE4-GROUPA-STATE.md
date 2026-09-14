@@ -236,3 +236,80 @@ rather than by review. The engine has no `GivesCheck` predicate — the group pr
 lists it among the techniques verified absent — so every such rule has to pay for
 a make/unmake to get the answer. If more move-dropping rules are coming, that
 predicate stops being an optimisation and becomes infrastructure.
+
+---
+
+## A6 — Razoring: INCONCLUSIVE
+
+| Comparison | Result | Score | Elo | SPRT |
+|---|---|---|---|---|
+| A6 vs A2 `4fbf5eb` | +368 =265 −367 | 50.05% ± 2.66% | +0.3 ± 18.5 | **Continue** at 1,000 |
+
+**TIME budget**, 50 ms/move, concurrency 7 of 14, LLR −0.121. Run directory
+`ab_runs/a6-razoring`. Not adopted.
+
+Dead level — one game's difference in a thousand. The group prompt called this the
+least certain item and said to accept a negative result without retuning twice,
+and the structural reason it gave is borne out: futility pruning already drops the
+quiet moves at these depths when alpha is this far above the static score, which
+leaves a node of captures and promotions, which is what quiescence searches. There
+was very little left for razoring to contribute, and it contributed very little.
+
+---
+
+## Where the group leaves the engine
+
+Adopted: **A1** and **A2**. Working branch `FabioK/Morestuffdone`.
+
+**+117.3 ± 30.1 Elo** cumulatively against the pre-group build, measured directly
+rather than summed. Full suite **545 passed** (540 at the start of the group, plus
+5 new pruning tests).
+
+Rejected or inconclusive: A3 (rejected outright), A4, A5, A6 (all inconclusive at
+1,000 games). Their code is deleted; nothing was left behind a flag.
+
+### What the group cost per node, since two of the adopted changes are not free
+
+| Build | Time for 12M nodes | Per node |
+|---|---|---|
+| base `40f7462` | 9.27 s | — |
+| A1 | 7.78 s | −16% |
+| A1+A2 | 10.47 s | +13% vs base |
+
+The adopted pair is 13% more expensive per node than the build it replaced and
+beats it by 117 Elo on a clock. Anyone re-measuring anything in this region must
+use a time budget; a node budget would report a different and flattering number.
+
+### Three things worth carrying forward
+
+**1. Every move-dropping rule needs a check exemption, and the engine cannot give
+one cheaply.** Two of the three such rules written here pruned away a mate
+delivered by a quiet check — A2 lost a mate in 2 outright, A5 turned it into a
+mate in 3 — and both were caught by existing mate tests rather than by review. A
+real `GivesCheck` predicate would turn a make/unmake per candidate into a pattern
+test, and it is now infrastructure rather than an optimisation.
+
+**2. Calibrate a scaling against what a table holds, not against its ceiling.**
+A4's first divisor was a fraction of `HistoryMax` (16,384) when 98% of the entries
+it reads sit inside ±250. It was a near-no-op, and only the both-directions
+assertion in its test caught it. This is the passed-pawn lesson in a new costume:
+there a term amplified what the piece-square table already said, here a scaling
+was calibrated against a number the table never reaches.
+
+**3. A "cost-neutral" premise is a measurement, not an assumption.** The group
+prompt's budget choice rested on everything here being cost-neutral. It took ten
+minutes to check and it was false for the largest adopted change.
+
+### If the group is revisited, in order of expected value
+
+1. **A4 at 4,000 games.** +14.3 with the LLR rising steadily at 1,000; it was on
+   pace to reach the accept bound near 4,000–4,500. This is the only arm the
+   sample cap plausibly cost a verdict.
+2. **A3 split in half.** It moved four rules at once in two opposing senses —
+   widening margins makes pruning more conservative, the extra LMR ply makes
+   reduction more aggressive. −22.9 says the combination is bad, not which half.
+   The LMP-threshold halving is the first suspect: the most aggressive of the four
+   and the one the prompt's own bullets did not ask for.
+3. **A5's two halves separately.** The depth cap and the margin curve moved
+   together; at −10.1 the curve is the more likely culprit, since it made depth 1
+   and 2 more aggressive as a side effect of fixing the shape.
