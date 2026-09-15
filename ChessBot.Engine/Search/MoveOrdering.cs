@@ -60,11 +60,16 @@ internal class MoveOrdering
     private const int HistoryBonusMax = 1200;
 
     /// <summary>
-    /// Counter-move heuristic: best counter to opponent's last move.
-    /// Indexed as [from.Index][to.Index] of the last opponent move.
-    /// Stores the best counter-move.
+    /// Counter-move heuristic: best counter to the opponent's last move. Indexed as
+    /// [side to move, from.Index, to.Index of the last opponent move].
+    ///
+    /// The colour dimension is the same defect the history table had, in a table consulted far
+    /// less often: without it, the counter White learned to 1...e5 was offered to Black as its own
+    /// reply to 1.e4. One slot cannot hold both, so each side's writes overwrote the other's and
+    /// the move offered at 150,000 was as often as not a move the side to move could not even
+    /// play.
     /// </summary>
-    private readonly Move[,] _counterMoves;
+    private readonly Move[,,] _counterMoves;
 
     /// <summary>
     /// Pre-allocated scoring buffer for zero-allocation in-place sorting.
@@ -97,7 +102,7 @@ internal class MoveOrdering
         _killerMoves1 = new Move[Searcher.MAX_PLY];
         _killerMoves2 = new Move[Searcher.MAX_PLY];
         _history = new int[PieceIndexCount, 64];
-        _counterMoves = new Move[64, 64];
+        _counterMoves = new Move[2, 64, 64];
     }
 
     /// <summary>
@@ -113,9 +118,14 @@ internal class MoveOrdering
     /// </summary>
     public void OrderMoves(Move[] moves, int count, Move ttMove, Move lastOpponentMove, int ply)
     {
+        // The side to move is the same for every move at this node, and GameState is a struct, so
+        // it is read once here rather than copied per move inside the scoring loop.
+        int side = (int)_board.State.ActiveColor;
+
         // Score every move into the pre-allocated buffer (avoids List<(Move,int)> allocation)
         for (int i = 0; i < count; i++)
-            _moveScores[i] = CalculateMoveScore(moves[i], ttMove, lastOpponentMove, ply, out _seeWinning[i]);
+            _moveScores[i] = CalculateMoveScore(moves[i], ttMove, lastOpponentMove, ply, side,
+                                                out _seeWinning[i]);
 
         // Insertion sort descending by score (O(N²) but N ≤ ~35 per node, fastest for small N).
         // The exchange verdict rides along with its move, so a caller can still ask about the move
@@ -167,7 +177,7 @@ internal class MoveOrdering
     /// Calculates a score for move ordering; higher is searched earlier. See the class summary
     /// for the bands.
     /// </summary>
-    private int CalculateMoveScore(Move move, Move ttMove, Move lastOpponentMove, int ply,
+    private int CalculateMoveScore(Move move, Move ttMove, Move lastOpponentMove, int ply, int side,
                                    out bool seeWinning)
     {
         seeWinning = false;
@@ -219,7 +229,7 @@ internal class MoveOrdering
         // Counter-move heuristic: good response to opponent's last move
         if (lastOpponentMove != default && lastOpponentMove.From.Index < 64 && lastOpponentMove.To.Index < 64)
         {
-            if (move == _counterMoves[lastOpponentMove.From.Index, lastOpponentMove.To.Index])
+            if (move == _counterMoves[side, lastOpponentMove.From.Index, lastOpponentMove.To.Index])
                 return 150000;
         }
 
@@ -325,12 +335,15 @@ internal class MoveOrdering
     }
 
     /// <summary>
-    /// Records a counter-move: a good move in response to opponent's last move.
+    /// Records a counter-move: a good move in response to the opponent's last move. Filed under
+    /// the side that plays the counter, which is the side to move at the node — so the board has
+    /// to stand at that node, as it does after <c>UndoMove</c> where the search calls this.
     /// </summary>
     public void RecordCounterMove(Move lastOpponentMove, Move counterMove)
     {
         if (lastOpponentMove.From.Index < 64 && lastOpponentMove.To.Index < 64)
-            _counterMoves[lastOpponentMove.From.Index, lastOpponentMove.To.Index] = counterMove;
+            _counterMoves[(int)_board.State.ActiveColor,
+                          lastOpponentMove.From.Index, lastOpponentMove.To.Index] = counterMove;
     }
 
     // ── Static exchange evaluation ────────────────────────────────────────────
@@ -668,8 +681,6 @@ internal class MoveOrdering
             for (int j = 0; j < 64; j++)
                 _history[i, j] = 0;
 
-        for (int i = 0; i < 64; i++)
-            for (int j = 0; j < 64; j++)
-                _counterMoves[i, j] = default;
+        Array.Clear(_counterMoves);
     }
 }

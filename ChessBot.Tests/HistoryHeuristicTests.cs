@@ -128,6 +128,36 @@ public class HistoryHeuristicTests
         Assert.Equal(0, ordering.HistoryScore(d1d4));
     }
 
+    /// <summary>
+    /// The counter-move table had the history table's defect in a table consulted far less often:
+    /// one slot per (from, to) of the opponent's last move, shared by both sides. A counter White
+    /// learned was then offered to Black at 150,000 — a band above every quiet move — as its own
+    /// reply to the same squares.
+    /// </summary>
+    [Fact]
+    public void BlackIsNotOfferedTheCounterWhiteLearned()
+    {
+        const string Start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+        var board    = Posed(Start);
+        var ordering = new MoveOrdering(board);
+        var counter  = Quiet("g1", "f3");
+        var ordinary = Quiet("b1", "c3");
+        var opponent = Quiet("e7", "e5");
+
+        ordering.RecordCounterMove(opponent, counter);
+
+        var white = new[] { ordinary, counter };
+        ordering.OrderMoves(white, 2, default, opponent, 0);
+        Assert.Equal(counter, white[0]);
+
+        board.LoadFromFen(Start.Replace(" w ", " b "));
+
+        var black = new[] { ordinary, counter };
+        ordering.OrderMoves(black, 2, default, opponent, 0);
+        Assert.Equal(ordinary, black[0]);
+    }
+
     // ── What survives the move-to-move boundary ──────────────────────────────
 
     [Fact]
