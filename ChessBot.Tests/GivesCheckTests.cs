@@ -76,6 +76,75 @@ public class GivesCheckTests
     }
 
     /// <summary>
+    /// Every legal move at every node of a real tree, five positions to depth 4. The corpus above
+    /// is a set of positions judged once each; this is the shape a search actually presents —
+    /// every move of every node it visits, including deep in lines the ordering would never
+    /// choose — and it is where a predicate that is right about positions and wrong about some
+    /// state left over from the way it was reached would show up.
+    /// </summary>
+    [Fact]
+    public void AgreesWithMakeUnmakeAtEveryNodeOfATreeToDepthFour()
+    {
+        string[] roots =
+        {
+            "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+            "r1bq1rk1/pp1nbppp/2ppp3/8/2PPP3/2N1BN2/PP2BPPP/R2Q1RK1 w - - 0 10",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "n1n5/PPPk4/8/8/8/8/4Kppp/5N1N b - - 0 1",
+        };
+
+        long judged = 0, checks = 0;
+        foreach (string fen in roots)
+        {
+            var board = new Board();
+            board.LoadFromFen(fen);
+            Walk(board, new MoveGenerator(board), new CheckDetector(board), 4, ref judged, ref checks);
+        }
+
+        Assert.True(checks > 10_000, $"only {checks:N0} checking moves seen in {judged:N0}");
+        _out.WriteLine($"{judged:N0} moves judged across five trees to depth 4, {checks:N0} of them checks");
+    }
+
+    /// <summary>
+    /// Recurses the whole tree, judging every move both ways before descending into it. The
+    /// generator is shared with the search's own arrangement — one instance for the whole walk —
+    /// so a predicate that depended on per-node state cached by the last generation would be
+    /// caught here and cannot be caught by judging one position at a time.
+    /// </summary>
+    private static void Walk(Board board, MoveGenerator generator, CheckDetector detector,
+                             int depth, ref long judged, ref long checks)
+    {
+        if (depth == 0) return;
+
+        var buffer = new Move[MoveGenerator.MaxMoves];
+        generator.GenerateLegalMovesInto(buffer, out int count);
+
+        for (int i = 0; i < count; i++)
+        {
+            Move move  = buffer[i];
+            Color them = board.State.ActiveColor.Opposite();
+
+            bool predicted = generator.GivesCheck(move);
+
+            board.MakeMove(move);
+            bool actual = detector.IsInCheck(them);
+
+            judged++;
+            if (actual) checks++;
+            if (predicted != actual)
+            {
+                board.UndoMove();
+                Assert.Fail($"{move} ({move.MoveType}) in {board.ExportToFen()}: " +
+                            $"predicted {predicted}, actually {actual}");
+            }
+
+            Walk(board, generator, detector, depth - 1, ref judged, ref checks);
+            board.UndoMove();
+        }
+    }
+
+    /// <summary>
     /// The three special moves, each in a position where it is the only way the check can arrive.
     /// They are rare enough in the corpus above to be worth naming: castling checks with the rook
     /// and not the king, en passant empties two squares rather than one, and a promotion checks as

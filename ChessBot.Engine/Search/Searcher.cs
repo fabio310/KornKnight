@@ -802,27 +802,28 @@ internal class Searcher
                 continue;
             }
 
+            // ── Late move pruning ─────────────────────────────────────────
+            // The one quiet move that must never be dropped on its position in the move list is a
+            // check. A mate is delivered by a quiet checking move as often as by a capture, and
+            // nothing in the ordering promotes such a move before it has ever cut: the mate in
+            // "8/k7/5R2/3K3Q/8/8/8/8 w" is 1.Qh7+ Kb8 2.Rf8#, and pruning the tail on move count
+            // alone loses it at depth 4 outright.
+            //
+            // This used to make the move and ask the check detector, then take it back, because
+            // the engine had no gives-check predicate. It has one now, it is exactly equivalent —
+            // MoveGenerator.GivesCheck is tested against make/unmake over every legal move of 400
+            // positions — and it answers the same question for two ray walks instead of a
+            // make/unmake pair plus eight.
             // Record for counter-move heuristic (child nodes read _lastMoveAtPly[ply])
             _lastMoveAtPly[ply] = move;
-            _board.MakeMove(move);
 
-            // ── Late move pruning ─────────────────────────────────────────
-            // Made first, then judged, because the one quiet move that must never be dropped on
-            // its position in the move list is a check. A mate is delivered by a quiet checking
-            // move as often as by a capture, and nothing in the ordering promotes such a move
-            // before it has ever cut: the mate in "8/k7/5R2/3K3Q/8/8/8/8 w" is 1.Qh7+ Kb8 2.Rf8#,
-            // and pruning the tail on move count alone loses it at depth 4 outright.
-            //
-            // The engine has no "does this move give check" predicate, and the cheapest correct
-            // one is this: make the move and ask the check detector, which is a pattern test plus
-            // at most eight short ray walks. Paid once per pruned move, against a subtree — a
-            // reduced search plus its quiescence — that is an order of magnitude more work.
-            if (lmpCandidate && !_checkDetector.IsInCheck(_board.State.ActiveColor))
+            if (lmpCandidate && !_moveGen.GivesCheck(move))
             {
-                _board.UndoMove();
                 _lateMovePrunes++;
                 continue;
             }
+
+            _board.MakeMove(move);
 
             // ── Late Move Reductions ──────────────────────────────────────
             int reduction = 0;
