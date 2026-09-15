@@ -1,0 +1,37 @@
+=== ChessBot A/B run: two builds, one question ===
+Run ID     : 20260915_212725
+Generated  : 2026-09-15T20:07:45.6559595Z
+Budget     : 50 ms/move
+Conditions : Time budget, adaptive concurrency 5-8, mean 5,6 of 14 physical cores (20 logical, windows:GetLogicalProcessorInformationEx)
+Openings   : 500 openings from openings/generated-500.epd (epd/fen), sha256 81bb81373f40…
+
+=== Arms ===
+  A (baseline) A: KornKnight 1.0.0+b4edf2755d51 (Release)  commit b4edf2755d51  sha256 8e6809c304cb…
+  B (change)   B: KornKnight 1.0.0+8c29e168fce2 (Release)  commit 8c29e168fce2  sha256 3d19e1f9b98a…
+
+=== Result (B against A) ===
+  Games            : 2000
+  B result         : +780 =510 -710
+  B score rate     : 51,75 % ± 1,89 % (95%)
+  Implied Elo (B-A): +12,2 ± 13,2
+  Significant      : no — the interval includes 50%
+  Colour balance   : A had White in 1000 of 2000 scored games
+
+=== SPRT ===
+  H0: elo0=0  H1: elo1=5  alpha=0,05 beta=0,05  bounds [-2,944, 2,944]
+  LLR     : 1,0759
+  Verdict : Continue
+  LLR 1,076 is inside [-2,944, 2,944] after 2000 games
+
+Stopped because: played all 2000 games
+
+=== How games ended ===
+  Checkmate — White wins             954
+  Checkmate — Black wins             536
+  Threefold repetition               351
+  Insufficient material              102
+  50-move rule                       51
+  Stalemate                          6
+
+Game results are the objective. The score and its interval above are the only
+numbers here that speak to strength; everything else is evidence for them.
