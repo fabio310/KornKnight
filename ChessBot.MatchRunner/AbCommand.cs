@@ -97,8 +97,15 @@ public static class AbCommand
             MoveLossMaxRetries = Integer(args, "--moveloss-retries", 2, minimum: 0),
         };
 
-        if (Arg(args, "--ab-concurrency") is not null)
+        // "auto" is the default, so naming it changes nothing — it exists so a command can say
+        // what it is relying on. Any other value pins the run: somebody who writes a number wants
+        // that number, and a governor that overrode it would make the flag a suggestion.
+        string? requestedConcurrency = Arg(args, "--ab-concurrency");
+        if (requestedConcurrency is not null &&
+            !requestedConcurrency.Equals("auto", StringComparison.OrdinalIgnoreCase))
+        {
             cfg = CloneWithConcurrency(cfg, Integer(args, "--ab-concurrency", 1, minimum: 1));
+        }
 
         cfg.Sprt?.Validate();
 
@@ -134,6 +141,9 @@ public static class AbCommand
     /// Concurrency is an init-only property, so an explicit value is applied by rebuilding the
     /// config rather than by leaving a settable knob that could change mid-run.
     /// </summary>
+    /// <summary>Mirrors ArmMatch's governor interval, for the usage text only.</summary>
+    private const double GovernorIntervalSeconds = 5;
+
     private static ArmMatchConfig CloneWithConcurrency(ArmMatchConfig cfg, int concurrency) => new()
     {
         ArmA = cfg.ArmA,
@@ -264,8 +274,13 @@ public static class AbCommand
         Console.WriteLine("                          and the only one that needs a quiet machine.");
         Console.WriteLine("  --ab-out <dir>          Output directory (default: ab_runs/latest). An existing run");
         Console.WriteLine("                          here is RESUMED when it matches, and refused when it does not.");
-        Console.WriteLine($"  --ab-concurrency <n>    Games in parallel (default: {MachineTopology.PhysicalCoreCount} on a node budget," );
-        Console.WriteLine($"                          {ConcurrencyPolicy.RecommendedTimedCeiling} on a time budget, on this machine)");
+        Console.WriteLine("  --ab-concurrency <n>    Games in parallel. Default is \"auto\", which MEASURES rather");
+        Console.WriteLine($"                          than guesses: every {(int)GovernorIntervalSeconds}s it re-reads what else is using the CPU,");
+        Console.WriteLine("                          and on a time budget it adds a game, watches the engines' node");
+        Console.WriteLine("                          rate, and keeps the game only if it cost nothing. Backs off at");
+        Console.WriteLine($"                          once when something else wants the machine. Ceiling {MachineTopology.PhysicalCoreCount} here,");
+        Console.WriteLine("                          floor 1, and it keeps re-probing for the whole run.");
+        Console.WriteLine("                          A number pins the run at that number instead.");
         Console.WriteLine("  --ab-no-pin             Do not pin timed-game workers to cores or raise priority");
         Console.WriteLine();
         Console.WriteLine("  --openings <path>       EPD/FEN list or PGN of start positions (default: built-in 16)");
