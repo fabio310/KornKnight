@@ -165,11 +165,46 @@ report says so. An explicit `--ab-concurrency <n>` still pins a run that has to
 match an earlier one exactly, which is why B4 was run pinned at 7: B2 and B3 were
 measured there and the split had to be comparable.
 
+### What it found on this machine
+
+The cumulative run was its first real job, and it answered the question the number
+7 had been standing in for. It climbed 7 → 8 and kept it, tried 9 and gave it back,
+and settled at a mean of 8.0 within about a minute.
+
+So **8 concurrent games is this machine's measured limit at a 50 ms budget**, on 14
+physical cores. The hand-picked 7 was nearly right and 14 would have been badly
+wrong — which is worth knowing in both directions. The intuition that 14 physical
+cores should carry 14 timed games ignores that each game also runs two engine
+processes, an arbiter and the pipes between them, and that only one of the two
+engines is searching at a time.
+
+---
+
+## Group B measured cumulatively against the pre-group build
+
+| Comparison | Score | Elo | SPRT |
+|---|---|---|---|
+| **Group B vs pre-group `3c207f6`** | 66.59% (+239 =92 −97) | **+119.8 ± 30.5** | **AcceptH1** at 428 |
+
+TIME budget, 50 ms/move, adaptive concurrency 7–9 (mean 8.0). Run directory
+`ab_runs/groupb-cumulative`.
+
+**This is the figure to quote for the group, not the sum of +19.5 and +61.7.**
+Both of those stopped at an SPRT bound and are biased away from zero, and Elo does
+not compose additively in any case.
+
+The conditions differ slightly from the individual measurements, which were pinned
+at concurrency 7. The governor climbed to 8 only because the engines' node rate was
+unchanged there, which is the same condition that makes the runs comparable — but
+it is a difference and is recorded rather than glossed.
+
 ---
 
 ## Where the group leaves the engine
 
 Adopted: **B1** (deletion) and **B2+B3+B4** (as a group, carried by B4).
+**+119.8 ± 30.5 Elo** cumulatively against the pre-group build, measured directly
+rather than summed.
 
 Nothing was left behind a flag. The B1 halve arm and the three split arms were
 measurement instruments and are deleted.
