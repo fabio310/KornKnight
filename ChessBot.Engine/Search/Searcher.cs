@@ -260,6 +260,12 @@ internal class Searcher
         _moveOrdering.Clear();
     }
 
+    /// <summary>
+    /// The ordering tables this searcher has built up, for a test that needs to ask what a real
+    /// search put in them. Read-only in practice; nothing in the engine reaches for it.
+    /// </summary>
+    internal MoveOrdering Ordering => _moveOrdering;
+
     public SearchResult Search(SearchSettings settings, CancellationToken ct = default)
     {
         _settings        = settings ?? new SearchSettings();
@@ -722,11 +728,22 @@ internal class Searcher
             int R = depth >= 4 ? NMP_BASE_R : 2;
             _nullMoveAttempts++;
 
+            // The child is about to read _lastMoveAtPly[ply] as "the move my opponent just
+            // played", and this node has not written it yet — the move loop is below. What it
+            // would find is whatever move a sibling subtree left at this ply, which is not a move
+            // that was made in the line the child is searching and whose destination square is
+            // very often empty in it. Clearing it says there is no previous move, which after a
+            // null move is the truth.
+            Move lastMoveHere = _lastMoveAtPly[ply];
+            _lastMoveAtPly[ply] = default;
+
             _board.MakeNullMove();
             _nullMoveAtPly[ply + 1] = true;
             int nullScore = -NegamaxSearch(ply + 1, depth - 1 - R, -beta, -beta + 1);
             _nullMoveAtPly[ply + 1] = false;
             _board.UndoNullMove();
+
+            _lastMoveAtPly[ply] = lastMoveHere;
 
             if (_cancelRequested) return 0;
 
@@ -899,7 +916,7 @@ internal class Searcher
                         if (isQuiet)
                         {
                             _moveOrdering.RecordKillerMove(move, ply);
-                            _moveOrdering.RecordHistoryMove(move, depth);
+                            _moveOrdering.RecordHistoryMove(move, lastOpponentMove, depth);
 
                             // The quiet moves searched ahead of this one were ordered above it and
                             // did not cut, so they were ranked too highly. Saying so is what stops
@@ -915,7 +932,8 @@ internal class Searcher
                             {
                                 for (int q = 0; q < quietCount; q++)
                                     if (_quietsTried[ply][q] != move)
-                                        _moveOrdering.RecordHistoryFailure(_quietsTried[ply][q], depth);
+                                        _moveOrdering.RecordHistoryFailure(_quietsTried[ply][q],
+                                                                           lastOpponentMove, depth);
                             }
 
                             // Counter-move: remember this quiet move as the best response to

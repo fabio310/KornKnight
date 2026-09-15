@@ -72,6 +72,28 @@ internal class MoveOrdering
     private readonly Move[,,] _counterMoves;
 
     /// <summary>
+    /// Continuation history: how well a quiet move has done at producing a beta cutoff *given the
+    /// move played immediately before it*. One ply of context, indexed as
+    /// [previous piece, previous to, this piece, this to] and flattened to one dimension, because
+    /// a four-dimensional CLR array bounds-checks four times per read on the hot path.
+    ///
+    /// It is the same evidence the plain history table records, conditioned on what it was a reply
+    /// to. "Nf3 cuts" and "Nf3 cuts against ...e5" are different claims, and the plain table can
+    /// only make the first: it pools a move's record across every position it was ever tried in.
+    /// The counter-move table is the one-bit version of this — it remembers a single best reply
+    /// per previous move and can rank nothing else — so this generalises it rather than repeating
+    /// it.
+    ///
+    /// 768 x 768 entries, 2.4 MB. That does not fit in cache and it is the real cost of the term;
+    /// what makes it affordable is that it is read on exactly the moves the plain history table is
+    /// already read on.
+    /// </summary>
+    private readonly int[] _continuationHistory;
+
+    /// <summary>Width of one [piece, square] half-index: 12 pieces x 64 squares.</summary>
+    private const int ContinuationStride = PieceIndexCount * 64;
+
+    /// <summary>
     /// Pre-allocated scoring buffer for zero-allocation in-place sorting.
     /// Sized for the maximum possible legal-move count (chess max is ~218).
     /// </summary>
@@ -103,6 +125,7 @@ internal class MoveOrdering
         _killerMoves2 = new Move[Searcher.MAX_PLY];
         _history = new int[PieceIndexCount, 64];
         _counterMoves = new Move[2, 64, 64];
+        _continuationHistory = new int[ContinuationStride * ContinuationStride];
     }
 
     /// <summary>
@@ -119,13 +142,15 @@ internal class MoveOrdering
     public void OrderMoves(Move[] moves, int count, Move ttMove, Move lastOpponentMove, int ply)
     {
         // The side to move is the same for every move at this node, and GameState is a struct, so
-        // it is read once here rather than copied per move inside the scoring loop.
+        // it is read once here rather than copied per move inside the scoring loop. So is the
+        // continuation slot, which is one board read for the whole node.
         int side = (int)_board.State.ActiveColor;
+        int previous = ContinuationSlot(lastOpponentMove);
 
         // Score every move into the pre-allocated buffer (avoids List<(Move,int)> allocation)
         for (int i = 0; i < count; i++)
             _moveScores[i] = CalculateMoveScore(moves[i], ttMove, lastOpponentMove, ply, side,
-                                                out _seeWinning[i]);
+                                                previous, out _seeWinning[i]);
 
         // Insertion sort descending by score (O(N²) but N ≤ ~35 per node, fastest for small N).
         // The exchange verdict rides along with its move, so a caller can still ask about the move
@@ -178,7 +203,7 @@ internal class MoveOrdering
     /// for the bands.
     /// </summary>
     private int CalculateMoveScore(Move move, Move ttMove, Move lastOpponentMove, int ply, int side,
-                                   out bool seeWinning)
+                                   int previous, out bool seeWinning)
     {
         seeWinning = false;
 
@@ -233,9 +258,43 @@ internal class MoveOrdering
                 return 150000;
         }
 
-        // History: the signed cutoff record of this quiet move. Negative for a move that has been
-        // tried and failed often, so it sorts below one that has never been seen at all.
-        return 100000 + _history[PieceIndex(_board.GetPiece(move.From)), move.To.Index];
+        // History, plus the same record conditioned on the previous move where there is one. Both
+        // are bounded by the same ceiling, so a quiet move spans 100,000 +/- 32,768 and the band
+        // still sits clear of the counter-move band at 150,000.
+        int slot = MoveSlot(move);
+        int score = 100000 + _history[slot / 64, slot % 64];
+
+        if (previous >= 0)
+            score += _continuationHistory[previous * ContinuationStride + slot];
+
+        return score;
+    }
+
+    /// <summary>
+    /// The [piece, square] half-index of a move about to be made: the piece standing on its origin
+    /// square, and the square it is going to.
+    /// </summary>
+    private int MoveSlot(Move move) =>
+        PieceIndex(_board.GetPiece(move.From)) * 64 + move.To.Index;
+
+    /// <summary>
+    /// The [piece, square] half-index of a move that has ALREADY been made — so the piece is read
+    /// from the move's destination rather than its origin, and a promotion is filed under the
+    /// piece it became.
+    ///
+    /// -1 when there is no usable previous move. That covers the root, and it covers a null move:
+    /// the search records the move played at each ply, but a null-move child reads its parent's
+    /// slot before the parent's move loop has written anything into it, so what it finds is a
+    /// sibling's move from another subtree. That stale move's destination is very often empty by
+    /// now, which is what this rejects. The counter-move table has always made the same read and
+    /// simply probed a wrong slot; here it would index the table at -1.
+    /// </summary>
+    private int ContinuationSlot(Move previous)
+    {
+        if (previous == default) return -1;
+
+        Piece piece = _board.GetPiece(previous.To);
+        return piece.IsEmpty ? -1 : PieceIndex(piece) * 64 + previous.To.Index;
     }
 
     /// <summary>
@@ -258,6 +317,20 @@ internal class MoveOrdering
             swing += move.PromotionType.MaterialValue() - PieceType.Pawn.MaterialValue();
 
         return swing;
+    }
+
+    /// <summary>
+    /// How many continuation slots hold a non-zero value. A census, not telemetry: it walks the
+    /// whole 2.4 MB table, so it is for a test asking whether a real search reaches the table at
+    /// all — the one failure an A/B match cannot tell apart from "the idea does not work".
+    /// </summary>
+    internal int ContinuationEntriesUsed()
+    {
+        int used = 0;
+        foreach (int entry in _continuationHistory)
+            if (entry != 0) used++;
+
+        return used;
     }
 
     /// <summary>
@@ -287,7 +360,8 @@ internal class MoveOrdering
     /// Rewards a quiet move that produced a beta cutoff, weighted by the depth it did so at:
     /// a cutoff eight plies from the horizon is worth far more evidence than one at the horizon.
     /// </summary>
-    public void RecordHistoryMove(Move move, int depth) => UpdateHistory(move, HistoryBonus(depth));
+    public void RecordHistoryMove(Move move, Move lastOpponentMove, int depth) =>
+        UpdateHistory(move, lastOpponentMove, HistoryBonus(depth));
 
     /// <summary>
     /// Penalises a quiet move that was searched ahead of the move that actually cut and failed to
@@ -295,7 +369,8 @@ internal class MoveOrdering
     /// are merely tried often — two moves with the same number of cutoffs are indistinguishable
     /// even when one of them was searched ten times as often to get them.
     /// </summary>
-    public void RecordHistoryFailure(Move move, int depth) => UpdateHistory(move, -HistoryBonus(depth));
+    public void RecordHistoryFailure(Move move, Move lastOpponentMove, int depth) =>
+        UpdateHistory(move, lastOpponentMove, -HistoryBonus(depth));
 
     /// <summary>
     /// The current history value of a move. Signed; 0 for a move never seen.
@@ -307,6 +382,18 @@ internal class MoveOrdering
     /// </summary>
     internal int HistoryScore(Move move) =>
         _history[PieceIndex(_board.GetPiece(move.From)), move.To.Index];
+
+    /// <summary>
+    /// The current continuation value of a move given the move played before it. Signed; 0 when
+    /// either move is one the table cannot key, as <see cref="ContinuationSlot"/> describes.
+    /// </summary>
+    internal int ContinuationScore(Move move, Move lastOpponentMove)
+    {
+        int previous = ContinuationSlot(lastOpponentMove);
+        return previous < 0
+            ? 0
+            : _continuationHistory[previous * ContinuationStride + MoveSlot(move)];
+    }
 
     /// <summary>
     /// The number of distinct (colour, piece type) pairs, and so the first axis of the history
@@ -328,10 +415,18 @@ internal class MoveOrdering
     /// ceiling barely moves; one near zero moves by almost the whole bonus. That is what keeps
     /// heavily rewarded entries ordered against each other instead of piled on a clamp.
     /// </summary>
-    private void UpdateHistory(Move move, int bonus)
+    private void UpdateHistory(Move move, Move lastOpponentMove, int bonus)
     {
-        ref int entry = ref _history[PieceIndex(_board.GetPiece(move.From)), move.To.Index];
+        int slot = MoveSlot(move);
+
+        ref int entry = ref _history[slot / 64, slot % 64];
         entry += bonus - entry * Math.Abs(bonus) / HistoryMax;
+
+        int previous = ContinuationSlot(lastOpponentMove);
+        if (previous < 0) return;
+
+        ref int continuation = ref _continuationHistory[previous * ContinuationStride + slot];
+        continuation += bonus - continuation * Math.Abs(bonus) / HistoryMax;
     }
 
     /// <summary>
@@ -666,6 +761,12 @@ internal class MoveOrdering
         for (int i = 0; i < PieceIndexCount; i++)
             for (int j = 0; j < 64; j++)
                 _history[i, j] /= 2;
+
+        // The continuation table is aged for the same reason and is 768 times larger, so this is a
+        // 2.4 MB pass. It runs once per move played, not once per node, which puts it at a few
+        // tenths of a millisecond against a move budget measured in tens.
+        for (int i = 0; i < _continuationHistory.Length; i++)
+            _continuationHistory[i] /= 2;
     }
 
     /// <summary>
@@ -682,5 +783,6 @@ internal class MoveOrdering
                 _history[i, j] = 0;
 
         Array.Clear(_counterMoves);
+        Array.Clear(_continuationHistory);
     }
 }

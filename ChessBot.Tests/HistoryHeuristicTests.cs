@@ -58,8 +58,8 @@ public class HistoryHeuristicTests
 
         // At depth 12 the old update added 144 a time, so about seventy hits pinned a slot at the
         // 10,000 clamp. Both of these are far past that; only a bounded update keeps them apart.
-        for (int i = 0; i < 400; i++) ordering.RecordHistoryMove(often, 12);
-        for (int i = 0; i < 100; i++) ordering.RecordHistoryMove(seldom, 12);
+        for (int i = 0; i < 400; i++) ordering.RecordHistoryMove(often, default, 12);
+        for (int i = 0; i < 100; i++) ordering.RecordHistoryMove(seldom, default, 12);
 
         Assert.Equal(often, First(ordering, lower: seldom, higher: often));
     }
@@ -71,7 +71,7 @@ public class HistoryHeuristicTests
         var failed   = Quiet("b1", "c3");
         var untried  = Quiet("g1", "f3");
 
-        for (int i = 0; i < 20; i++) ordering.RecordHistoryFailure(failed, 8);
+        for (int i = 0; i < 20; i++) ordering.RecordHistoryFailure(failed, default, 8);
 
         Assert.Equal(untried, First(ordering, lower: failed, higher: untried));
     }
@@ -82,7 +82,7 @@ public class HistoryHeuristicTests
         var ordering = NewOrdering();
         var move     = Quiet("b1", "c3");
 
-        for (int i = 0; i < 100_000; i++) ordering.RecordHistoryMove(move, 40);
+        for (int i = 0; i < 100_000; i++) ordering.RecordHistoryMove(move, default, 40);
 
         Assert.InRange(ordering.HistoryScore(move), 0, MoveOrdering.HistoryMax);
     }
@@ -101,7 +101,7 @@ public class HistoryHeuristicTests
         var ordering = new MoveOrdering(board);
         var d1d4     = Quiet("d1", "d4");
 
-        for (int i = 0; i < 50; i++) ordering.RecordHistoryMove(d1d4, 10);
+        for (int i = 0; i < 50; i++) ordering.RecordHistoryMove(d1d4, default, 10);
         Assert.True(ordering.HistoryScore(d1d4) > 0, "the rook built up no history to inherit");
 
         board.LoadFromFen("7k/8/8/8/8/8/8/3Q2K1 w - - 0 1");
@@ -120,7 +120,7 @@ public class HistoryHeuristicTests
         var ordering = new MoveOrdering(board);
         var d1d4     = Quiet("d1", "d4");
 
-        for (int i = 0; i < 50; i++) ordering.RecordHistoryMove(d1d4, 10);
+        for (int i = 0; i < 50; i++) ordering.RecordHistoryMove(d1d4, default, 10);
         Assert.True(ordering.HistoryScore(d1d4) > 0, "White built up no history to inherit");
 
         board.LoadFromFen("6k1/8/7K/8/8/8/8/3r4 b - - 0 1");
@@ -166,7 +166,7 @@ public class HistoryHeuristicTests
         var ordering = NewOrdering();
         var move     = Quiet("b1", "c3");
 
-        for (int i = 0; i < 50; i++) ordering.RecordHistoryMove(move, 10);
+        for (int i = 0; i < 50; i++) ordering.RecordHistoryMove(move, default, 10);
         int before = ordering.HistoryScore(move);
 
         ordering.NewSearch();
@@ -208,7 +208,7 @@ public class HistoryHeuristicTests
         var ordinary = Quiet("d2", "d3");
 
         ordering.RecordKillerMove(killer, 0);
-        for (int i = 0; i < 50; i++) ordering.RecordHistoryMove(killer, 10);
+        for (int i = 0; i < 50; i++) ordering.RecordHistoryMove(killer, default, 10);
 
         ordering.Clear();
 
