@@ -91,6 +91,12 @@ public sealed class UciAdapter : IDisposable
                 $"Could not start engine '{executable}': {ex.Message}", ex);
         }
 
+        // The load governor sizes the run from the CPU that is not ours. An engine we started is
+        // ours, and one started by somebody else's run is not, so the claim is made by process id
+        // rather than by name — two runs on one machine have identically named processes and must
+        // still yield to each other.
+        MachineLoad.RegisterOurs(_process.Id);
+
         _stdin  = _process.StandardInput;
         _stdout = _process.StandardOutput;
 
@@ -404,6 +410,7 @@ public sealed class UciAdapter : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        if (_process is not null) MachineLoad.ForgetOurs(_process.Id);
         try
         {
             if (IsRunning)

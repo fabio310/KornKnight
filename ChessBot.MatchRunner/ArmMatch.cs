@@ -31,6 +31,17 @@ public sealed class ArmMatchConfig
     public bool ConcurrencyIsDefault => _concurrency is null;
 
     /// <summary>
+    /// Size the run to the machine's free cores as it goes, instead of holding one number for the
+    /// whole run. On by default: a fixed concurrency is only right while the load it was chosen
+    /// for holds, and nothing guarantees that for an hour. An explicit --ab-concurrency turns it
+    /// off, because somebody who names a number wants that number.
+    /// </summary>
+    public bool Adaptive => _concurrency is null && !FixedConcurrency;
+
+    /// <summary>Set to pin the run at <see cref="Concurrency"/> even when no explicit value was given.</summary>
+    public bool FixedConcurrency { get; init; }
+
+    /// <summary>
     /// Pin workers to cores and raise process priority. Applies only to a timed run: with a node
     /// budget the result is identical either way, so pinning would cost scheduling freedom and
     /// buy nothing.
@@ -242,9 +253,19 @@ public static class ArmMatch
                 "The expected result is 50%; anything else is the harness, not the engine.");
 
         string runId = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-        int concurrency = Math.Max(1, cfg.Concurrency);
 
-        string oversubscription = ConcurrencyPolicy.WarnIfOversubscribed(cfg.Budget.Kind, concurrency);
+        // An adaptive run starts at the ceiling and lets the governor take cores back as it
+        // discovers what else the machine is doing; a fixed one holds whatever it was given.
+        var governor = cfg.Adaptive
+            ? new AdaptiveConcurrency(cfg.Budget.Kind, MachineTopology.PhysicalCoreCount)
+            : null;
+
+        int workerCount = governor?.Ceiling ?? Math.Max(1, cfg.Concurrency);
+        int concurrency = workerCount;
+
+        string oversubscription = governor is null
+            ? ConcurrencyPolicy.WarnIfOversubscribed(cfg.Budget.Kind, concurrency)
+            : string.Empty;
         string processPriority = cfg.PinningApplies
             ? MachineTopology.RaiseProcessPriority()
             : System.Diagnostics.Process.GetCurrentProcess().PriorityClass.ToString();
@@ -253,7 +274,9 @@ public static class ArmMatch
         {
             Budget                  = cfg.Budget.Kind.ToString(),
             Concurrency             = concurrency,
-            ConcurrencySource       = cfg.ConcurrencyIsDefault ? "default" : "explicit",
+            ConcurrencySource       = governor is not null ? "adaptive"
+                                    : cfg.ConcurrencyIsDefault ? "default" : "explicit",
+            ConcurrencyWasAdaptive  = governor is not null,
             PhysicalCores           = MachineTopology.PhysicalCoreCount,
             LogicalProcessors       = MachineTopology.LogicalProcessorCount,
             CoreCountSource         = MachineTopology.CoreCountSource,
@@ -291,7 +314,12 @@ public static class ArmMatch
                               "games were already played and are kept.");
 
         Console.WriteLine($"A/B run: {cfg.PairedGames} games at {cfg.Budget}, " +
-                          $"{ConcurrencyPolicy.Describe(cfg.Budget.Kind, concurrency)}" +
+                          (governor is null
+                              ? ConcurrencyPolicy.Describe(cfg.Budget.Kind, concurrency)
+                              : $"{cfg.Budget.Kind} budget, adaptive concurrency from {governor.Target} up to {governor.Ceiling} " +
+                                $"of {MachineTopology.PhysicalCoreCount} physical cores " +
+                                $"({MachineTopology.LogicalProcessorCount} logical, " +
+                                $"{MachineTopology.CoreCountSource})") +
                           (cfg.PinningApplies ? ", workers pinned" : "") + ".");
         Console.WriteLine($"Openings: {cfg.Openings}");
         if (cfg.Sprt is SprtSettings sprt) Console.WriteLine($"SPRT: {sprt}");
@@ -320,6 +348,15 @@ public static class ArmMatch
             ? new PinnedWorkerPool(concurrency, raiseThreadPriority: true)
             : null;
 
+        // A fixed run needs no gate: every worker holds a permit for the whole run, which is what
+        // "concurrency N" has always meant. An adaptive run gates every game, so a worker that is
+        // no longer wanted parks between games instead of being interrupted during one.
+        var throughput = governor is null ? null : new ThroughputSamples();
+        using var gate = governor is null ? null : new ConcurrencyGate(governor.Target, governor.Ceiling);
+        using var governorTimer = governor is null
+            ? null
+            : StartGovernor(governor, gate!, throughput!, stopping.Token);
+
         try
         {
             var running = new Task[concurrency];
@@ -331,19 +368,26 @@ public static class ArmMatch
                 {
                     while (!stopping.IsCancellationRequested)
                     {
+                        if (gate is not null)
+                        {
+                            try { await gate.AcquireAsync(stopping.Token); }
+                            catch (OperationCanceledException) { return; }
+                        }
+
                         int gameIndex;
                         lock (queueLock)
                         {
-                            if (queue.Count == 0) return;
+                            if (queue.Count == 0) { gate?.Release(); return; }
                             gameIndex = queue.Dequeue();
                         }
 
                         try
                         {
                             var record = workers is null
-                                ? await PlayOneAsync(cfg, slot, gameIndex, stopping.Token)
+                                ? await PlayOneAsync(cfg, slot, gameIndex, stopping.Token, throughput)
                                 : await workers.RunAsync(
-                                    () => PlayOneAsync(cfg, slot, gameIndex, stopping.Token), CancellationToken.None);
+                                    () => PlayOneAsync(cfg, slot, gameIndex, stopping.Token, throughput),
+                                    CancellationToken.None);
 
                             store.Append(record);
 
@@ -375,6 +419,13 @@ public static class ArmMatch
                             slot.Discard();
                             return;
                         }
+                        finally
+                        {
+                            // The permit goes back however the game ended, including on the SPRT
+                            // stop that returns from inside the try. A worker that kept its permit
+                            // would leave the gate believing a game was still in flight.
+                            gate?.Release();
+                        }
                     }
                 }, CancellationToken.None);
             }
@@ -395,6 +446,15 @@ public static class ArmMatch
         {
             result.Conditions.CorePinningGranted = workers?.AllPinned ?? false;
             result.Conditions.PinnedCores        = workers?.Cores.ToList() ?? new List<int>();
+
+            if (governor is not null)
+            {
+                var (min, max, mean) = governor.Observed;
+                result.Conditions.ConcurrencyMin  = min;
+                result.Conditions.ConcurrencyMax  = max;
+                result.Conditions.ConcurrencyMean = mean;
+                result.Conditions.Concurrency     = max;
+            }
         }
 
         int finished = result.Games + result.Aborted;
@@ -408,8 +468,51 @@ public static class ArmMatch
         return result;
     }
 
+    /// <summary>
+    /// How often the governor looks at the machine. Long enough that walking the process table is
+    /// free at this scale, and that a single busy second does not move the target; short enough
+    /// that a build or another run is noticed inside one game.
+    /// </summary>
+    private static readonly TimeSpan GovernorInterval = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Starts the loop that resizes the gate to match the machine's free cores.
+    ///
+    /// The first sample is discarded: <see cref="MachineLoad.SampleExternalCores"/> has nothing to
+    /// difference against until it has been called once, and a governor that believed the machine
+    /// was idle on the strength of that would open to the ceiling before it had looked.
+    /// </summary>
+    private static Timer StartGovernor(AdaptiveConcurrency governor, ConcurrencyGate gate,
+                                       ThroughputSamples throughput, CancellationToken ct)
+    {
+        MachineLoad.Reset();
+        MachineLoad.SampleExternalCores();
+
+        return new Timer(_ =>
+        {
+            if (ct.IsCancellationRequested) return;
+
+            try
+            {
+                int before = governor.Target;
+                int target = governor.Update(MachineLoad.SampleExternalCores(), throughput);
+                gate.Resize(target);
+
+                if (target != before)
+                    Console.WriteLine($"  concurrency {before} -> {target} ({governor.Phase.ToString().ToLowerInvariant()})");
+            }
+            catch
+            {
+                // A governor that throws must not take the run with it. Skipping a sample leaves
+                // the concurrency where it is, which is the state the run would have had anyway
+                // without any of this.
+            }
+        }, null, GovernorInterval, GovernorInterval);
+    }
+
     private static async Task<ArmGameRecord> PlayOneAsync(
-        ArmMatchConfig cfg, ArmSlot slot, int gameIndex, CancellationToken ct)
+        ArmMatchConfig cfg, ArmSlot slot, int gameIndex, CancellationToken ct,
+        ThroughputSamples? throughput = null)
     {
         await slot.EnsureStartedAsync(ct);
 
@@ -419,7 +522,7 @@ public static class ArmMatch
             white: armAIsWhite ? slot.A! : slot.B!,
             black: armAIsWhite ? slot.B! : slot.A!,
             cfg.ArmA, cfg.ArmB, armAIsWhite, opening, cfg.Budget,
-            gameNumber: gameIndex + 1, cfg.OutputDir, ct);
+            gameNumber: gameIndex + 1, cfg.OutputDir, ct, throughput);
 
         var record = new ArmGameRecord
         {
@@ -525,6 +628,27 @@ public static class ArmMatch
         return result;
     }
 
+    /// <summary>
+    /// The conditions line. An adaptive run reports the range it actually held rather than one
+    /// number, because one number would be a claim the run cannot make: a reader comparing this
+    /// result against a fixed-concurrency one needs to know the conditions moved.
+    /// </summary>
+    private static string DescribeConditions(ArmMatchConfig cfg, ArmMatchResult r)
+    {
+        var c = r.Conditions;
+        if (c is null) return ConcurrencyPolicy.Describe(cfg.Budget.Kind, 1);
+
+        if (!c.ConcurrencyWasAdaptive)
+            return ConcurrencyPolicy.Describe(cfg.Budget.Kind, c.Concurrency);
+
+        string range = c.ConcurrencyMin == c.ConcurrencyMax
+            ? $"{c.ConcurrencyMax}"
+            : $"{c.ConcurrencyMin}-{c.ConcurrencyMax}, mean {c.ConcurrencyMean:F1}";
+
+        return $"{cfg.Budget.Kind} budget, adaptive concurrency {range} of {c.PhysicalCores} " +
+               $"physical cores ({c.LogicalProcessors} logical, {c.CoreCountSource})";
+    }
+
     private static readonly JsonSerializerOptions ReportJson = new() { WriteIndented = true };
     private static readonly object ReportLock = new();
 
@@ -563,7 +687,7 @@ public static class ArmMatch
         w.WriteLine($"Run ID     : {r.RunId}");
         w.WriteLine($"Generated  : {DateTime.UtcNow:o}");
         w.WriteLine($"Budget     : {r.BudgetLabel}");
-        w.WriteLine($"Conditions : {ConcurrencyPolicy.Describe(cfg.Budget.Kind, r.Conditions?.Concurrency ?? 1)}");
+        w.WriteLine($"Conditions : {DescribeConditions(cfg, r)}");
         w.WriteLine($"Openings   : {cfg.Openings}");
         if (r.Resumed) w.WriteLine($"Resumed    : yes — {r.GamesFromEarlierRun} games came from an earlier run");
         w.WriteLine();

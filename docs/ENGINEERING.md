@@ -114,14 +114,33 @@ faster. Run it at the physical core count.
 
 Use a **time budget** only when the change affects how expensive evaluation or
 move ordering is to compute. A node budget hides exactly that cost. A time budget
-also measures the scheduler, so run it at half the physical cores or fewer, on a
-quiet machine, and never quote NPS from a run with high concurrency — one past
-run varied between 367k and 2373k NPS within itself.
+also measures the scheduler, so it takes half the physical cores or fewer, wants a
+quiet machine, and NPS must never be quoted from a run with high concurrency — one
+past run varied between 367k and 2373k NPS within itself.
 
 Physical cores, not `Environment.ProcessorCount`, which counts hyperthreads.
 
 State the budget type in every report. A node-budget result and a time-budget
 result are not comparable.
+
+**Concurrency sizes itself and does not need choosing.** `--ab-concurrency`
+defaults to `auto`: the run samples what everything *other than itself* is doing
+to the CPU every five seconds and takes the free cores — all of them on a node
+budget, half of them on a timed one, never fewer than one game. Engines are
+claimed by process id, so a second run on the same box is external load and the
+two yield to each other instead of fighting.
+
+Two properties make that safe to rely on. The target only moves **between games**,
+so no game is ever played under two sets of conditions. And it is decided from the
+**median** of the last five samples, so a one-second compile is ignored outright
+while a build that actually started is acted on within three samples.
+
+The cost is that a run's conditions are a range rather than a number, and the
+report says so — `adaptive concurrency 4-7, mean 6.2`. Both arms play every game
+under whatever that game's conditions were, so the comparison is unaffected; what
+weakens slightly is comparing one run's conditions against another's. Pass an
+explicit `--ab-concurrency <n>` when a run has to be pinned to match an earlier
+one exactly.
 
 ## Sample sizes
 

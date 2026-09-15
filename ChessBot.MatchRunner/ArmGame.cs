@@ -37,7 +37,8 @@ public static class ArmGame
         MoveBudget budget,
         int gameNumber,
         string outputDir,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        ThroughputSamples? throughput = null)
     {
         string startFen = opening.Fen;
 
@@ -86,6 +87,11 @@ public static class ArmGame
                 result.Outcome = GameOutcome.Aborted;
                 break;
             }
+
+            // What the machine let this search run at, handed to the governor as it happens. This
+            // is the evidence that decides whether another game would be free; taken from every
+            // move of both arms, because contention does not care which arm is thinking.
+            throughput?.Add(move.Nps);
 
             int moveNumber = firstMoveNumber + (ply + (firstPlyIsWhite ? 0 : 1)) / 2;
 

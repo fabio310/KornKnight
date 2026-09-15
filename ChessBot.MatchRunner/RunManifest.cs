@@ -65,8 +65,21 @@ public sealed class RunConditions
     /// <summary>"Nodes" or "Time". A node budget is reproducible under any load; a time budget is not.</summary>
     public string Budget { get; set; } = string.Empty;
     public int    Concurrency { get; set; }
-    /// <summary>"default" or "explicit" — whether the value came from the command line.</summary>
+    /// <summary>"adaptive", "default" or "explicit" — where the value came from.</summary>
     public string ConcurrencySource { get; set; } = string.Empty;
+
+    /// <summary>
+    /// True when the run sized itself to the machine's free cores as it went rather than holding
+    /// one number throughout. The comparison is unaffected — both arms play every game under
+    /// whatever conditions that game had — but the conditions are a range, and a result taken
+    /// under a range is only loosely comparable to one taken at a fixed concurrency.
+    /// </summary>
+    public bool   ConcurrencyWasAdaptive { get; set; }
+
+    /// <summary>The smallest, largest and mean concurrency an adaptive run actually held.</summary>
+    public int    ConcurrencyMin  { get; set; }
+    public int    ConcurrencyMax  { get; set; }
+    public double ConcurrencyMean { get; set; }
 
     public int    PhysicalCores     { get; set; }
     public int    LogicalProcessors { get; set; }
