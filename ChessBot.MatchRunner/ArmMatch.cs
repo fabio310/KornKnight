@@ -310,8 +310,22 @@ public static class ArmMatch
 
         int alreadyPlayed = store.Completed.Count;
         if (store.Resumed)
+        {
             Console.WriteLine($"Resuming run {store.State.RunId}: {alreadyPlayed} of {cfg.PairedGames} " +
                               "games were already played and are kept.");
+
+            // Those games were played under whatever the earlier session had, which is not
+            // necessarily this one. Carried into the report rather than overwritten, so a run
+            // that changed concurrency partway says so instead of claiming the conditions of
+            // whichever session happened to finish it.
+            string before = DescribeStoredConditions(store.State.Conditions);
+            string now    = DescribeStoredConditions(conditions);
+            if (alreadyPlayed > 0 && !string.Equals(before, now, StringComparison.Ordinal))
+            {
+                conditions.PriorConditions = $"{alreadyPlayed} earlier games: {before}";
+                Console.WriteLine($"NOTE: conditions changed on resume. {conditions.PriorConditions}");
+            }
+        }
 
         Console.WriteLine($"A/B run: {cfg.PairedGames} games at {cfg.Budget}, " +
                           (governor is null
@@ -633,6 +647,24 @@ public static class ArmMatch
     /// number, because one number would be a claim the run cannot make: a reader comparing this
     /// result against a fixed-concurrency one needs to know the conditions moved.
     /// </summary>
+    /// <summary>
+    /// A stored conditions record as one comparable line. Used to tell whether a resumed run is
+    /// continuing under the same conditions it started under.
+    /// </summary>
+    private static string DescribeStoredConditions(RunConditions? c)
+    {
+        if (c is null) return "unknown";
+
+        if (!c.ConcurrencyWasAdaptive)
+            return $"{c.Budget} budget, concurrency {c.Concurrency} of {c.PhysicalCores} physical cores";
+
+        string range = c.ConcurrencyMin == c.ConcurrencyMax
+            ? $"{c.ConcurrencyMax}"
+            : $"{c.ConcurrencyMin}-{c.ConcurrencyMax}, mean {c.ConcurrencyMean:F1}";
+
+        return $"{c.Budget} budget, adaptive concurrency {range} of {c.PhysicalCores} physical cores";
+    }
+
     private static string DescribeConditions(ArmMatchConfig cfg, ArmMatchResult r)
     {
         var c = r.Conditions;
@@ -688,6 +720,8 @@ public static class ArmMatch
         w.WriteLine($"Generated  : {DateTime.UtcNow:o}");
         w.WriteLine($"Budget     : {r.BudgetLabel}");
         w.WriteLine($"Conditions : {DescribeConditions(cfg, r)}");
+        if (!string.IsNullOrEmpty(r.Conditions?.PriorConditions))
+            w.WriteLine($"             (changed on resume — {r.Conditions.PriorConditions})");
         w.WriteLine($"Openings   : {cfg.Openings}");
         if (r.Resumed) w.WriteLine($"Resumed    : yes — {r.GamesFromEarlierRun} games came from an earlier run");
         w.WriteLine();

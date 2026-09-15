@@ -95,6 +95,17 @@ public sealed class RunConditions
 
     /// <summary>Empty unless a timed run was asked for more of the machine than its timings survive.</summary>
     public string OversubscriptionWarning { get; set; } = string.Empty;
+
+    /// <summary>
+    /// What the earlier part of a resumed run was played under, when that differs from what the
+    /// rest was played under. Empty otherwise.
+    ///
+    /// A resumed run keeps its games and builds fresh conditions, so without this the report would
+    /// describe the whole run by the conditions of whichever session happened to finish it — and a
+    /// run that played half its games at one concurrency and half at another would look like a run
+    /// that had done neither.
+    /// </summary>
+    public string PriorConditions { get; set; } = string.Empty;
 }
 
 /// <summary>
