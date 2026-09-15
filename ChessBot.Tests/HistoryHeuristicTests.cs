@@ -21,6 +21,19 @@ public class HistoryHeuristicTests
         return new MoveOrdering(engine.GetBoardSnapshot());
     }
 
+    /// <summary>
+    /// A board the test owns, so it can be re-posed under a <see cref="MoveOrdering"/> that keeps
+    /// its tables. Re-posing is the only way to exhibit the collisions the table used to have:
+    /// they are between things that stand on one square at different points in a search tree, not
+    /// between two moves of one position.
+    /// </summary>
+    private static Board Posed(string fen)
+    {
+        var board = new Board();
+        board.LoadFromFen(fen);
+        return board;
+    }
+
     private static Move Quiet(string from, string to) =>
         new(Square.FromAlgebraic(from), Square.FromAlgebraic(to));
 
@@ -72,6 +85,47 @@ public class HistoryHeuristicTests
         for (int i = 0; i < 100_000; i++) ordering.RecordHistoryMove(move, 40);
 
         Assert.InRange(ordering.HistoryScore(move), 0, MoveOrdering.HistoryMax);
+    }
+
+    // ── What the table is keyed by ───────────────────────────────────────────
+
+    /// <summary>
+    /// A rook that cut on d1-d4 says nothing about a queen that later stands on d1 and plays the
+    /// same squares. On a [from, to] table it said everything: one slot, two pieces, and whichever
+    /// wrote last decided how the other was ordered.
+    /// </summary>
+    [Fact]
+    public void AQueenDoesNotInheritTheRooksRecordOnTheSameSquares()
+    {
+        var board    = Posed("7k/8/8/8/8/8/8/3R2K1 w - - 0 1");
+        var ordering = new MoveOrdering(board);
+        var d1d4     = Quiet("d1", "d4");
+
+        for (int i = 0; i < 50; i++) ordering.RecordHistoryMove(d1d4, 10);
+        Assert.True(ordering.HistoryScore(d1d4) > 0, "the rook built up no history to inherit");
+
+        board.LoadFromFen("7k/8/8/8/8/8/8/3Q2K1 w - - 0 1");
+
+        Assert.Equal(0, ordering.HistoryScore(d1d4));
+    }
+
+    /// <summary>
+    /// And neither does the other side. Both colours wrote into the same 4,096 slots, so a cutoff
+    /// White had learned was read as evidence by Black.
+    /// </summary>
+    [Fact]
+    public void BlackDoesNotInheritWhitesRecordOnTheSameSquares()
+    {
+        var board    = Posed("7k/8/8/8/8/8/8/3R2K1 w - - 0 1");
+        var ordering = new MoveOrdering(board);
+        var d1d4     = Quiet("d1", "d4");
+
+        for (int i = 0; i < 50; i++) ordering.RecordHistoryMove(d1d4, 10);
+        Assert.True(ordering.HistoryScore(d1d4) > 0, "White built up no history to inherit");
+
+        board.LoadFromFen("6k1/8/7K/8/8/8/8/3r4 b - - 0 1");
+
+        Assert.Equal(0, ordering.HistoryScore(d1d4));
     }
 
     // ── What survives the move-to-move boundary ──────────────────────────────

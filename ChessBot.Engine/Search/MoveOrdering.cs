@@ -24,7 +24,16 @@ internal class MoveOrdering
 
     /// <summary>
     /// History heuristic: a signed record of how well a quiet move has done at producing beta
-    /// cutoffs, relative to how often it was tried and failed to. Indexed as [from.Index, to.Index].
+    /// cutoffs, relative to how often it was tried and failed to. Indexed as
+    /// [<see cref="PieceIndex"/> of the moving piece, to.Index].
+    ///
+    /// It used to be [from.Index, to.Index], which is two collisions in one table. White and
+    /// Black wrote to the same 4,096 slots, so a cutoff learned for one side was read as evidence
+    /// by the other; and a rook and a queen arriving on the same square shared a slot, so the
+    /// table could not say which piece a cutoff belonged to. Both collisions churn one entry with
+    /// updates of opposite sign, which is the shape of the distribution that was measured: it sat
+    /// inside ±250 on a table whose ceiling is 16,384 because entries were being cancelled, not
+    /// because they were being capped.
     /// </summary>
     private readonly int[,] _history;
 
@@ -87,7 +96,7 @@ internal class MoveOrdering
         _board = board;
         _killerMoves1 = new Move[Searcher.MAX_PLY];
         _killerMoves2 = new Move[Searcher.MAX_PLY];
-        _history = new int[64, 64];
+        _history = new int[PieceIndexCount, 64];
         _counterMoves = new Move[64, 64];
     }
 
@@ -216,7 +225,7 @@ internal class MoveOrdering
 
         // History: the signed cutoff record of this quiet move. Negative for a move that has been
         // tried and failed often, so it sorts below one that has never been seen at all.
-        return 100000 + _history[move.From.Index, move.To.Index];
+        return 100000 + _history[PieceIndex(_board.GetPiece(move.From)), move.To.Index];
     }
 
     /// <summary>
@@ -278,8 +287,28 @@ internal class MoveOrdering
     /// </summary>
     public void RecordHistoryFailure(Move move, int depth) => UpdateHistory(move, -HistoryBonus(depth));
 
-    /// <summary>The current history value of a move. Signed; 0 for a move never seen.</summary>
-    internal int HistoryScore(Move move) => _history[move.From.Index, move.To.Index];
+    /// <summary>
+    /// The current history value of a move. Signed; 0 for a move never seen.
+    ///
+    /// The moving piece is read from the board rather than carried in the move, so every caller —
+    /// scoring, update and probe alike — has to ask while the board still stands at the position
+    /// the move is made from. In the search that holds at scoring time, and again after
+    /// <c>UndoMove</c>, which is where the cutoff bookkeeping runs.
+    /// </summary>
+    internal int HistoryScore(Move move) =>
+        _history[PieceIndex(_board.GetPiece(move.From)), move.To.Index];
+
+    /// <summary>
+    /// The number of distinct (colour, piece type) pairs, and so the first axis of the history
+    /// table.
+    /// </summary>
+    internal const int PieceIndexCount = 12;
+
+    /// <summary>
+    /// Packs a piece into 0-11 as colour × 6 + type. An empty square would index −1 and cannot
+    /// occur: every caller passes the piece standing on a move's origin square.
+    /// </summary>
+    private static int PieceIndex(Piece piece) => (int)piece.Color * 6 + ((int)piece.Type - 1);
 
     private static int HistoryBonus(int depth) => Math.Min(depth * depth, HistoryBonusMax);
 
@@ -291,7 +320,7 @@ internal class MoveOrdering
     /// </summary>
     private void UpdateHistory(Move move, int bonus)
     {
-        ref int entry = ref _history[move.From.Index, move.To.Index];
+        ref int entry = ref _history[PieceIndex(_board.GetPiece(move.From)), move.To.Index];
         entry += bonus - entry * Math.Abs(bonus) / HistoryMax;
     }
 
@@ -621,7 +650,7 @@ internal class MoveOrdering
     /// </summary>
     public void NewSearch()
     {
-        for (int i = 0; i < 64; i++)
+        for (int i = 0; i < PieceIndexCount; i++)
             for (int j = 0; j < 64; j++)
                 _history[i, j] /= 2;
     }
@@ -635,13 +664,12 @@ internal class MoveOrdering
         Array.Clear(_killerMoves1, 0, _killerMoves1.Length);
         Array.Clear(_killerMoves2, 0, _killerMoves2.Length);
 
-        for (int i = 0; i < 64; i++)
-        {
+        for (int i = 0; i < PieceIndexCount; i++)
             for (int j = 0; j < 64; j++)
-            {
                 _history[i, j] = 0;
+
+        for (int i = 0; i < 64; i++)
+            for (int j = 0; j < 64; j++)
                 _counterMoves[i, j] = default;
-            }
-        }
     }
 }
