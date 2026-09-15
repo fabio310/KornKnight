@@ -184,6 +184,213 @@ internal class MoveGenerator
     /// <summary>Returns true if <paramref name="square"/> is attacked by the enemy.</summary>
     private bool IsAttacked(Square square) => ((_enemyAttacks >> square.Index) & 1UL) != 0;
 
+    // ── Does this move give check? ───────────────────────────────────────────────────────────────
+
+    // Scratch state describing the position AFTER the move GivesCheck is being asked about, so the
+    // ray walks below can read it without the board having been touched. Fields rather than
+    // parameters because they are threaded through five helpers; a MoveGenerator belongs to one
+    // searcher and the search is single-threaded, which is the same assumption _moves already makes.
+    private ulong  _afterVacated;      // squares the move empties
+    private Square _afterArrivalSquare; private Piece _afterArrival;   // the piece that lands
+    private Square _afterRookSquare;    private Piece _afterRook;      // the castling rook, if any
+    private bool   _afterHasRook;
+
+    /// <summary>
+    /// Whether <paramref name="move"/> — a legal move for the side to move — leaves the enemy king
+    /// in check. Answers without touching the board.
+    ///
+    /// What it replaces is MakeMove + IsInCheck + UndoMove, paid once per move a pruning rule wants
+    /// to drop. IsInCheck alone walks all eight rays out of the king plus three pattern tests, and
+    /// make/unmake maintains the hash, the piece lists, the pawn and rook bitboards and the
+    /// castling rights on the way in and undoes all of it on the way out. This asks two questions
+    /// instead, each of which walks at most one ray: does the arriving piece see the enemy king
+    /// from where it lands, and does the square it left open a line that something else already
+    /// stood on.
+    ///
+    /// The second question is the same ray scan <see cref="DetectSlidingCheckersAndPins"/> runs for
+    /// our own pins, run from the other king. It is not cached per node: this is called from inside
+    /// a move loop whose recursive children generate moves through the same MoveGenerator instance,
+    /// so anything cached here would be a sibling's data by the second call.
+    /// </summary>
+    public bool GivesCheck(Move move)
+    {
+        Color  us    = _board.State.ActiveColor;
+        Square enemyKing = _board.GetKingPosition(us.Opposite());
+
+        Piece     mover     = _board.GetPiece(move.From);
+        bool      promotion = (move.MoveType & MoveType.Promotion) != 0;
+        PieceType arriving  = promotion ? move.PromotionType : mover.Type;
+        bool      castling  = (move.MoveType & MoveType.Castling) != 0;
+
+        _afterVacated       = 1UL << move.From.Index;
+        _afterArrivalSquare = move.To;
+        _afterArrival       = new Piece(us, arriving);
+        _afterHasRook       = castling;
+
+        // En passant empties a second square: the captured pawn stands beside the destination,
+        // not on it. That square is as capable of having been blocking a line as the origin is.
+        if ((move.MoveType & MoveType.EnPassant) != 0)
+            _afterVacated |= 1UL << new Square(move.To.File, move.From.Rank).Index;
+
+        if (castling)
+        {
+            bool kingSide = move.To.File > move.From.File;
+            _afterVacated     |= 1UL << new Square(kingSide ? 7 : 0, move.From.Rank).Index;
+            _afterRookSquare   = new Square(kingSide ? 5 : 3, move.From.Rank);
+            _afterRook         = new Piece(us, PieceType.Rook);
+        }
+
+        // 1) Direct check. A castling king never gives one; its rook is the piece that can, from
+        //    the square it lands on rather than from the king's destination.
+        if (castling)
+        {
+            if (Sees(PieceType.Rook, us, _afterRookSquare, enemyKing)) return true;
+        }
+        else if (Sees(arriving, us, move.To, enemyKing))
+        {
+            return true;
+        }
+
+        // 2) Discovered check. Every square the move empties is a candidate: the origin, the pawn
+        //    an en passant capture removes, and the rook's origin when castling.
+        ulong candidates = _afterVacated;
+        while (candidates != 0)
+        {
+            int index = System.Numerics.BitOperations.TrailingZeroCount(candidates);
+            candidates &= candidates - 1;
+
+            if (OpensALineTo(new Square(index), enemyKing, us)) return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The piece standing on <paramref name="square"/> after the move being judged. Arrivals win
+    /// over departures; the two never name the same square in standard chess.
+    /// </summary>
+    private Piece PieceAfterMove(Square square)
+    {
+        if (square == _afterArrivalSquare) return _afterArrival;
+        if (_afterHasRook && square == _afterRookSquare) return _afterRook;
+
+        return ((_afterVacated >> square.Index) & 1UL) != 0 ? Piece.Empty : _board.GetPiece(square);
+    }
+
+    /// <summary>
+    /// Whether a piece of <paramref name="type"/> and <paramref name="color"/> standing on
+    /// <paramref name="from"/> attacks <paramref name="target"/> in the position after the move.
+    /// </summary>
+    private bool Sees(PieceType type, Color color, Square from, Square target)
+    {
+        int fileDelta = target.File - from.File;
+        int rankDelta = target.Rank - from.Rank;
+
+        switch (type)
+        {
+            case PieceType.Pawn:
+                return rankDelta == color.PawnDirection() && (fileDelta == 1 || fileDelta == -1);
+
+            case PieceType.Knight:
+                int af = Math.Abs(fileDelta), ar = Math.Abs(rankDelta);
+                return (af == 1 && ar == 2) || (af == 2 && ar == 1);
+
+            case PieceType.King:
+                return Math.Abs(fileDelta) <= 1 && Math.Abs(rankDelta) <= 1
+                       && (fileDelta != 0 || rankDelta != 0);
+
+            case PieceType.Bishop:
+                return Math.Abs(fileDelta) == Math.Abs(rankDelta) && fileDelta != 0
+                       && PathIsClear(from, target);
+
+            case PieceType.Rook:
+                return (fileDelta == 0) != (rankDelta == 0) && PathIsClear(from, target);
+
+            case PieceType.Queen:
+                bool onALine = (Math.Abs(fileDelta) == Math.Abs(rankDelta) && fileDelta != 0)
+                            || ((fileDelta == 0) != (rankDelta == 0));
+                return onALine && PathIsClear(from, target);
+
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Whether every square strictly between two aligned squares is empty after the move. The
+    /// caller has already established that they are aligned.
+    /// </summary>
+    private bool PathIsClear(Square from, Square target)
+    {
+        int df = Math.Sign(target.File - from.File);
+        int dr = Math.Sign(target.Rank - from.Rank);
+
+        int f = from.File + df, r = from.Rank + dr;
+        while (f != target.File || r != target.Rank)
+        {
+            if (!PieceAfterMove(new Square(f, r)).IsEmpty) return false;
+            f += df;
+            r += dr;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Whether a square the move empties lies on a clear line out of the enemy king with one of our
+    /// sliders of the matching kind standing behind it — that is, whether emptying it discovers a
+    /// check.
+    ///
+    /// Walking outward from the king rather than inward from the slider is what makes this one ray
+    /// instead of eight: the direction is fixed by the two squares, so there is only ever one line
+    /// to look along.
+    /// </summary>
+    private bool OpensALineTo(Square vacated, Square enemyKing, Color us)
+    {
+        int fileDelta = vacated.File - enemyKing.File;
+        int rankDelta = vacated.Rank - enemyKing.Rank;
+
+        bool diagonal   = Math.Abs(fileDelta) == Math.Abs(rankDelta) && fileDelta != 0;
+        bool orthogonal = (fileDelta == 0) != (rankDelta == 0);
+        if (!diagonal && !orthogonal) return false;
+
+        int df = Math.Sign(fileDelta);
+        int dr = Math.Sign(rankDelta);
+
+        // From the king up to and including the vacated square: all of it must be empty afterwards.
+        // "Including" matters — a move can land back on the line it left, and castling empties a
+        // square the rook then refills.
+        int f = enemyKing.File + df, r = enemyKing.Rank + dr;
+        while (true)
+        {
+            if (!PieceAfterMove(new Square(f, r)).IsEmpty) return false;
+            if (f == vacated.File && r == vacated.Rank) break;
+            f += df;
+            r += dr;
+        }
+
+        // Beyond it, the first piece decides.
+        f += df;
+        r += dr;
+        while (f >= 0 && f < 8 && r >= 0 && r < 8)
+        {
+            Piece piece = PieceAfterMove(new Square(f, r));
+            if (!piece.IsEmpty)
+            {
+                if (piece.Color != us) return false;
+
+                return diagonal
+                    ? piece.Type is PieceType.Bishop or PieceType.Queen
+                    : piece.Type is PieceType.Rook   or PieceType.Queen;
+            }
+
+            f += df;
+            r += dr;
+        }
+
+        return false;
+    }
+
     // ── Per-node attack / check / pin analysis ───────────────────────────────────────────────────
 
     /// <summary>
