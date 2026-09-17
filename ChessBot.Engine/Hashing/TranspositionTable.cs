@@ -151,26 +151,63 @@ internal class TranspositionTable
     }
 
     /// <summary>
+    /// Reads a slot once and hands back everything it holds: the move, the score, the bound
+    /// flag and the depth it was searched to. Returns false when the slot does not belong to
+    /// this position.
+    ///
+    /// One probe, because a probe is a cache miss. The table is tens of megabytes of memory
+    /// touched in hash order, so essentially every read of it misses to main memory, and the
+    /// search used to take that miss twice per node: once through LookupBestMoveOnly to get a
+    /// move for ordering, and again through Lookup to get a score. The two calls read the same
+    /// sixteen bytes of the same slot — the depth test that distinguishes them is a comparison
+    /// on data the first call had already fetched and thrown away.
+    ///
+    /// The depth rule is deliberately NOT applied here. What a caller does with a shallow entry
+    /// differs by caller — move ordering will take a move from any depth, a score cutoff will
+    /// not — and folding the rule in is what forced two probes in the first place. The stored
+    /// depth is returned and the caller compares it.
+    /// </summary>
+    public bool TryProbe(ulong hash, out int score, out ScoreFlag flag, out Move bestMove,
+                         out int depth)
+    {
+        if (!TryRead(hash, out ulong data))
+        {
+            score    = 0;
+            flag     = ScoreFlag.Exact;
+            bestMove = default;
+            depth    = 0;
+            return false;
+        }
+
+        score    = UnpackScore(data);
+        flag     = UnpackFlag(data);
+        bestMove = UnpackMove(data);
+        depth    = (int)((data >> DepthShift) & DepthMask);
+        return true;
+    }
+
+    /// <summary>
     /// Returns the best move stored for this hash key, regardless of depth.
     /// Used for move-ordering: even a shallow TT entry provides a good first move to try.
     /// Returns default(Move) if no entry exists for this hash.
     /// </summary>
     public Move LookupBestMoveOnly(ulong hash) =>
-        TryRead(hash, out ulong data) ? UnpackMove(data) : default;
+        TryProbe(hash, out _, out _, out Move bestMove, out _) ? bestMove : default;
 
     /// <summary>
-    /// Retrieves an entry from the transposition table if it exists and matches the hash.
-    /// Returns null if no matching entry is found.
+    /// Retrieves an entry from the transposition table if it exists, matches the hash, and was
+    /// searched at least as deep as <paramref name="depth"/>. Returns null otherwise.
+    ///
+    /// Expressed in terms of <see cref="TryProbe"/> rather than reading the slot itself, so
+    /// there is one decode path and not two that can drift apart. Not on the search's hot path
+    /// any more — the search probes directly — but it is the form the table's tests are
+    /// written against, and it states the depth rule in one place.
     /// </summary>
-    public (int score, ScoreFlag flag, Move bestMove, int depth)? Lookup(ulong hash, int depth)
-    {
-        if (!TryRead(hash, out ulong data)) return null;
-
-        int storedDepth = (int)((data >> DepthShift) & DepthMask);
-        if (storedDepth < depth) return null;
-
-        return (UnpackScore(data), UnpackFlag(data), UnpackMove(data), storedDepth);
-    }
+    public (int score, ScoreFlag flag, Move bestMove, int depth)? Lookup(ulong hash, int depth) =>
+        TryProbe(hash, out int score, out ScoreFlag flag, out Move bestMove, out int storedDepth)
+        && storedDepth >= depth
+            ? (score, flag, bestMove, storedDepth)
+            : null;
 
     /// <summary>
     /// Reads a slot and confirms it belongs to <paramref name="hash"/>.
