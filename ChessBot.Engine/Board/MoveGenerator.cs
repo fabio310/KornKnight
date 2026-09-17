@@ -439,8 +439,8 @@ internal class MoveGenerator
         if (rank < 0 || rank > 7)
             return;
 
-        if (from.File - 1 >= 0) _enemyAttacks |= 1UL << new Square(from.File - 1, rank).Index;
-        if (from.File + 1 <= 7) _enemyAttacks |= 1UL << new Square(from.File + 1, rank).Index;
+        if (from.File - 1 >= 0) _enemyAttacks |= 1UL << Square.FromFileRankUnsafe(from.File - 1, rank).Index;
+        if (from.File + 1 <= 7) _enemyAttacks |= 1UL << Square.FromFileRankUnsafe(from.File + 1, rank).Index;
     }
 
     /// <summary>Marks the squares an enemy knight on <paramref name="from"/> attacks.</summary>
@@ -451,7 +451,7 @@ internal class MoveGenerator
             int f = from.File + KnightFileOffsets[i];
             int r = from.Rank + KnightRankOffsets[i];
             if (f >= 0 && f < 8 && r >= 0 && r < 8)
-                _enemyAttacks |= 1UL << new Square(f, r).Index;
+                _enemyAttacks |= 1UL << Square.FromFileRankUnsafe(f, r).Index;
         }
     }
 
@@ -463,7 +463,7 @@ internal class MoveGenerator
             int f = from.File + KingFileOffsets[i];
             int r = from.Rank + KingRankOffsets[i];
             if (f >= 0 && f < 8 && r >= 0 && r < 8)
-                _enemyAttacks |= 1UL << new Square(f, r).Index;
+                _enemyAttacks |= 1UL << Square.FromFileRankUnsafe(f, r).Index;
         }
     }
 
@@ -483,7 +483,7 @@ internal class MoveGenerator
 
             while (f >= 0 && f < 8 && r >= 0 && r < 8)
             {
-                Square square = new Square(f, r);
+                Square square = Square.FromFileRankUnsafe(f, r);
                 _enemyAttacks |= 1UL << square.Index;
 
                 Piece piece = _board.GetPiece(square);
@@ -517,7 +517,7 @@ internal class MoveGenerator
                 if (pf < 0 || pf > 7)
                     continue;
 
-                Square square = new Square(pf, pawnRank);
+                Square square = Square.FromFileRankUnsafe(pf, pawnRank);
                 Piece piece = _board.GetPiece(square);
                 if (piece.Color == _them && piece.Type == PieceType.Pawn)
                     AddChecker(1UL << square.Index);
@@ -532,7 +532,7 @@ internal class MoveGenerator
             if (f < 0 || f > 7 || r < 0 || r > 7)
                 continue;
 
-            Square square = new Square(f, r);
+            Square square = Square.FromFileRankUnsafe(f, r);
             Piece piece = _board.GetPiece(square);
             if (piece.Color == _them && piece.Type == PieceType.Knight)
                 AddChecker(1UL << square.Index);
@@ -562,7 +562,7 @@ internal class MoveGenerator
 
             while (f >= 0 && f < 8 && r >= 0 && r < 8)
             {
-                Square square = new Square(f, r);
+                Square square = Square.FromFileRankUnsafe(f, r);
                 int idx = square.Index;
                 rayBits |= 1UL << idx;
 
@@ -631,7 +631,7 @@ internal class MoveGenerator
             if (tf < 0 || tf > 7 || tr < 0 || tr > 7)
                 continue;
 
-            Square to = new Square(tf, tr);
+            Square to = Square.FromFileRankUnsafe(tf, tr);
 
             // The king may not move onto an enemy-attacked square (king already x-rayed out).
             if (IsAttacked(to))
@@ -667,7 +667,7 @@ internal class MoveGenerator
             if (tf < 0 || tf > 7 || tr < 0 || tr > 7)
                 continue;
 
-            Square to = new Square(tf, tr);
+            Square to = Square.FromFileRankUnsafe(tf, tr);
             if (((_checkMask >> to.Index) & 1UL) == 0)
                 continue; // must resolve check
 
@@ -704,7 +704,7 @@ internal class MoveGenerator
 
             while (f >= 0 && f < 8 && r >= 0 && r < 8)
             {
-                Square to = new Square(f, r);
+                Square to = Square.FromFileRankUnsafe(f, r);
                 bool allow = ((allowed >> to.Index) & 1UL) != 0;
                 Piece target = _board.GetPiece(to);
 
@@ -747,7 +747,7 @@ internal class MoveGenerator
         int oneRank = fr + dir;
         if (oneRank >= 0 && oneRank <= 7)
         {
-            Square one = new Square(ff, oneRank);
+            Square one = Square.FromFileRankUnsafe(ff, oneRank);
             if (_board.GetPiece(one).IsEmpty)
             {
                 bool oneAllowed = ((allowed >> one.Index) & 1UL) != 0;
@@ -771,7 +771,7 @@ internal class MoveGenerator
                 if (!tacticalOnly && fr == startRank)
                 {
                     int twoRank = fr + 2 * dir;
-                    Square two = new Square(ff, twoRank);
+                    Square two = Square.FromFileRankUnsafe(ff, twoRank);
                     if (_board.GetPiece(two).IsEmpty && ((allowed >> two.Index) & 1UL) != 0)
                         AddMove(new Move(from, two, MoveType.DoublePawnPush));
                 }
@@ -786,7 +786,7 @@ internal class MoveGenerator
             if (cf < 0 || cf > 7 || cr < 0 || cr > 7)
                 continue;
 
-            Square to = new Square(cf, cr);
+            Square to = Square.FromFileRankUnsafe(cf, cr);
             Piece target = _board.GetPiece(to);
 
             if (!target.IsEmpty && target.Color == _them && ((allowed >> to.Index) & 1UL) != 0)
@@ -808,7 +808,7 @@ internal class MoveGenerator
             // us on the moving pawn's own rank. Legality needs special handling (see below).
             if (_board.State.HasEnPassant && _board.EnPassantTarget == to)
             {
-                Square captured = new Square(cf, fr);
+                Square captured = Square.FromFileRankUnsafe(cf, fr);
                 if (IsEnPassantLegal(from, to, captured, pinMask))
                     AddMove(new Move(from, to, MoveType.EnPassant));
             }

@@ -307,8 +307,8 @@ internal class TranspositionTable
     }
 
     private static Move UnpackMove(ulong data) => new(
-        new Square((int)((data >> FromShift) & SquareMask)),
-        new Square((int)((data >> ToShift)   & SquareMask)),
+        Square.FromIndexUnsafe((int)((data >> FromShift) & SquareMask)),
+        Square.FromIndexUnsafe((int)((data >> ToShift)   & SquareMask)),
         (MoveType)(byte)((data >> MoveTypeShift)  & MoveTypeMask),
         (PieceType)(byte)((data >> PromotionShift) & PromotionMask));
 
