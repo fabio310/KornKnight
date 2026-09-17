@@ -75,7 +75,8 @@ public class NodeCostProbe
             var result = Run(fen, nodes);
             _out.WriteLine($"DECISION {result.BestMove}  score {result.Evaluation}  " +
                            $"depth {result.DepthAchieved}  nodes {result.NodesSearched}  " +
-                           $"qnodes {result.QNodesSearched}");
+                           $"qnodes {result.QNodesSearched}  " +
+                           $"futility {result.FutilitySkips}  lmp {result.LateMovePrunes}");
         }
     }
 
