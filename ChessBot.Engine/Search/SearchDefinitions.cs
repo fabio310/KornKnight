@@ -36,27 +36,27 @@ public class SearchSettings
     public long? MaxNodes { get; set; }
 
     /// <summary>
-    /// If true, the search will perform iterative deepening (search at depths 1, 2, ..., until time/depth limit).
-    /// </summary>
-    public bool UseIterativeDeepening { get; set; } = true;
-
-    /// <summary>
     /// If true, the search will output debug/telemetry information.
     /// </summary>
     public bool Verbose { get; set; }
 
     // ── Heuristic toggles ────────────────────────────────────────────────────
-    // All default to true, so normal play is unaffected. Turning them off yields a
-    // plain alpha-beta search, whose score must equal an unpruned minimax of the same
-    // depth — that equivalence is the correctness gate for the search. Null-move,
-    // LMR and futility pruning are deliberately unsound heuristics: they trade exact
-    // scores for depth, so they must be excluded from that comparison.
+    // These exist for exactly one caller: the gate that compares the search against an unpruned
+    // minimax of the same depth. Null-move, LMR and the static-evaluation family are deliberately
+    // unsound — they trade exact scores for depth — so they have to be excluded from that
+    // comparison, and there is no other way to exclude them than to turn them off.
+    //
+    // Every setter is internal, so nothing outside the engine and its tests can reach them, and
+    // they all default to true. The engine plays its best known configuration and there is no
+    // production path that can ask it not to. See <see cref="PlainAlphaBeta"/>, which is how the
+    // gate actually constructs its settings; a test that needs one heuristic off sets that one
+    // property and nothing else.
 
     /// <summary>Null-move pruning.</summary>
-    public bool UseNullMove { get; set; } = true;
+    public bool UseNullMove { get; internal set; } = true;
 
     /// <summary>Late move reductions.</summary>
-    public bool UseLmr { get; set; } = true;
+    public bool UseLmr { get; internal set; } = true;
 
     /// <summary>
     /// The static-evaluation pruning family: futility pruning near the horizon and reverse
@@ -65,42 +65,23 @@ public class SearchSettings
     /// the only caller that turns either off is the minimax equivalence gate, which has to turn
     /// off both.
     /// </summary>
-    public bool UseFutility { get; set; } = true;
+    public bool UseFutility { get; internal set; } = true;
 
     /// <summary>Transposition table probes and cutoffs (stores still happen).</summary>
-    public bool UseTranspositionTable { get; set; } = true;
+    public bool UseTranspositionTable { get; internal set; } = true;
 
     /// <summary>Quiescence search at the horizon; when false, the horizon returns a static eval.</summary>
-    public bool UseQuiescence { get; set; } = true;
+    public bool UseQuiescence { get; internal set; } = true;
 
     /// <summary>Aspiration windows; when false, every iteration uses a full window.</summary>
-    public bool UseAspiration { get; set; } = true;
-
-    /// <summary>
-    /// Optional override of the LMR schedule's base term (R = LmrBaseOverride + ln(depth)·ln(moveCount) / LmrDivisorOverride).
-    /// Null = use the engine's built-in default (0.75). Exists solely to allow controlled
-    /// A/B comparison of LMR schedules without recompiling; never set by normal callers.
-    /// </summary>
-    public double? LmrBaseOverride { get; set; }
-
-    /// <summary>
-    /// Optional override of the LMR schedule's divisor term. Null = use the engine's
-    /// built-in default (2.25). See <see cref="LmrBaseOverride"/>.
-    /// </summary>
-    public double? LmrDivisorOverride { get; set; }
-
-    /// <summary>
-    /// Optional override of how many first moves at a node are searched at full depth
-    /// before LMR starts reducing (built-in default: 4). See <see cref="LmrBaseOverride"/>.
-    /// </summary>
-    public int? LmrFullMovesOverride { get; set; }
+    public bool UseAspiration { get; internal set; } = true;
 
     /// <summary>
     /// Check extension (search one ply deeper when in check). Sound, but it changes the
     /// shape of a fixed-depth tree, so it must be off when comparing against a fixed-depth
     /// minimax reference.
     /// </summary>
-    public bool UseCheckExtension { get; set; } = true;
+    public bool UseCheckExtension { get; internal set; } = true;
 
     /// <summary>
     /// Invoked once per *completed* iterative-deepening iteration — never per node — so a
