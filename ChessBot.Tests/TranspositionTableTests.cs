@@ -209,4 +209,81 @@ public class TranspositionTableTests
 
         return (depth, score, flag, move);
     }
+
+    // ── Sizing ───────────────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(1,    65_536)]        // 1 MB / 16 bytes, already a power of two
+    [InlineData(64,   4_194_304)]     // the default: exact, so the table is unchanged by rounding
+    [InlineData(1024, 67_108_864)]
+    [InlineData(2048, 134_217_728)]   // the product overflows int here
+    [InlineData(4096, 268_435_456)]   // ...and wrapped negative here, clamping to a single entry
+    public void TheTableGetsTheEntriesTheSizeAsksFor(int sizeInMb, int expectedEntries)
+    {
+        // The arithmetic used to be done in int, so a table of 2,048 MB or more silently became
+        // a table of ONE entry: asking for the largest table the engine allows produced the
+        // smallest one that exists, and a search would have run with an effectively absent
+        // transposition table while reporting a 4 GB hash. Harmless while the only caller
+        // passed 64; a live bug the moment the size became a UCI option.
+        //
+        // Asked of the sizing rule rather than of a constructed table, so that checking the
+        // 4 GB case does not mean allocating four gigabytes to read one integer back.
+        Assert.Equal(expectedEntries, TranspositionTable.EntriesFor(sizeInMb));
+    }
+
+    [Theory]
+    [InlineData(100, 4_194_304)]      // 6,553,600 entries rounds DOWN to 2^22
+    [InlineData(3,   131_072)]        // 196,608 rounds down to 2^17
+    public void ANonPowerOfTwoSizeRoundsDownRatherThanUp(int sizeInMb, int expectedEntries)
+    {
+        // Down, not up: the size is a budget the host set, and a host that offers 100 MB has
+        // said what it is willing to give. Taking 128 would not be a rounding error.
+        var table = new TranspositionTable(sizeInMb);
+
+        Assert.Equal(expectedEntries, table.GetCapacity());
+        Assert.True(table.GetCapacity() * 16L <= sizeInMb * 1024L * 1024L,
+                    "the table took more memory than it was offered");
+    }
+
+    [Fact]
+    public void EverySizeProducesAPowerOfTwoSoTheIndexCanBeAMask()
+    {
+        // The slot index is hash & (entries - 1), which is only the same mapping as a remainder
+        // when the entry count is a power of two. This is the invariant that makes it so.
+        foreach (int sizeInMb in new[] { 1, 2, 3, 5, 16, 33, 64, 100, 512, 1000, 4096 })
+        {
+            int entries = TranspositionTable.EntriesFor(sizeInMb);
+
+            Assert.True(entries > 0 && (entries & (entries - 1)) == 0,
+                        $"{sizeInMb} MB produced {entries} entries, which is not a power of two");
+        }
+    }
+
+    [Fact]
+    public void ASlotIsStillAddressedByTheLowBitsOfTheKey()
+    {
+        // Two keys differing only above the index bits must share a slot, and two differing
+        // only inside them must not. This pins WHICH bits address the table, which is not a
+        // detail: Lemire's multiply-high mapping indexes by the HIGH bits instead, and
+        // measured 7.4% more nodes to the same depth on the bench corpus — the low bits of
+        // this Zobrist hash distribute better than the high ones.
+        var table = new TranspositionTable(1);   // 65,536 entries, so bits 0..15 index it
+        var move  = new Move(Square.FromAlgebraic("a1"), Square.FromAlgebraic("a2"));
+
+        table.Store(0x0000_0000_0000_1234UL, depth: 5, score: 10,
+                    TranspositionTable.ScoreFlag.Exact, move);
+
+        // Same low 16 bits, different high bits: same slot, so the verification must reject it
+        // rather than hand back the other position's score.
+        Assert.Null(table.Lookup(0xFFFF_FFFF_FFFF_1234UL, depth: 1));
+
+        // The original is still there, which is what says the collision landed on it.
+        Assert.NotNull(table.Lookup(0x0000_0000_0000_1234UL, depth: 1));
+
+        // A key differing inside the index bits lands elsewhere and leaves it alone.
+        table.Store(0x0000_0000_0000_5678UL, depth: 5, score: 20,
+                    TranspositionTable.ScoreFlag.Exact, move);
+        Assert.NotNull(table.Lookup(0x0000_0000_0000_1234UL, depth: 1));
+        Assert.NotNull(table.Lookup(0x0000_0000_0000_5678UL, depth: 1));
+    }
 }
