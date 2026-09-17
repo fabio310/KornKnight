@@ -161,6 +161,16 @@ public sealed class UciSession : IDisposable
                 StopSearch();
                 return true;
 
+            case "bench":
+                // Not a UCI command. It is here because this is the only place that already
+                // owns an engine and a writer, and because the node-rate regression it
+                // measures has to be measurable from the shipped binary rather than from a
+                // test host — the test host is a different process with a different GC
+                // configuration, and those are two different numbers.
+                StopSearch();
+                HandleBench(tokens);
+                return true;
+
             case "quit":
                 StopSearch();
                 return false;
@@ -364,6 +374,57 @@ public sealed class UciSession : IDisposable
             WriteLine($"bestmove {UciMoveNotation.NullMove}");
         }
     }
+
+    // ── bench ────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Runs "bench [depth] [hashMb]" on this thread and writes the report.
+    ///
+    /// On this thread deliberately: the command loop has nothing else to answer while a
+    /// measurement is running, and running it on the search thread would put the bench in
+    /// competition with whatever the thread pool is doing to service the reader — which is
+    /// noise in the one number the command exists to produce.
+    ///
+    /// It runs on its own engine rather than this session's. The bench must not depend on what
+    /// position the host happens to have loaded or on what the session's tables have learned,
+    /// and the session must not silently lose its game because someone asked for a
+    /// measurement.
+    /// </summary>
+    private void HandleBench(string[] tokens)
+    {
+        int depth  = ParseArgument(tokens, 1, Bench.DefaultDepth);
+        int hashMb = ParseArgument(tokens, 2, ChessEngine.DefaultHashSizeMb);
+
+        var report = new StringWriter();
+        var summary = Bench.Run(report, depth, hashMb);
+
+        // Written as one block under the write lock, so a bench report cannot be interleaved
+        // line by line with anything else this session emits.
+        lock (_writeLock)
+        {
+            _out.Write(report.ToString());
+            _out.Flush();
+        }
+
+        _lastBench = summary;
+    }
+
+    /// <summary>The totals of the last bench run in this session, for tests.</summary>
+    internal BenchSummary? LastBench => _lastBench;
+
+    private BenchSummary? _lastBench;
+
+    /// <summary>
+    /// Reads a positional integer argument, falling back to <paramref name="fallback"/> when it
+    /// is absent or will not parse. A bench with a mistyped argument runs at the default rather
+    /// than not running, which matches how the rest of this session treats malformed input.
+    /// </summary>
+    private static int ParseArgument(string[] tokens, int index, int fallback) =>
+        index < tokens.Length
+        && int.TryParse(tokens[index], System.Globalization.NumberStyles.Integer,
+                        System.Globalization.CultureInfo.InvariantCulture, out int value)
+            ? value
+            : fallback;
 
     // ── Output ───────────────────────────────────────────────────────────────
 

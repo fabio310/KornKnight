@@ -18,17 +18,71 @@ public class ChessEngine
     private readonly Evaluator _evaluator;
     private readonly ZobristHasher _zobristHasher;
     private Searcher? _searcher;
+    private int _hashSizeMb;
+
+    /// <summary>
+    /// Transposition table size in megabytes when the caller does not choose one. This is the
+    /// value that was compiled into the searcher before the size became a parameter, so a
+    /// caller that says nothing gets exactly the previous behaviour.
+    /// </summary>
+    public const int DefaultHashSizeMb = 64;
+
+    /// <summary>Smallest table the engine will build. One megabyte is 65,536 entries.</summary>
+    public const int MinHashSizeMb = 1;
+
+    /// <summary>
+    /// Largest table the engine will build. Four gigabytes is the point past which the entry
+    /// count stops fitting the index arithmetic the table uses, not a judgement about how much
+    /// memory a host has.
+    /// </summary>
+    public const int MaxHashSizeMb = 4096;
 
     /// <summary>
     /// Creates a new ChessEngine initialized to the standard starting position.
     /// </summary>
-    public ChessEngine()
+    /// <param name="hashSizeMb">
+    /// Transposition table size in megabytes, clamped to
+    /// <see cref="MinHashSizeMb"/>..<see cref="MaxHashSizeMb"/>. A measurement harness pins
+    /// this rather than inheriting it, because the table size changes how many transpositions
+    /// are found and therefore the node count the harness reports.
+    /// </param>
+    public ChessEngine(int hashSizeMb = DefaultHashSizeMb)
     {
+        _hashSizeMb = Math.Clamp(hashSizeMb, MinHashSizeMb, MaxHashSizeMb);
         _board = new Board.Board();
         _board.ResetToStartingPosition();
         _evaluator = new Evaluator();
         _zobristHasher = new ZobristHasher();
-        _searcher = new Searcher(_board, _evaluator, _zobristHasher);
+        _searcher = new Searcher(_board, _evaluator, _zobristHasher, _hashSizeMb);
+    }
+
+    /// <summary>
+    /// Rebuilds the transposition table at a new size, discarding everything in it.
+    ///
+    /// Discarding is not a side effect to be worked around — it is the only correct behaviour.
+    /// The table indexes a position by its hash modulo the entry count, so every entry already
+    /// stored is at the wrong index the moment the count changes, and an entry read at the
+    /// wrong index is a wrong score for an unrelated position. Resizing mid-game is therefore
+    /// something a host should not do, which is why UCI specifies that Hash is set before the
+    /// game starts; the engine honours it whenever it arrives rather than refusing, since the
+    /// cost of honouring it is one cleared table.
+    /// </summary>
+    public void SetHashSize(int hashSizeMb)
+    {
+        lock (_boardLock)
+        {
+            int clamped = Math.Clamp(hashSizeMb, MinHashSizeMb, MaxHashSizeMb);
+            if (clamped == _hashSizeMb && _searcher is not null) return;
+
+            _hashSizeMb = clamped;
+            _searcher   = new Searcher(_board, _evaluator, _zobristHasher, _hashSizeMb);
+        }
+    }
+
+    /// <summary>The transposition table size currently in effect, in megabytes.</summary>
+    public int HashSizeMb
+    {
+        get { lock (_boardLock) { return _hashSizeMb; } }
     }
 
     /// <summary>
@@ -87,7 +141,7 @@ public class ChessEngine
         lock (_boardLock)
         {
             _board.ResetToStartingPosition();
-            _searcher ??= new Searcher(_board, _evaluator, _zobristHasher);
+            _searcher ??= new Searcher(_board, _evaluator, _zobristHasher, _hashSizeMb);
             _searcher.ClearTables();
         }
     }
@@ -134,7 +188,7 @@ public class ChessEngine
         lock (_boardLock)
         {
             if (_searcher == null)
-                _searcher = new Searcher(_board, _evaluator, _zobristHasher);
+                _searcher = new Searcher(_board, _evaluator, _zobristHasher, _hashSizeMb);
 
             return _searcher.Search(settings, ct);
         }

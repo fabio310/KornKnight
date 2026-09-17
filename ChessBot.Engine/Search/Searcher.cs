@@ -194,12 +194,22 @@ internal class Searcher
     private readonly int[] _extensionsAtPly;
 
     // ── Constructor ───────────────────────────────────────────────────────────
-    public Searcher(Board board, Evaluator evaluator, ZobristHasher zobristHasher)
+    /// <summary>
+    /// Creates a searcher over the given board.
+    /// </summary>
+    /// <param name="hashSizeMb">
+    /// Transposition table size in megabytes. A parameter rather than a constant because the
+    /// bench harness pins it — the table size decides how many transpositions are found, so it
+    /// decides the node count a fixed-depth measurement reports, and a figure taken at an
+    /// unstated table size is not comparable to anything.
+    /// </param>
+    public Searcher(Board board, Evaluator evaluator, ZobristHasher zobristHasher,
+                    int hashSizeMb = ChessEngine.DefaultHashSizeMb)
     {
         _board              = board;
         _evaluator          = evaluator;
         _zobristHasher      = zobristHasher;
-        _transpositionTable = new TranspositionTable(64); // 64 MB
+        _transpositionTable = new TranspositionTable(hashSizeMb);
         _moveOrdering       = new MoveOrdering(board);
         _pvTable            = new Move[MAX_PLY, MAX_PLY];
         _pvLength           = new int[MAX_PLY];
