@@ -101,17 +101,79 @@ internal class TranspositionTable
 
     private readonly TTEntry[] _table;
     private readonly int _size;
+
+    /// <summary>
+    /// <see cref="_size"/> - 1, which is the slot index because the entry count is a power of
+    /// two. See the constructor for why it is one.
+    /// </summary>
+    private readonly ulong _indexMask;
+
     private byte _currentAge;
 
     /// <summary>
-    /// Creates a transposition table with a specified number of entries.
+    /// Creates a transposition table of approximately <paramref name="sizeInMB"/> megabytes.
+    ///
+    /// The entry count is rounded DOWN to a power of two, which is what lets the slot index be
+    /// a mask rather than a remainder. Every node computed <c>hash % _size</c> twice — once to
+    /// probe and once to store — and a 64-bit remainder by a value the JIT cannot see is a
+    /// hardware division, tens of cycles with no pipelining to hide it, on the hottest path in
+    /// the engine.
+    ///
+    /// Rounding down rather than up because the size is a budget the host set: a host that asks
+    /// for 100 MB has said what it is willing to give, and taking 128 is not a rounding error.
+    /// It costs entries only for sizes that are not already powers of two, and the sizes that
+    /// matter are: 64 MB, the default, is 4,194,304 entries exactly, so the table is unchanged
+    /// and so is every index in it. That is what makes this change bit-identical rather than
+    /// merely equivalent — see the commit that introduced it.
+    ///
+    /// The alternative was Lemire's multiply-high mapping, which keeps an arbitrary entry count
+    /// and costs one multiply. It is not used, and the reason is not its speed: it maps a hash
+    /// through its HIGH bits where the remainder uses its low ones, so it lands positions in
+    /// different slots, collides different pairs of positions, and therefore changes the search
+    /// tree. That makes it a change to be justified by playing strength rather than by a node
+    /// rate, which is a different kind of commit; masking is free of that because it is the
+    /// same arithmetic the remainder was already doing.
     /// </summary>
     public TranspositionTable(int sizeInMB = 32)
     {
-        _size = Math.Max(1, (sizeInMB * 1024 * 1024) / BytesPerEntry);
-        _table = new TTEntry[_size];
+        _size       = EntriesFor(sizeInMB);
+        _indexMask  = (ulong)(_size - 1);
+        _table      = new TTEntry[_size];
         _currentAge = 0;
     }
+
+    /// <summary>
+    /// How many entries a table of <paramref name="sizeInMB"/> megabytes holds: the largest
+    /// power of two that fits in the budget.
+    ///
+    /// Separate from the constructor so it can be asserted on without allocating the table —
+    /// checking the 4,096 MB case otherwise means allocating four gigabytes to read one
+    /// integer back out of it.
+    /// </summary>
+    internal static int EntriesFor(int sizeInMB)
+    {
+        // In long, because the product overflows int at 2,048 MB and wraps negative at 4,096 —
+        // which the old code then clamped to a single entry, so asking for the largest table
+        // the engine allows would have produced the smallest one that exists. Harmless while
+        // the only caller passed 64; a live bug the moment the size became a UCI option.
+        long requested = Math.Max(1L, ((long)sizeInMB * 1024 * 1024) / BytesPerEntry);
+
+        // Round down to a power of two. RoundUpToPowerOf2 returns its argument unchanged when
+        // it is already one, so the halving below only fires when it really did round up.
+        ulong rounded = System.Numerics.BitOperations.RoundUpToPowerOf2((ulong)requested);
+        if (rounded > (ulong)requested) rounded >>= 1;
+
+        return (int)Math.Max(1UL, rounded);
+    }
+
+    /// <summary>
+    /// The slot a position belongs in.
+    ///
+    /// A mask, because the entry count is a power of two — see the constructor. This replaced
+    /// <c>(int)(hash % (ulong)_size)</c>, which was a 64-bit hardware division executed twice
+    /// per node.
+    /// </summary>
+    private int SlotOf(ulong hash) => (int)(hash & _indexMask);
 
     /// <summary>
     /// Stores an entry in the transposition table.
@@ -129,7 +191,7 @@ internal class TranspositionTable
     /// </summary>
     public void Store(ulong hash, int depth, int score, ScoreFlag flag, Move bestMove)
     {
-        ref TTEntry entry = ref _table[(int)(hash % (ulong)_size)];
+        ref TTEntry entry = ref _table[SlotOf(hash)];
 
         ulong existing = Volatile.Read(ref entry.Data);
         bool empty     = (existing & OccupiedBit) == 0;
@@ -219,7 +281,7 @@ internal class TranspositionTable
     /// </summary>
     private bool TryRead(ulong hash, out ulong data)
     {
-        ref TTEntry entry = ref _table[(int)(hash % (ulong)_size)];
+        ref TTEntry entry = ref _table[SlotOf(hash)];
 
         data = Volatile.Read(ref entry.Data);
         ulong keyXorData = Volatile.Read(ref entry.KeyXorData);
