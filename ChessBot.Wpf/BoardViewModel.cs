@@ -387,7 +387,6 @@ public sealed class BoardViewModel : INotifyPropertyChanged, IDisposable
                     MaxDepth  = 64,
                     MaxTimeMs = maxTimeMs,
                     MinNodeTarget = null,  // time-controlled
-                    UseIterativeDeepening = true
                 };
                 return bgEngine.FindBestMove(settings, ct);
             }, ct);

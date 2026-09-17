@@ -26,8 +26,7 @@ public class PartialIterationReportingTests
         var settings = new SearchSettings
         {
             MaxDepth              = 20,
-            MaxNodes              = NodeCapThatStopsMidIteration,
-            UseIterativeDeepening = true,
+            MaxNodes              = NodeCapThatStopsMidIteration,
         };
 
         var result = engine.FindBestMove(settings);
@@ -63,8 +62,7 @@ public class PartialIterationReportingTests
         var settings = new SearchSettings
         {
             MaxDepth              = 20,
-            MaxNodes              = NodeCapThatStopsMidIteration,
-            UseIterativeDeepening = true,
+            MaxNodes              = NodeCapThatStopsMidIteration,
             UseAspiration         = true,
         };
 
@@ -90,8 +88,7 @@ public class PartialIterationReportingTests
         var engine = new ChessEngine();
         var settings = new SearchSettings
         {
-            MaxDepth              = 3,
-            UseIterativeDeepening = true,
+            MaxDepth              = 3,
         };
 
         var result = engine.FindBestMove(settings);
@@ -114,8 +111,7 @@ public class PartialIterationReportingTests
         var settings = new SearchSettings
         {
             MaxDepth              = 20,
-            MaxNodes              = 1,
-            UseIterativeDeepening = true,
+            MaxNodes              = 1,
         };
 
         var result = engine.FindBestMove(settings);
