@@ -18,12 +18,12 @@ up as not reached.
 | 10 | bishop pair and pawn structure at 4,000 | **not reached** |
 | 11 | mobility | **not reached** |
 | 12 | king safety | **not reached** |
-| 13 | soft limit on starting an iteration | arm built, `20f6cf1`, **not measured** |
-| 14 | stability-based allocation | two arms built, `5ca85bf` / `5e81581`, **not measured** |
+| 13 | soft limit on starting an iteration | **REJECTED**, −20.3 ± 13.1 |
+| 14 | stability-based allocation | 14a measuring; 14b not run, see below |
 | 15 | Move Overhead as a UCI option | **done**, `01a136c` |
 | 16 | delete the dead evaluation code | **done**, `086ad0c` |
 | 17 | strip the remaining switches | **done**, `ac50fe8` |
-| 18 | lockless transposition table | **done**, `6f6617c` |
+| 18 | lockless transposition table | **done**, `6f6617c`; 15–18 together +6.8 ± 13.0, inconclusive |
 | 19 | Lazy SMP | **out of scope** |
 | 20 | Threads as a UCI option | **out of scope** — see below |
 
@@ -361,6 +361,37 @@ below the 10th percentile, once two consecutive iterations have done neither.
 They are separate arms because combining them is how the improving heuristic
 reached −22.9 with nothing attributable.
 
+### 13 is rejected at −20.3, and the reason is instructive
+
+| Comparison | Score | Elo | SPRT |
+|---|---|---|---|
+| 13 vs `cea7f6d` | 47.08% (+681 =521 −798) | **−20.3 ± 13.1** | LLR −2.57 at 2,000, bound −2.944 |
+
+TIME budget, 50 ms/move, run directory `ab_runs/c13-softlimit`. The interval
+excludes 50%, so this is a negative result rather than an inconclusive one, even
+though the SPRT did not quite reach its bound. Not adopted.
+
+**The arithmetic was right and the premise was wrong.** The measured fraction
+answers "how much of the budget must remain for the next iteration to fit", and
+it answers it correctly — 60% is what the node counts say. What it assumes
+underneath is that an iteration which does not finish is worth nothing, and this
+engine says otherwise. An abandoned iteration still publishes a move: the search
+carries partial-iteration machinery on purpose (`PartialDepth`,
+`RootMovesCompleted`, `RootCoveragePercent`), and because the root is ordered
+best-first, the moves an abandoned iteration did get through are the ones most
+likely to be the best. So the time is not returned from nothing; it is taken out
+of a search that was already improving the answer.
+
+This is the same shape as the passed-pawn lesson in a new costume. There the
+term measured what the table already said; here the derivation measured what an
+iteration costs and never measured what an unfinished one is worth. **Before
+spending a budget on the basis of a cost, measure what the thing you are
+declining to buy actually delivers.**
+
+It also points somewhere the group prompt did not: if moving 0.90 down to 0.60
+costs 20 Elo, the interesting arm may be the one that moves it up. That is a
+lead, not a result, and it is recorded rather than run.
+
 ---
 
 ## 18 — The lockless table, and a sizing bug it uncovered
@@ -383,6 +414,22 @@ Acceptance, as the task asks: twenty threads hammering a 1 MB table with 200,000
 keys for two seconds — **911 million accepted reads, 1.87 billion rejected, zero
 accepted-and-wrong**. The test bites: with the XOR check removed and only the
 occupied bit left, the same run reports **14,070,190 accepted-and-wrong**.
+
+### 15 to 18 measured together
+
+| Comparison | Score | Elo | SPRT |
+|---|---|---|---|
+| 15+16+17+18 vs `f5de951` | 50.98% (+744 =551 −705) | **+6.8 ± 13.0** | Continue, LLR 0.49 at 2,000 |
+
+TIME budget, 50 ms/move, run directory `ab_runs/c18-tt`. Inconclusive, on the
+right side. Tasks 15, 16 and 17 cannot move a game — an option nobody sets, a
+deletion of code with no callers, and setters made internal — so whatever is
+here belongs to task 18, and within task 18 to the 50% rise in entry count
+rather than to the locking, which single-threaded play cannot exercise at all.
+
+All four are kept regardless of the number: they are a protocol addition, two
+deletions and a correctness change, none of which is the kind of thing an Elo
+match is the right instrument for.
 
 ---
 
