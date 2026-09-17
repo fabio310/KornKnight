@@ -17,8 +17,16 @@ public static class UciTimeManager
     /// Time set aside for everything that is not search: process scheduling, writing the move,
     /// and the GUI's own accounting. The clock keeps running through all of it, so a budget
     /// computed from the raw remaining time is systematically optimistic.
+    ///
+    /// The right value depends on the host, not on the engine — a local pipe and a network game
+    /// against a remote GUI are not the same number — which is why it is a UCI option with this
+    /// as its default rather than a constant. Nothing here measures it; the engine has no way to,
+    /// and the operator does.
     /// </summary>
-    public const int MoveOverheadMs = 30;
+    public const int DefaultMoveOverheadMs = 30;
+
+    /// <summary>The largest overhead an operator may set, in milliseconds.</summary>
+    public const int MaxMoveOverheadMs = 5000;
 
     /// <summary>
     /// Assumed number of moves left when the GUI sends no "movestogo" (sudden death, or an
@@ -46,13 +54,14 @@ public static class UciTimeManager
     /// limits are applied alongside the time limit rather than instead of it, so whichever
     /// bound is reached first ends the search.
     /// </summary>
-    public static SearchSettings ToSearchSettings(GoParameters go, Color sideToMove)
+    public static SearchSettings ToSearchSettings(GoParameters go, Color sideToMove,
+                                                  int moveOverheadMs = DefaultMoveOverheadMs)
     {
         var settings = new SearchSettings
         {
             MaxDepth  = go.Depth,
             MaxNodes  = go.Nodes,
-            MaxTimeMs = ResolveTimeBudgetMs(go, sideToMove),
+            MaxTimeMs = ResolveTimeBudgetMs(go, sideToMove, moveOverheadMs),
         };
 
         return settings;
@@ -63,7 +72,8 @@ public static class UciTimeManager
     /// estimate, so it wins over any clock; "infinite" and a command with no clock at all are
     /// unbounded and rely on "stop".
     /// </summary>
-    public static int ResolveTimeBudgetMs(GoParameters go, Color sideToMove)
+    public static int ResolveTimeBudgetMs(GoParameters go, Color sideToMove,
+                                          int moveOverheadMs = DefaultMoveOverheadMs)
     {
         if (go.Infinite)             return NoTimeLimitMs;
         if (go.MoveTimeMs is int mt) return Math.Max(1, mt);
@@ -76,7 +86,7 @@ public static class UciTimeManager
         // engine's own default rather than inventing a budget from the wrong side's time.
         if (remaining is not int remainingMs) return NoTimeLimitMs;
 
-        return AllocateTimeMs(remainingMs, increment, go.MovesToGo);
+        return AllocateTimeMs(remainingMs, increment, go.MovesToGo, moveOverheadMs);
     }
 
     /// <summary>
@@ -84,9 +94,10 @@ public static class UciTimeManager
     /// moves still to play, plus the increment that this move earns back, and never more than
     /// a fixed fraction of what is actually left.
     /// </summary>
-    public static int AllocateTimeMs(int remainingMs, int incrementMs, int? movesToGo)
+    public static int AllocateTimeMs(int remainingMs, int incrementMs, int? movesToGo,
+                                     int moveOverheadMs = DefaultMoveOverheadMs)
     {
-        int usableMs = Math.Max(0, remainingMs - MoveOverheadMs);
+        int usableMs = Math.Max(0, remainingMs - Math.Clamp(moveOverheadMs, 0, MaxMoveOverheadMs));
         if (usableMs <= 0) return 1;   // Out of time: move immediately rather than not at all.
 
         int movesLeft = Math.Max(1, movesToGo ?? DefaultMovesToGo);

@@ -71,6 +71,15 @@ public sealed class UciSession : IDisposable
     private Task?                    _searchTask;
     private CancellationTokenSource? _searchCts;
 
+    /// <summary>
+    /// Time the time manager sets aside for everything that is not search. A UCI option because
+    /// the right value is a property of the host — a local pipe and a network game against a
+    /// remote GUI are not the same number — and the operator is the only one in a position to
+    /// know it. The default is the value that was compiled in before, so a host that sets nothing
+    /// gets exactly the old behaviour.
+    /// </summary>
+    private int _moveOverheadMs = UciTimeManager.DefaultMoveOverheadMs;
+
     private bool _disposed;
 
     /// <summary>
@@ -118,7 +127,14 @@ public sealed class UciSession : IDisposable
             case "uci":
                 WriteLine($"id name {EngineName} {BuildIdentity}");
                 WriteLine($"id author {EngineAuthor}");
+                WriteLine($"option name Move Overhead type spin default " +
+                          $"{UciTimeManager.DefaultMoveOverheadMs} min 0 " +
+                          $"max {UciTimeManager.MaxMoveOverheadMs}");
                 WriteLine("uciok");
+                return true;
+
+            case "setoption":
+                HandleSetOption(tokens);
                 return true;
 
             case "isready":
@@ -153,6 +169,42 @@ public sealed class UciSession : IDisposable
                 return true;
         }
     }
+
+    // ── setoption ────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Applies "setoption name &lt;name&gt; [value &lt;value&gt;]".
+    ///
+    /// An option name may contain spaces — "Move Overhead" does — so the name is everything
+    /// between "name" and "value" rather than a single token. An unknown option, a missing value
+    /// and a value that will not parse are all ignored rather than reported: the protocol has no
+    /// error reply for them, and a GUI that sends an option this engine has never heard of must
+    /// not be left waiting.
+    /// </summary>
+    private void HandleSetOption(string[] tokens)
+    {
+        int nameIndex  = IndexOfToken(tokens, "name");
+        int valueIndex = IndexOfToken(tokens, "value");
+        if (nameIndex < 0) return;
+
+        int nameEnd = valueIndex >= 0 ? valueIndex : tokens.Length;
+        if (nameEnd <= nameIndex + 1) return;
+
+        string name  = string.Join(' ', tokens[(nameIndex + 1)..nameEnd]);
+        string value = valueIndex >= 0 && valueIndex + 1 < tokens.Length
+            ? string.Join(' ', tokens[(valueIndex + 1)..])
+            : string.Empty;
+
+        if (name.Equals("Move Overhead", StringComparison.OrdinalIgnoreCase)
+            && int.TryParse(value, System.Globalization.NumberStyles.Integer,
+                            System.Globalization.CultureInfo.InvariantCulture, out int overhead))
+        {
+            _moveOverheadMs = Math.Clamp(overhead, 0, UciTimeManager.MaxMoveOverheadMs);
+        }
+    }
+
+    /// <summary>The move overhead currently in effect, for tests.</summary>
+    internal int MoveOverheadMs => _moveOverheadMs;
 
     // ── position ─────────────────────────────────────────────────────────────
 
@@ -255,7 +307,7 @@ public sealed class UciSession : IDisposable
     {
         StopSearch();
 
-        var settings = UciTimeManager.ToSearchSettings(go, _engine.SideToMove);
+        var settings = UciTimeManager.ToSearchSettings(go, _engine.SideToMove, _moveOverheadMs);
         settings.OnIterationComplete = WriteInfo;
 
         var cts = new CancellationTokenSource();

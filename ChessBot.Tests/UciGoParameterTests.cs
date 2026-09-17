@@ -147,7 +147,7 @@ public class UciGoParameterTests
         // 60s sudden death, no increment: roughly a thirtieth of the clock.
         int budget = UciTimeManager.AllocateTimeMs(60_000, incrementMs: 0, movesToGo: null);
 
-        int expected = (60_000 - UciTimeManager.MoveOverheadMs) / UciTimeManager.DefaultMovesToGo;
+        int expected = (60_000 - UciTimeManager.DefaultMoveOverheadMs) / UciTimeManager.DefaultMovesToGo;
         Assert.Equal(expected, budget);
     }
 
@@ -165,7 +165,7 @@ public class UciGoParameterTests
     {
         int budget = UciTimeManager.AllocateTimeMs(120_000, incrementMs: 0, movesToGo: 4);
 
-        Assert.Equal((120_000 - UciTimeManager.MoveOverheadMs) / 4, budget);
+        Assert.Equal((120_000 - UciTimeManager.DefaultMoveOverheadMs) / 4, budget);
     }
 
     [Fact]
@@ -175,7 +175,7 @@ public class UciGoParameterTests
         int budget = UciTimeManager.AllocateTimeMs(1_000, incrementMs: 5_000, movesToGo: 1);
 
         Assert.True(budget < 1_000, $"allocated {budget}ms of a 1000ms clock");
-        Assert.True(budget <= (1_000 - UciTimeManager.MoveOverheadMs) / 2);
+        Assert.True(budget <= (1_000 - UciTimeManager.DefaultMoveOverheadMs) / 2);
     }
 
     [Fact]
