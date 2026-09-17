@@ -1,8 +1,8 @@
 # Phase 4, Group C — Ordering tables, a check predicate, and what follows
 
-**In progress.** Tasks 1–6 are done; 7–20 are not started. Work stopped after
-task 6 at the operator's request, with the two attribution runs allowed to
-finish.
+**In progress.** Task 19 (Lazy SMP) is out of scope by the operator's decision,
+and task 20 goes with it. Everything else is written; tasks 9 to 12 are written
+up as not reached.
 
 | # | Task | State |
 |---|---|---|
@@ -12,7 +12,20 @@ finish.
 | 4 | continuation history, one ply | **done**, `4162b73` |
 | 5 | a real `GivesCheck` predicate | **done**, `85e66bd` |
 | 6 | point late move pruning at it | **done**, `8c29e16`, **+11.7% node rate** |
-| 7–20 | — | not started |
+| 7 | deeper futility, split in two | two arms built and measured, `06842ba` / `43e9898` |
+| 8 | a reproducible anchor opponent | **done**, `cea7f6d` — the depth is not calibrated |
+| 9 | re-anchor | **not reached** — needs task 8 calibrated first |
+| 10 | bishop pair and pawn structure at 4,000 | **not reached** |
+| 11 | mobility | **not reached** |
+| 12 | king safety | **not reached** |
+| 13 | soft limit on starting an iteration | arm built, `20f6cf1`, **not measured** |
+| 14 | stability-based allocation | two arms built, `5ca85bf` / `5e81581`, **not measured** |
+| 15 | Move Overhead as a UCI option | **done**, `01a136c` |
+| 16 | delete the dead evaluation code | **done**, `086ad0c` |
+| 17 | strip the remaining switches | **done**, `ac50fe8` |
+| 18 | lockless transposition table | **done**, `6f6617c` |
+| 19 | Lazy SMP | **out of scope** |
+| 20 | Threads as a UCI option | **out of scope** — see below |
 
 Measured: T1+T2 **−4.9 ± 13.2**, T4+T5+T6 **+12.2 ± 13.2**, both inconclusive at
 2,000 games. Nothing in this group has reached an SPRT bound, so nothing here is
@@ -20,8 +33,23 @@ adopted on a measurement — tasks 1, 2, 5 and 6 are kept as defect fixes and a
 cost reduction, and task 4 is kept as unresolved rather than refuted, the way B2
 and B3 were.
 
-Working branch `FabioK/Morestuffdone`. Full suite **588 passed** (580 at the
-start of the group).
+Working branch `FabioK/Morestuffdone`.
+
+### Why task 20 went with task 19
+
+A `Threads` option whose only legal value is 1 is not an option. The task's own
+reason for it — "so the harness keeps its current behaviour" — only exists once
+there is a behaviour to opt out of. Taking it without Lazy SMP would put a
+switch in the engine that decides nothing, which is precisely what task 17 spent
+its time removing. It should be taken with task 19 or not at all.
+
+### The order these were taken in
+
+Tasks 15 to 18 were taken before 8 to 14, which is not the order the group
+prompt lists. The reason is mechanical: a running match locks the build output,
+so while the task 7 arms were playing, nothing in the main tree could be built
+or tested. They were done in a worktree instead, and none of them depends on
+anything in 8 to 14.
 
 ---
 
@@ -236,14 +264,122 @@ reader trusts to say what the run was.
 
 ---
 
+## 7 — Deeper futility, split in two
+
+A5 moved the depth cap and the margin curve together at −10.1 and could
+attribute neither. Two arms, each against the same baseline `f5de951`, each
+changing one thing.
+
+**7a, the cap alone**, 2 → 6, margin rule untouched. Deliberately without the
+check exemption. A5 needed one at cap 6 — `ShortForcedMateIsStillFound` returned
+a mate in 3 instead of the mate in 2 in `8/k7/5R2/3K3Q/8/8/8/8 w`, having pruned
+1.Qh7+ — and **that failure does not reproduce on this baseline**. Cap 6 with no
+exemption keeps all 113 tactical, mate, regression and soundness tests green.
+The tree is not the one A5 measured: tasks 1–6 changed both the ordering tables
+and the tie-breaking. Adding the exemption anyway would have put two changes in
+an arm whose purpose is to attribute one.
+
+**7b, the curve alone**, 200/450 flat → 150 + 175 per remaining ply, cap left at
+2.
+
+Both were checked for being no-ops before being measured, at a fixed 2,000,000
+nodes over six positions:
+
+| | futility skips | late move prunes | nodes/s |
+|---|---|---|---|
+| baseline | 1,063,336 (middlegame) / 17,987 (sparse endgame) | 1,015,844 | 1,347,409 |
+| 7a cap | 1,426,489 / 51,311 | 988,223 | 1,271,883 |
+| 7b curve | 857,968 / 12,766 | 1,292,746 | 1,331,522 |
+
+**7b prunes less, not more, and that is the point of having measured it.** The
+margin is how much benefit of the doubt a quiet move gets before a static score
+stands in for searching it, so a larger margin prunes less: 325 and 500 are both
+more cautious than 200 and 450. The work does not disappear — late move pruning
+picks up what futility declines to drop, up about 20%. The two rules prune the
+same region of the tree from opposite ends, so an arm that changes one is always
+partly measuring the other.
+
+7a is also not free: −5.6% node rate, the same shape late move pruning showed in
+Group A, because pruning removes cheap leaf nodes while leaving the parent's
+generation and ordering in place. Time budget, again.
+
+---
+
+## 13 and 14 — Time management, built but not measured
+
+**13** replaces the loop's 0.9 with a measured fraction. The old value was never
+a soft limit; it is a guard against overrunning the clock, and the in-node check
+at 100% of the budget is what actually provides that.
+
+The fraction was measured rather than taken from the textbook, and the textbook
+is wrong for this engine. At the moment iteration d completes, the share of the
+eventual total already spent is `nodes[d] / (nodes[d] + own(d+1))` — exactly the
+largest fraction at which starting d+1 is still affordable. Six positions to
+depth 14, 36 decision points: **median 63%, mean 60%, 10th percentile 43%**. The
+group prompt's "roughly 40–50%" would stop this engine short. The arm uses 60%.
+
+Deriving it the usual way — a growth ratio r, a geometric sum, 1/r — would have
+been wrong here, and measuring both forms is what showed it. The per-iteration
+ratios alternate between roughly 0.7 and roughly 3.5, because an iteration whose
+aspiration window fails costs several times one whose window holds and the next
+one inherits a good window. The smooth growth 1/r assumes is not what this
+search does. `IterationGrowthProbe` takes both readings.
+
+**14a** spends back to the old 0.90 when the last completed iteration changed
+its mind — best move moved, or score came back lower. **14b** drops to 0.40,
+below the 10th percentile, once two consecutive iterations have done neither.
+They are separate arms because combining them is how the improving heuristic
+reached −22.9 with nothing attributable.
+
+---
+
+## 18 — The lockless table, and a sizing bug it uncovered
+
+The XOR scheme is in the commit message. What is worth recording here is what
+measuring the entry found.
+
+| | entry size | divisor | entries at 32 MB | memory actually used |
+|---|---|---|---|---|
+| before | 40 bytes | 24 | 1,398,101 | **53 MB** |
+| after | 16 bytes | 16 | 2,097,152 | 32 MB |
+
+The old divisor did not match the old struct, so a table asked for 32 MB
+allocated a third too few entries and then occupied two thirds more memory than
+it was given. Both are fixed by the packing, and the 50% rise in entry count is
+a behaviour change, not only an architecture one — it changes what the search
+finds. It has not been measured on its own.
+
+Acceptance, as the task asks: twenty threads hammering a 1 MB table with 200,000
+keys for two seconds — **911 million accepted reads, 1.87 billion rejected, zero
+accepted-and-wrong**. The test bites: with the XOR check removed and only the
+occupied bit left, the same run reports **14,070,190 accepted-and-wrong**.
+
+---
+
 ## What is left
 
-Tasks 7–20 are untouched. Task 3 is closed off by task 1's gate. Outstanding
-measurements the group prompt asks for and that were not reached: the
-killer-removal arm (task 4), both deeper-futility arms (task 7), the
-reproducible anchor and a re-anchor (tasks 8 and 9), bishop pair and pawn
-structure at 4,000 games each (task 10), mobility (11), king safety (12), the
-two time-management arms (13 and 14), and everything from task 15 onward.
+Task 3 is closed by task 1's gate. Tasks 19 and 20 are out of scope.
+
+Not reached, in the order they should be taken:
+
+- **9, the re-anchor.** Needs task 8's depth calibrated first: run short matches
+  at several `--engine-depth` values and find where the engine scores near 50%,
+  then record that N beside the opening suite's sha256. The acceptance the task
+  asks for is three runs of one build at that N, reported as a spread against
+  the 85 Elo the old anchor had.
+- **10**, bishop pair and pawn structure at 4,000 games each, which is where a
+  true +10 becomes visible.
+- **11**, mobility — and the attack-query numbers first, from
+  `phase3/task4-probe` rebased onto the current tip. If it loses, the finding is
+  "does not pay on a mailbox representation, at a measured cost of X%", and the
+  bitboard question reopens.
+- **12**, king safety. The king midgame table has a spread of 70; subtract what
+  it already pays before choosing weights.
+- **13, 14a, 14b**, all built and waiting for the machine.
+- The **killer-removal arm** from task 4, and the **check-exemption arm** on top
+  of 7a if 7a wins.
+- The **cumulative** against the pre-group build, which is the number to quote
+  for the group.
 
 ### One loose end, unresolved
 
