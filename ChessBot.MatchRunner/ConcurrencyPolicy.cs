@@ -16,6 +16,13 @@ public enum BudgetKind
     /// number it produces depends on how loaded the machine was.
     /// </summary>
     Time,
+
+    /// <summary>
+    /// A fixed search depth per move. Only ever used for the reference OPPONENT in an anchor
+    /// match, never for our own side: it makes the opponent a fixed quantity, which is the one
+    /// thing UCI_LimitStrength does not do.
+    /// </summary>
+    Depth,
 }
 
 /// <summary>
@@ -30,6 +37,7 @@ public readonly record struct MoveBudget(BudgetKind Kind, long Value)
 {
     public static MoveBudget Nodes(long nodes) => new(BudgetKind.Nodes, Math.Max(1, nodes));
     public static MoveBudget Time(int ms)      => new(BudgetKind.Time,  Math.Max(1, ms));
+    public static MoveBudget Depth(int depth)  => new(BudgetKind.Depth, Math.Max(1, depth));
 
     /// <summary>
     /// The "go" command for this budget. <c>go nodes</c> carries no clock, so a UCI engine has
@@ -37,9 +45,12 @@ public readonly record struct MoveBudget(BudgetKind Kind, long Value)
     /// movetime alongside it would quietly turn a node budget back into a time budget on any
     /// position that ran long.
     /// </summary>
-    public string ToGoCommand() => Kind == BudgetKind.Nodes
-        ? $"go nodes {Value}"
-        : $"go movetime {Value}";
+    public string ToGoCommand() => Kind switch
+    {
+        BudgetKind.Nodes => $"go nodes {Value}",
+        BudgetKind.Depth => $"go depth {Value}",
+        _                => $"go movetime {Value}",
+    };
 
     /// <summary>
     /// How long to wait for the engine's answer before treating it as hung. A timed move has a
@@ -50,9 +61,12 @@ public readonly record struct MoveBudget(BudgetKind Kind, long Value)
         ? checked((int)Math.Min(int.MaxValue - 5_000, Value)) + 5_000
         : 300_000;
 
-    public override string ToString() => Kind == BudgetKind.Nodes
-        ? $"{Value:N0} nodes/move"
-        : $"{Value:N0} ms/move";
+    public override string ToString() => Kind switch
+    {
+        BudgetKind.Nodes => $"{Value:N0} nodes/move",
+        BudgetKind.Depth => $"depth {Value}/move",
+        _                => $"{Value:N0} ms/move",
+    };
 }
 
 /// <summary>

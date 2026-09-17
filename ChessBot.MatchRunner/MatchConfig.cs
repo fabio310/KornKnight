@@ -127,6 +127,27 @@ public class MatchConfig
     public int? EngineElo { get; set; }
 
     /// <summary>
+    /// Fixed search depth for the external engine, as an alternative to <see cref="EngineElo"/>.
+    /// Null = the engine gets the same per-move time budget our side does.
+    ///
+    /// This is what makes an anchor reproducible. UCI_LimitStrength does not weaken an engine by
+    /// searching less; it weakens it by picking a worse move at random from what it found, so the
+    /// opponent is a distribution rather than a quantity. Three runs of one build once scored
+    /// 55.8%, 49.25% and 43.25% — about 85 Elo of spread on identical code. A fixed depth removes
+    /// the randomness and the clock at the same time, so the opponent plays the same move in the
+    /// same position every time, whatever the machine is doing.
+    ///
+    /// It applies to the opponent only. Our side keeps its time budget, because the thing being
+    /// measured is what our engine does with a clock.
+    /// </summary>
+    public int? EngineDepth { get; set; }
+
+    /// <summary>The opponent's per-move budget: a fixed depth when one was asked for, else ours.</summary>
+    public MoveBudget OpponentBudget => EngineDepth is int depth
+        ? MoveBudget.Depth(depth)
+        : MoveBudget.Time(MoveTimeMs);
+
+    /// <summary>
     /// Extra UCI options sent to the external engine right after the handshake.
     /// Applied after the <see cref="EngineElo"/> options, so they can override them.
     /// </summary>
@@ -196,6 +217,7 @@ public class MatchConfig
         ["PgnOutputDir"]          = PgnOutputDir,
         ["DisagreementThresholdCp"] = DisagreementThresholdCp.ToString(),
         ["EngineElo"]             = EngineElo?.ToString() ?? "(unset — full strength)",
+        ["EngineDepth"]           = EngineDepth?.ToString() ?? "(unset — opponent gets the clock)",
         ["EngineOptions"]         = EngineOptions.Count == 0
             ? "(none)"
             : string.Join(", ", EngineOptions.Select(o => $"{o.Name}={o.Value}")),
@@ -320,6 +342,9 @@ public class MatchConfig
                 case "--engine-elo" when i + 1 < args.Length:
                     if (int.TryParse(args[++i], out int elo)) cfg.EngineElo = elo;
                     break;
+                case "--engine-depth" when i + 1 < args.Length:
+                    if (int.TryParse(args[++i], out int ed)) cfg.EngineDepth = Math.Max(1, ed);
+                    break;
                 case "--engine-option" when i + 1 < args.Length:
                     {
                         string raw = args[++i];
@@ -356,6 +381,14 @@ public class MatchConfig
         if (openingsPath is not null && startPositionOnly)
             throw new ArgumentException(
                 "--openings and --start-position-only ask for different start positions; pass one.");
+
+        // Both weaken the opponent, and they do not compose: a depth-limited engine that is also
+        // told to play at 1500 Elo picks a random worse move from what the fixed depth found, so
+        // the run gets the randomness the fixed depth was chosen to remove.
+        if (cfg.EngineElo is not null && cfg.EngineDepth is not null)
+            throw new ArgumentException(
+                "--engine-elo and --engine-depth are two different ways to weaken the opponent; " +
+                "pass one. --engine-depth is the reproducible one.");
 
         cfg.Openings = openingsPath is not null ? OpeningBook.Load(openingsPath, openingPlies)
                      : startPositionOnly       ? OpeningBook.StartPositionOnly
