@@ -604,39 +604,51 @@ internal class Searcher
         ulong hash  = _board.ZobristHash;
         Move ttMove = default;
 
-        // Always retrieve TT best move for ordering, even when the entry depth is too low for
-        // a score cutoff. A shallow hit still provides an excellent first move to try.
+        // One probe, and the depth test is made on what it returned.
+        //
+        // This used to be two: LookupBestMoveOnly for a move to order by, then Lookup for a
+        // score. Both read the same slot of a table far too large to cache, so the node paid
+        // for the same cache miss twice, and the only thing the second call added was a
+        // comparison against a depth the first one had already fetched.
+        //
+        // The two uses of an entry have different depth requirements, which is why they looked
+        // like different questions: move ordering will take a move from an entry of any depth,
+        // because a move that was best in a shallower search is still an excellent first thing
+        // to try, while a score may only stand in for a search that goes at least as deep.
+        // That is a difference in what the caller does with the answer, not in what has to be
+        // read to answer it.
         if (_settings.UseTranspositionTable)
         {
             _ttProbes++;
-            ttMove = _transpositionTable.LookupBestMoveOnly(hash);
-        }
 
-        var ttEntry = _settings.UseTranspositionTable
-            ? _transpositionTable.Lookup(hash, depth)
-            : null;
-        if (ttEntry.HasValue)
-        {
-            var (ttScore, ttFlag, ttBest, _) = ttEntry.Value;
-            if (ttBest != default) ttMove = ttBest; // depth-qualified move is more reliable
-            _ttHits++;
-
-            // Correct bound flag logic: only use cutoff if bound is applicable at this alpha-beta window
-            if (!pvNode)
+            if (_transpositionTable.TryProbe(hash, out int ttScore, out var ttFlag,
+                                             out Move ttBest, out int ttDepth))
             {
-                // Mate-distance fix: adjust score based on ply for proper mate evaluation
-                int adjustedScore = AdjustMateScore(ttScore, ply);
+                ttMove = ttBest;
 
-                if (ttFlag == TranspositionTable.ScoreFlag.Exact)      { _ttCutoffs++; return adjustedScore; }
-                if (ttFlag == TranspositionTable.ScoreFlag.LowerBound) 
+                if (ttDepth >= depth)
                 {
-                    alpha = Math.Max(alpha, adjustedScore);
-                    if (alpha >= beta) { _ttCutoffs++; return adjustedScore; }
-                }
-                if (ttFlag == TranspositionTable.ScoreFlag.UpperBound) 
-                {
-                    beta  = Math.Min(beta,  adjustedScore);
-                    if (alpha >= beta) { _ttCutoffs++; return adjustedScore; }
+                    _ttHits++;
+
+                    // Correct bound flag logic: only use cutoff if bound is applicable at this
+                    // alpha-beta window
+                    if (!pvNode)
+                    {
+                        // Mate-distance fix: adjust score based on ply for proper mate evaluation
+                        int adjustedScore = AdjustMateScore(ttScore, ply);
+
+                        if (ttFlag == TranspositionTable.ScoreFlag.Exact)      { _ttCutoffs++; return adjustedScore; }
+                        if (ttFlag == TranspositionTable.ScoreFlag.LowerBound)
+                        {
+                            alpha = Math.Max(alpha, adjustedScore);
+                            if (alpha >= beta) { _ttCutoffs++; return adjustedScore; }
+                        }
+                        if (ttFlag == TranspositionTable.ScoreFlag.UpperBound)
+                        {
+                            beta  = Math.Min(beta,  adjustedScore);
+                            if (alpha >= beta) { _ttCutoffs++; return adjustedScore; }
+                        }
+                    }
                 }
             }
         }
