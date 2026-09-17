@@ -66,6 +66,101 @@ public class UciSessionTests
         return (new UciSession(engine, output), engine, output);
     }
 
+    // ── Options ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A GUI can only set an option the engine advertises, so the handshake has to name it with
+    /// its type and range. Before this the engine advertised nothing at all.
+    /// </summary>
+    [Fact]
+    public void Uci_AdvertisesMoveOverhead()
+    {
+        var (session, _, output) = NewSession();
+        using (session)
+        {
+            session.Execute("uci");
+        }
+
+        string? line = output.Lines.FirstOrDefault(
+            l => l.StartsWith("option name Move Overhead", StringComparison.Ordinal));
+
+        Assert.NotNull(line);
+        Assert.Contains("type spin", line);
+        Assert.Contains($"default {UciTimeManager.DefaultMoveOverheadMs}", line);
+        Assert.Contains($"max {UciTimeManager.MaxMoveOverheadMs}", line);
+
+        // The option must be advertised before uciok, or a GUI that stops reading there never
+        // sees it.
+        int optionIndex = output.Lines.ToList().FindIndex(
+            l => l.StartsWith("option name Move Overhead", StringComparison.Ordinal));
+        int uciokIndex  = output.Lines.ToList().FindIndex(l => l == "uciok");
+        Assert.InRange(optionIndex, 0, uciokIndex - 1);
+    }
+
+    /// <summary>
+    /// The option name contains a space, which is the case a single-token parser gets wrong.
+    /// </summary>
+    [Fact]
+    public void SetOption_ChangesTheMoveOverhead()
+    {
+        var (session, _, _) = NewSession();
+        using (session)
+        {
+            Assert.Equal(UciTimeManager.DefaultMoveOverheadMs, session.MoveOverheadMs);
+
+            session.Execute("setoption name Move Overhead value 250");
+
+            Assert.Equal(250, session.MoveOverheadMs);
+        }
+    }
+
+    /// <summary>
+    /// Advertising an option and then ignoring it is worse than not having one. This drives the
+    /// whole path — setoption, then a "go" with a clock — and asserts the budget actually moved
+    /// by the amount the option changed.
+    /// </summary>
+    [Fact]
+    public void TheMoveOverheadReachesTheTimeBudget()
+    {
+        var (session, engine, _) = NewSession();
+        using (session)
+        {
+            var go = GoParameters.Parse(
+                "go wtime 60000 btime 60000 movestogo 10".Split(' '), 1);
+
+            int withDefault = UciTimeManager.ResolveTimeBudgetMs(
+                go, engine.SideToMove, UciTimeManager.DefaultMoveOverheadMs);
+            int withLarge = UciTimeManager.ResolveTimeBudgetMs(go, engine.SideToMove, 5000);
+
+            // 60,000 ms over 10 moves: the overhead comes off the clock before the split, so
+            // 4,970 ms of extra overhead costs a tenth of that per move.
+            Assert.Equal((60_000 - 30) / 10, withDefault);
+            Assert.Equal((60_000 - 5_000) / 10, withLarge);
+        }
+    }
+
+    /// <summary>
+    /// An operator can ask for more overhead than the clock has. The protocol has no error reply,
+    /// so the value is clamped rather than refused, and a budget of at least 1 ms still comes out.
+    /// </summary>
+    [Theory]
+    [InlineData("setoption name Move Overhead value 999999", UciTimeManager.MaxMoveOverheadMs)]
+    [InlineData("setoption name Move Overhead value -5", 0)]
+    [InlineData("setoption name Move Overhead value banana", UciTimeManager.DefaultMoveOverheadMs)]
+    [InlineData("setoption name Nonexistent Option value 7", UciTimeManager.DefaultMoveOverheadMs)]
+    [InlineData("setoption name Move Overhead", UciTimeManager.DefaultMoveOverheadMs)]
+    [InlineData("setoption", UciTimeManager.DefaultMoveOverheadMs)]
+    public void SetOption_SurvivesWhateverAGuiSends(string command, int expected)
+    {
+        var (session, _, _) = NewSession();
+        using (session)
+        {
+            session.Execute(command);
+
+            Assert.Equal(expected, session.MoveOverheadMs);
+        }
+    }
+
     // ── Handshake ────────────────────────────────────────────────────────────
 
     [Fact]
@@ -77,11 +172,15 @@ public class UciSessionTests
             Assert.True(session.Execute("uci"));
         }
 
+        // Exhaustive on purpose: the handshake is the one exchange a GUI parses strictly, and a
+        // stray line here is how an engine ends up unusable in one GUI and fine in another.
         Assert.Equal(
             new[]
             {
                 $"id name {UciSession.EngineName} {UciSession.BuildIdentity}",
                 $"id author {UciSession.EngineAuthor}",
+                $"option name Move Overhead type spin default {UciTimeManager.DefaultMoveOverheadMs}" +
+                    $" min 0 max {UciTimeManager.MaxMoveOverheadMs}",
                 "uciok",
             },
             output.Lines);
