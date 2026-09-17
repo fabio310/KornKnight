@@ -185,7 +185,8 @@ public class GameRunner
         {
             Console.WriteLine($"  ChessBot plays {(chessBotIsWhite ? "White" : "Black")}");
             Console.WriteLine($"  Opening: {opening.Name}");
-            Console.WriteLine($"  Move time: {_cfg.MoveTimeMs}ms per move");
+            Console.WriteLine($"  Move time: {_cfg.MoveTimeMs}ms per move" +
+                              (_cfg.EngineDepth is int d ? $" (opponent: fixed depth {d})" : ""));
         }
 
         for (int plyCount = 0; plyCount < MaxMoves * 2; plyCount++)
@@ -313,7 +314,8 @@ public class GameRunner
                 // reconstructs the position from scratch. Passing currentFen (the
                 // already-advanced position) together with moveHistory would cause the
                 // moves to be applied twice, producing an illegal board state.
-                var uciResult = await _externalEngine.GetBestMoveAsync(startFen, moveHistory, _cfg.MoveTimeMs, ct);
+                var uciResult = await _externalEngine.GetBestMoveAsync(
+                    startFen, moveHistory, _cfg.OpponentBudget, ct);
 
                 if (string.IsNullOrEmpty(uciResult.BestMove))
                 {

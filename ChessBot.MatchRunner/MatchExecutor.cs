@@ -434,7 +434,10 @@ public static class MatchExecutor
         w.WriteLine($"Engine: {cfg.ExternalEnginePath}");
         w.WriteLine($"Move time: {cfg.MoveTimeMs}ms");
         if (cfg.EngineElo is int elo)
-            w.WriteLine($"Engine strength: UCI_LimitStrength=true, UCI_Elo={elo}");
+            w.WriteLine($"Engine strength: UCI_LimitStrength=true, UCI_Elo={elo} " +
+                        "(randomised — this run is not reproducible)");
+        if (cfg.EngineDepth is int engineDepth)
+            w.WriteLine($"Engine strength: fixed depth {engineDepth} (reproducible)");
         foreach (var opt in cfg.EngineOptions)
             w.WriteLine($"Engine option: {opt.Name}={opt.Value}");
         w.WriteLine($"Date: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");

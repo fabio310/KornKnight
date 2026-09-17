@@ -32,7 +32,14 @@ internal class Program
             Console.WriteLine("                       engines scoring a position differently, not a measured");
             Console.WriteLine("                       centipawn loss. Legacy alias: --blunder");
             Console.WriteLine("  --engine-elo         Cap the external engine via UCI_LimitStrength + UCI_Elo");
-            Console.WriteLine("                       (default: unset = full strength)");
+            Console.WriteLine("                       (default: unset = full strength). NOT reproducible:");
+            Console.WriteLine("                       UCI_LimitStrength randomises which move the engine picks,");
+            Console.WriteLine("                       so the opponent is a distribution, not a quantity. Three");
+            Console.WriteLine("                       runs of one build once scored 55.8%, 49.25% and 43.25%.");
+            Console.WriteLine("  --engine-depth       Fix the external engine at this search depth instead.");
+            Console.WriteLine("                       Reproducible: same position, same move, every run, and");
+            Console.WriteLine("                       immune to what else the machine is doing. Our side keeps");
+            Console.WriteLine("                       its clock. Use this for an anchor.");
             Console.WriteLine("  --engine-option      Extra UCI option as name=value (repeatable)");
             Console.WriteLine("  --reference-engine   Path to a reference UCI engine used for post-game same-engine");
             Console.WriteLine("                       move-loss analysis (default: unset = analysis skipped)");
@@ -73,7 +80,10 @@ internal class Program
         }
 
         if (cfg.EngineElo is int elo)
-            Console.WriteLine($"External engine capped to UCI_Elo {elo} (UCI_LimitStrength=true)");
+            Console.WriteLine($"External engine capped to UCI_Elo {elo} (UCI_LimitStrength=true)" +
+                              " — NOT reproducible; prefer --engine-depth for an anchor");
+        if (cfg.EngineDepth is int engineDepth)
+            Console.WriteLine($"External engine fixed at depth {engineDepth} (reproducible)");
         foreach (var opt in cfg.EngineOptions)
             Console.WriteLine($"External engine option: {opt.Name}={opt.Value}");
         if (!string.IsNullOrWhiteSpace(cfg.ReferenceEnginePath))
