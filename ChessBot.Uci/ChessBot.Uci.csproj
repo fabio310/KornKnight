@@ -9,6 +9,72 @@
 	<AssemblyName>ChessBot.Uci</AssemblyName>
 	<RootNamespace>ChessBot.Uci</RootNamespace>
 	<GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+	<!--
+	  Runtime configuration for the playing binary.
+
+	  These live here and not in ChessBot.Engine.csproj because they do not work there:
+	  runtimeconfig.json is generated for the executable only, and setting the same properties
+	  on the referenced library produced a byte-identical runtimeconfig — checked, not assumed.
+	  The engine project keeps no runtime properties for that reason.
+
+	  HOW THESE WERE MEASURED, because the first attempt got it wrong and the method is the
+	  reason. Every figure below comes from `bench` on ONE binary with only the generated
+	  runtimeconfig.json swapped between runs, and with the configurations INTERLEAVED
+	  (plain, flags, plain, flags, ...) rather than measured in batches. Batching is what went
+	  wrong: the adopted set below first appeared to be worth +4.5%, measured against a
+	  baseline taken twenty minutes earlier. Interleaving showed the difference was zero and
+	  the machine itself had drifted ~5% faster in between. On this hardware a cross-batch
+	  node-rate comparison cannot resolve 5%; an interleaved one resolves about 1%.
+
+	  The honest summary of this whole change: the build flags buy NOTHING in node rate.
+	  Interleaved, the adopted set is 1,219,493-1,255,245 against 1,225,841-1,250,579 with no
+	  properties at all. They are kept for the reasons given against each one, none of which
+	  is speed.
+	-->
+
+	<!--
+	  Workstation, not server, GC. Already the default for a console application, so it
+	  changes nothing today, and it is pinned so that a future host or SDK default cannot
+	  quietly hand a single-threaded search a per-core heap and a GC thread per core. Revisit
+	  when lazy SMP lands and the search is no longer single-threaded.
+	-->
+	<ServerGarbageCollection>false</ServerGarbageCollection>
+
+	<!--
+	  No background GC thread. Neutral for node rate, and kept for a reason the node rate does
+	  not show: an A/B run has many of these processes in flight at once, and a background
+	  collector in each is a thread per process competing for the cores the measurement is
+	  pinned to. The search allocates nothing per node, so there is very little for a
+	  concurrent collector to do here in the first place.
+	-->
+	<ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+
+	<!--
+	  Dynamic PGO, pinned. Already the default on .NET 8, so setting it changes nothing today
+	  — but it is the largest runtime effect on this search by a wide margin. Interleaved,
+	  turning it off costs 12.7%: 1,067,470-1,081,194 against 1,230,324-1,240,695. A property
+	  worth that much should not be left to a default a future SDK is free to change.
+	-->
+	<TieredPGO>true</TieredPGO>
+
+	<!--
+	  No ICU. Neutral for node rate, and worth having because a long A/B run starts this
+	  process thousands of times and each start otherwise loads globalization data the engine
+	  never consults: every string this binary parses or writes is ASCII (FEN, UCI tokens,
+	  long algebraic moves), and the parsing paths already ask for InvariantCulture
+	  explicitly.
+
+	  NOT set: TieredCompilationQuickJitForLoops=false. It is the obvious companion to
+	  TieredPGO and it is an 8.2% REGRESSION here — 1,125,103-1,136,506 interleaved against
+	  1,230,324-1,240,695 — because it works against dynamic PGO rather than with it.
+	  Disabling quick JIT for methods containing loops sends them straight to fully optimised
+	  code, so they never run in the instrumented tier, so PGO never collects a profile for
+	  them; and every hot method in this engine contains a loop. Confirmed by measuring the
+	  interaction directly: with TieredPGO already off the flag is worth nothing either way,
+	  because there is no longer a profile for it to prevent.
+	-->
+	<InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
   <ItemGroup>
