@@ -12,7 +12,7 @@ up as not reached.
 | 4 | continuation history, one ply | **done**, `4162b73` |
 | 5 | a real `GivesCheck` predicate | **done**, `85e66bd` |
 | 6 | point late move pruning at it | **done**, `8c29e16`, **+11.7% node rate** |
-| 7 | deeper futility, split in two | two arms built and measured, `06842ba` / `43e9898` |
+| 7 | deeper futility, split in two | **both inconclusive**, +6.3 and +0.5; neither adopted |
 | 8 | a reproducible anchor opponent | **done**, `cea7f6d` — the depth is not calibrated |
 | 9 | re-anchor | **not reached** — needs task 8 calibrated first |
 | 10 | bishop pair and pawn structure at 4,000 | **not reached** |
@@ -302,6 +302,36 @@ partly measuring the other.
 7a is also not free: −5.6% node rate, the same shape late move pruning showed in
 Group A, because pruning removes cheap leaf nodes while leaving the parent's
 generation and ordering in place. Time budget, again.
+
+### Both inconclusive, and that is the attribution
+
+| Arm | Score | Elo | SPRT |
+|---|---|---|---|
+| **7a** the depth cap alone | 50.90% (+752 =532 −716) | **+6.3 ± 13.1** | Continue, LLR 0.42 at 2,000 |
+| **7b** the margin curve alone | 50.08% (+731 =541 −728) | **+0.5 ± 13.0** | Continue, LLR −0.22 at 2,000 |
+
+TIME budget, 50 ms/move, both against `f5de951`, run directories
+`ab_runs/c7a-cap` and `ab_runs/c7b-margin`. Neither is adopted; the baseline did
+not move.
+
+**A5's −10.1 does not survive the split.** It moved the cap and the curve
+together and came back at −10.1 ± 18.7; measured apart, the two halves are +6.3
+and +0.5. Neither is negative, so there is no half to blame, and the most
+economical reading is that −10.1 was always inside its own interval — which the
+±18.7 said at the time. The task's premise, that the −10.1 "cannot be
+attributed", turns out to be true in a stronger sense than it meant: there is
+nothing there to attribute.
+
+What the split does buy is a closed question. Deeper futility is not a −10 Elo
+idea being dragged down by one of its two halves; it is two changes that each
+measure as nothing at 2,000 games, one of which costs 5.6% of the node rate for
+it. 7a would need several thousand more games to say anything, and its point
+estimate does not obviously justify them.
+
+Both runs ran alongside each other and alongside the day's builds and test runs,
+so their conditions were heavier than the two runs above. Each arm's own
+comparison is unaffected — both arms play every game under that game's
+conditions — but neither number is directly comparable to Group A's or B's.
 
 ---
 
