@@ -77,6 +77,17 @@ public class UciSessionTests
         }
     }
 
+    /// <summary>
+    /// Runs a command on a thread of its own, for a test that asserts the command returns within
+    /// a deadline. Task.Run would put it on the thread pool, and under the parallel suite the pool
+    /// is starved by other tests' blocked waits: "setoption Hash mid-search" failed its 2 s bound
+    /// in 2 of 5 full runs while taking under 1 ms when run alone — the time was the pool's, not
+    /// the engine's.
+    /// </summary>
+    private static Task<T> OnOwnThread<T>(Func<T> command) =>
+        Task.Factory.StartNew(command, CancellationToken.None,
+                              TaskCreationOptions.LongRunning, TaskScheduler.Default);
+
     private static (UciSession session, ChessEngine engine, RecordingWriter output) NewSession()
     {
         var engine = new ChessEngine();
@@ -218,7 +229,7 @@ public class UciSessionTests
             session.Execute("go infinite");
             output.WaitForLine("info depth");
 
-            var setOption = Task.Run(() => session.Execute("setoption name Hash value 16"));
+            var setOption = OnOwnThread(() => session.Execute("setoption name Hash value 16"));
             Assert.True(setOption.Wait(2_000), "setoption Hash blocked the command loop mid-search");
 
             session.Execute("stop");
@@ -960,7 +971,7 @@ public class UciSessionTests
             session.Execute("go infinite");
             output.WaitForLine("info depth");
 
-            var quit = Task.Run(() => session.Execute("quit"));
+            var quit = OnOwnThread(() => session.Execute("quit"));
             Assert.True(quit.Wait(2_000), "quit did not return within 2 s of a running search");
             Assert.False(quit.Result);
         }
@@ -981,7 +992,7 @@ public class UciSessionTests
         var (session, _, output) = NewSession();
         using (session)
         {
-            var run = Task.Run(() => session.Run(new StringReader(input)));
+            var run = OnOwnThread(() => { session.Run(new StringReader(input)); return true; });
             Assert.True(run.Wait(5_000), "Run did not return at end of input");
         }
 
