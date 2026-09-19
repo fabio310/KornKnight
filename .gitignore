@@ -185,6 +185,9 @@ publish/
 # Note: Comment the next line if you want to checkin your web deploy settings,
 # but database connection strings (with potential passwords) will be unencrypted
 *.pubxml
+# The release profiles hold no credentials — they are the documented release build.
+!ChessBot.Uci/Properties/PublishProfiles/win-x64.pubxml
+!ChessBot.Uci/Properties/PublishProfiles/linux-x64.pubxml
 *.publishproj
 
 # Microsoft Azure Web App publish settings. Comment the next line if you want to
