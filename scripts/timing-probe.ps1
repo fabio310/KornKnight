@@ -281,6 +281,11 @@ try {
         Write-Progress -Activity $case.Label -Completed
         $summary = Get-Summary $case.Label $rows.ToArray()
         $summaries.Add($summary)
+
+        # Saved after every case, not only at the end: a full run is ~30 minutes, and one that
+        # was cut off during its last case lost the raw samples of all the cases it had finished.
+        $allRows   | Export-Csv -LiteralPath (Join-Path $OutDir 'samples.csv') -NoTypeInformation -Encoding utf8
+        $summaries | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $OutDir 'summary.json') -Encoding utf8
         Write-Host ([string]::Format([Globalization.CultureInfo]::InvariantCulture,
             '{0,-40} done in {1:N0} s, max {2:F1} ms, over {3}',
             $case.Label, $sw.Elapsed.TotalSeconds, $summary.Max, $summary.Over))
