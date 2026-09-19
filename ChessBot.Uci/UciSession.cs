@@ -142,6 +142,7 @@ public sealed class UciSession : IDisposable
                 // invite a host to rely on something that is not there.
                 WriteLine($"option name Hash type spin default {ChessEngine.DefaultHashSizeMb} " +
                           $"min {ChessEngine.MinHashSizeMb} max {ChessEngine.MaxHashSizeMb}");
+                WriteLine("option name Threads type spin default 1 min 1 max 1");
                 WriteLine($"option name Move Overhead type spin default " +
                           $"{UciTimeManager.DefaultMoveOverheadMs} min 0 " +
                           $"max {UciTimeManager.MaxMoveOverheadMs}");
@@ -247,6 +248,11 @@ public sealed class UciSession : IDisposable
             if (_searchTask is null || _searchTask.IsCompleted)
                 ApplyPendingHashSize();
         }
+
+        // "Threads" is accepted and ignored, whatever the value: the search is single-threaded,
+        // and the advertised range (min 1 max 1) is what says so. Advertising it at all is for
+        // hosts that send it unconditionally, lichess-bot among them — an honest range documents
+        // the limit, where silently ignoring an unknown option documents nothing.
     }
 
     /// <summary>
