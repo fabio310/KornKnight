@@ -239,6 +239,12 @@ internal class Searcher
     // slot below it always holds the count for the line currently being walked.
     private readonly int[] _extensionsAtPly;
 
+    // Static evaluation of the node at each ply on the current line, for the "improving" test —
+    // is this side's static score higher than on its previous turn, two plies up? NO_EVAL marks a
+    // node that was in check, whose static score is not computed.
+    private readonly int[] _staticEvalAtPly;
+    private const int NO_EVAL = int.MinValue;
+
     // ── Constructor ───────────────────────────────────────────────────────────
     /// <summary>
     /// Creates a searcher over the given board.
@@ -265,6 +271,7 @@ internal class Searcher
         _lastMoveAtPly  = new Move[MAX_PLY];
         _nullMoveAtPly  = new bool[MAX_PLY];
         _extensionsAtPly = new int[MAX_PLY];
+        _staticEvalAtPly = new int[MAX_PLY];
 
         _quietsTried = new Move[MAX_PLY][];
         for (int i = 0; i < MAX_PLY; i++)
@@ -740,6 +747,11 @@ internal class Searcher
         // guards on !inCheck, so computing it was paid for at every check node and read at none.
         int staticEval = inCheck ? 0 : EvaluateStatic();
 
+        // Recorded before anything below can recurse (null move, the move loop), so a node two
+        // plies down always reads this line's value and never a sibling branch's leftover.
+        _staticEvalAtPly[ply] = inCheck ? NO_EVAL : staticEval;
+        bool improving = _settings.UseImproving && IsImproving(ply, staticEval, inCheck);
+
         // ── Reverse futility pruning (static null move) ───────────────────
         // Futility pruning asks whether a move can raise alpha. This asks the mirror question at
         // the node: is the position so far above beta that the opponent cannot claw it back in
@@ -750,10 +762,16 @@ internal class Searcher
         // so it lives under the same switch and is therefore off for the minimax equivalence
         // gate. The mate-band guard is not decoration: a beta inside the band is a claim about a
         // forced mate, and no centipawn margin is evidence about one.
+        //
+        // An improving node is charged one ply less. Its static score is rising against the same
+        // side's score two plies up, so the opponent's last move did not dent it and the claw-back
+        // the margin insures against is less likely; a node that is not improving keeps the full
+        // margin — the tighter test.
+        int rfpPlies = improving ? depth - 1 : depth;
         if (_settings.UseFutility && !pvNode && !inCheck
             && depth <= RFP_MAX_DEPTH
             && Math.Abs(beta) < MATE_THRESHOLD
-            && staticEval - RFP_MARGIN * depth >= beta)
+            && staticEval - RFP_MARGIN * rfpPlies >= beta)
         {
             _reverseFutilityCutoffs++;
             return staticEval;
@@ -1163,6 +1181,26 @@ internal class Searcher
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Whether the side to move's static score has risen since its previous turn in this line —
+    /// two plies up. Pruning trusts a static score more when it is rising: the opponent's reply
+    /// did not undo it.
+    ///
+    /// Two plies up can be a node that was in check, which has no static score; then four plies
+    /// up is asked instead, and with neither known — or at ply 0-1, where there is no earlier
+    /// turn in the tree — the node counts as not improving, which keeps every consumer at the
+    /// behaviour it had before the flag existed.
+    /// </summary>
+    private bool IsImproving(int ply, int staticEval, bool inCheck)
+    {
+        if (inCheck || ply < 2) return false;
+
+        int earlier = _staticEvalAtPly[ply - 2];
+        if (earlier == NO_EVAL && ply >= 4) earlier = _staticEvalAtPly[ply - 4];
+
+        return earlier != NO_EVAL && staticEval > earlier;
+    }
 
     /// <summary>
     /// The throttled external stop check shared by both node loops: every

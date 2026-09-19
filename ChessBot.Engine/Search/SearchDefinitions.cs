@@ -103,6 +103,15 @@ public class SearchSettings
     public bool UseCheckExtension { get; internal set; } = true;
 
     /// <summary>
+    /// The "improving" adjustments: a node whose static score has risen since the same side's
+    /// previous turn (two plies up) is pruned and reduced more readily. Unsound in the way the
+    /// pruning it adjusts is — a trend in static scores standing in for a search — and a change to
+    /// how much of the tree those heuristics remove, so it is off for the minimax gate, where they
+    /// are off anyway.
+    /// </summary>
+    public bool UseImproving { get; internal set; } = true;
+
+    /// <summary>
     /// Invoked once per *completed* iterative-deepening iteration — never per node — so a
     /// protocol layer (UCI "info depth ...") can report progress without the search having to
     /// know that a protocol exists. Null by default: no callback, no cost, and the search tree
@@ -133,6 +142,7 @@ public class SearchSettings
         UseQuiescence         = false,
         UseAspiration         = false,
         UseCheckExtension     = false,
+        UseImproving          = false,
     };
 }
 
