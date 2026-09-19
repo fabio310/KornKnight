@@ -239,6 +239,14 @@ public sealed class SearchProgress
     public double NodesPerSecond => ElapsedMs > 0 ? Nodes / (ElapsedMs / 1000.0) : 0;
 
     /// <summary>
+    /// Transposition table fill in per-mille (0-1000) when this iteration finished — what UCI
+    /// reports as "hashfull". Sampled over the first thousand entries, the same figure
+    /// <see cref="SearchResult.HashFull"/> carries, so reading it costs a thousand loads per
+    /// iteration rather than a scan of the table.
+    /// </summary>
+    public int HashFull { get; internal set; }
+
+    /// <summary>
     /// The principal variation of this iteration. Backed by a list the searcher refills every
     /// iteration; copy it if it must outlive the callback.
     /// </summary>

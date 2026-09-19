@@ -510,11 +510,38 @@ public class UciSessionTests
 
         string info = output.Lines.Last(l => l.StartsWith("info depth", StringComparison.Ordinal));
 
-        foreach (string field in new[] { "depth", "seldepth", "score", "nodes", "nps", "time", "pv" })
+        foreach (string field in new[] { "depth", "seldepth", "score", "nodes", "nps", "hashfull", "time", "pv" })
             Assert.Contains($" {field} ", $"{info} ");
 
         // Depths are reported as they complete, so the deepest one comes last.
         Assert.StartsWith("info depth 5 ", info);
+    }
+
+    /// <summary>
+    /// hashfull is per-mille of the table in use, so it has to be in 0..1000, and it has to move:
+    /// a small table under a long enough search fills, and a value stuck at 0 would mean the
+    /// field is wired to nothing.
+    /// </summary>
+    [Fact]
+    public void Go_HashfullIsPerMilleAndTracksTheTable()
+    {
+        var (session, _, output) = NewSession();
+        using (session)
+        {
+            session.Execute("setoption name Hash value 1");
+            session.Execute("position fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+            session.Execute("go depth 8");
+            output.WaitForLine("bestmove", 60_000);
+        }
+
+        var values = output.Lines
+            .Where(l => l.StartsWith("info depth", StringComparison.Ordinal))
+            .Select(l => l.Split(' '))
+            .Select(t => int.Parse(t[Array.IndexOf(t, "hashfull") + 1]))
+            .ToList();
+
+        Assert.All(values, v => Assert.InRange(v, 0, 1000));
+        Assert.True(values[^1] > 0, "a 1 MB table after a depth-8 Kiwipete search reports 0 fill");
     }
 
     [Fact]

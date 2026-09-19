@@ -522,6 +522,7 @@ internal class Searcher
                 _progress.Score     = score;
                 _progress.Nodes     = _nodesSearched + _qnodesSearched;
                 _progress.ElapsedMs = _searchTimer.ElapsedMilliseconds;
+                _progress.HashFull  = _transpositionTable.GetFillPermille();
                 _progress.PvBuffer.Clear();
                 for (int i = 0; i < _pvLength[0]; i++)
                     _progress.PvBuffer.Add(_pvTable[0, i]);
