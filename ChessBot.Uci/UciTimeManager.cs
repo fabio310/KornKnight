@@ -105,8 +105,9 @@ public static class UciTimeManager
                                           int moveOverheadMs = DefaultMoveOverheadMs)
     {
         if (go.Infinite) return NoTimeLimitMs;
+        // In long: "movetime -2147483648" minus the overhead wraps an int to +2.1 billion ms.
         if (go.MoveTimeMs is int mt)
-            return Math.Max(1, mt - Math.Clamp(moveOverheadMs, 0, MaxMoveOverheadMs));
+            return (int)Math.Max(1L, (long)mt - Math.Clamp(moveOverheadMs, 0, MaxMoveOverheadMs));
         if (go.HasNoTimeSource)      return NoTimeLimitMs;
 
         int? remaining = sideToMove == Color.White ? go.WhiteTimeMs : go.BlackTimeMs;
@@ -127,7 +128,9 @@ public static class UciTimeManager
     public static int AllocateTimeMs(int remainingMs, int incrementMs, int? movesToGo,
                                      int moveOverheadMs = DefaultMoveOverheadMs)
     {
-        int usableMs = Math.Max(0, remainingMs - Math.Clamp(moveOverheadMs, 0, MaxMoveOverheadMs));
+        // In long throughout: a hostile "wtime -2147483648" minus the overhead wraps an int to a
+        // budget of 24 days.
+        long usableMs = Math.Max(0L, (long)remainingMs - Math.Clamp(moveOverheadMs, 0, MaxMoveOverheadMs));
         if (usableMs <= 0) return 1;   // Out of time: move immediately rather than not at all.
 
         int movesLeft = Math.Max(1, movesToGo ?? DefaultMovesToGo);
@@ -135,8 +138,8 @@ public static class UciTimeManager
 
         // The increment is added in full because it is refunded on completion of this move;
         // the hard cap below is what stops that from overdrawing a clock too small to earn it.
-        long budget  = (long)(usableMs / movesLeft) + inc;
-        long hardCap = Math.Max(1, usableMs / HardCapDivisor);
+        long budget  = usableMs / movesLeft + inc;
+        long hardCap = Math.Max(1L, usableMs / HardCapDivisor);
 
         return (int)Math.Clamp(budget, 1, hardCap);
     }
