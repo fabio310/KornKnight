@@ -67,6 +67,10 @@ public class ChessEngine
     /// game starts; the engine honours it whenever it arrives rather than refusing, since the
     /// cost of honouring it is one cleared table.
     /// </summary>
+    /// <exception cref="OutOfMemoryException">
+    /// The table could not be allocated. The engine keeps the table it had, at the size it had,
+    /// so a host that asks for more memory than exists loses nothing but the request.
+    /// </exception>
     public void SetHashSize(int hashSizeMb)
     {
         lock (_boardLock)
@@ -74,8 +78,13 @@ public class ChessEngine
             int clamped = Math.Clamp(hashSizeMb, MinHashSizeMb, MaxHashSizeMb);
             if (clamped == _hashSizeMb && _searcher is not null) return;
 
+            // The size is recorded only once the new table exists. It used to be recorded first,
+            // so a failed allocation left the engine claiming a size it did not have — and the
+            // next search, finding no searcher, would try to build that size again. The old
+            // table stays alive until the new one is built, which costs old + new at the peak;
+            // that is the price of being able to keep the old one when the new one does not fit.
+            _searcher   = new Searcher(_board, _evaluator, _zobristHasher, clamped);
             _hashSizeMb = clamped;
-            _searcher   = new Searcher(_board, _evaluator, _zobristHasher, _hashSizeMb);
         }
     }
 

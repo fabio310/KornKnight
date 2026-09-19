@@ -161,6 +161,57 @@ public class UciSessionTests
         }
     }
 
+    /// <summary>
+    /// A tester sets Hash to its conditions; an engine that ignores it is not testable. With no
+    /// search running the table is rebuilt at once, so the memory is committed before the host's
+    /// next isready is answered.
+    /// </summary>
+    [Theory]
+    [InlineData("setoption name Hash value 16", 16)]
+    [InlineData("setoption name hash value 8",  8)]    // option names are case-insensitive
+    [InlineData("setoption name Hash value 0",  ChessEngine.MinHashSizeMb)]
+    [InlineData("setoption name Hash value -7", ChessEngine.MinHashSizeMb)]
+    [InlineData("setoption name Hash value lots", ChessEngine.DefaultHashSizeMb)]
+    [InlineData("setoption name Hash value",    ChessEngine.DefaultHashSizeMb)]
+    [InlineData("setoption name Hash",          ChessEngine.DefaultHashSizeMb)]
+    public void SetOption_Hash_ResizesTheTable(string command, int expectedMb)
+    {
+        var (session, engine, _) = NewSession();
+        using (session)
+        {
+            session.Execute(command);
+            Assert.Equal(expectedMb, engine.HashSizeMb);
+        }
+    }
+
+    /// <summary>
+    /// Hash is set between games in practice, but nothing guarantees it. Resizing takes the lock
+    /// the search holds, so applying it mid-search on the command loop would block the loop — and
+    /// a "go infinite" ends only on a "stop" the blocked loop could never read. The change must
+    /// return at once and take effect at the next ucinewgame.
+    /// </summary>
+    [Fact]
+    public void SetOption_Hash_DuringASearch_NeitherBlocksNorRaces()
+    {
+        var (session, engine, output) = NewSession();
+        using (session)
+        {
+            session.Execute("position startpos");
+            session.Execute("go infinite");
+            output.WaitForLine("info depth");
+
+            var setOption = Task.Run(() => session.Execute("setoption name Hash value 16"));
+            Assert.True(setOption.Wait(2_000), "setoption Hash blocked the command loop mid-search");
+
+            session.Execute("stop");
+            session.Execute("ucinewgame");
+
+            Assert.Equal(16, engine.HashSizeMb);
+        }
+
+        Assert.Single(output.Lines, l => l.StartsWith("bestmove", StringComparison.Ordinal));
+    }
+
     // ── Handshake ────────────────────────────────────────────────────────────
 
     [Fact]
@@ -179,6 +230,7 @@ public class UciSessionTests
             {
                 $"id name {UciSession.EngineName} {UciSession.BuildIdentity}",
                 $"id author {UciSession.EngineAuthor}",
+                "option name Hash type spin default 64 min 1 max 4096",
                 $"option name Move Overhead type spin default {UciTimeManager.DefaultMoveOverheadMs}" +
                     $" min 0 max {UciTimeManager.MaxMoveOverheadMs}",
                 "uciok",

@@ -80,6 +80,15 @@ public sealed class UciSession : IDisposable
     /// </summary>
     private int _moveOverheadMs = UciTimeManager.DefaultMoveOverheadMs;
 
+    /// <summary>
+    /// A Hash size that arrived while a search was running, waiting to be applied. Resizing takes
+    /// the engine's board lock, which the search holds; doing it on the command loop mid-search
+    /// would block the loop until the search ended — and a "go infinite" only ends on a "stop"
+    /// the blocked loop could never read. So it waits for the next point where no search is
+    /// running: the next ucinewgame, position or go, each of which stops the search first.
+    /// </summary>
+    private int? _pendingHashMb;
+
     private bool _disposed;
 
     /// <summary>
@@ -127,6 +136,12 @@ public sealed class UciSession : IDisposable
             case "uci":
                 WriteLine($"id name {EngineName} {BuildIdentity}");
                 WriteLine($"id author {EngineAuthor}");
+
+                // Only options the engine honours. No Ponder: there is no ponderhit handling.
+                // No UCI_Chess960: castling generation is standard-only. Advertising either would
+                // invite a host to rely on something that is not there.
+                WriteLine($"option name Hash type spin default {ChessEngine.DefaultHashSizeMb} " +
+                          $"min {ChessEngine.MinHashSizeMb} max {ChessEngine.MaxHashSizeMb}");
                 WriteLine($"option name Move Overhead type spin default " +
                           $"{UciTimeManager.DefaultMoveOverheadMs} min 0 " +
                           $"max {UciTimeManager.MaxMoveOverheadMs}");
@@ -145,11 +160,13 @@ public sealed class UciSession : IDisposable
 
             case "ucinewgame":
                 StopSearch();
+                ApplyPendingHashSize();
                 _engine.NewGame();
                 return true;
 
             case "position":
                 StopSearch();
+                ApplyPendingHashSize();
                 HandlePosition(tokens);
                 return true;
 
@@ -214,11 +231,41 @@ public sealed class UciSession : IDisposable
             ? string.Join(' ', tokens[(valueIndex + 1)..])
             : string.Empty;
 
-        if (name.Equals("Move Overhead", StringComparison.OrdinalIgnoreCase)
-            && int.TryParse(value, System.Globalization.NumberStyles.Integer,
-                            System.Globalization.CultureInfo.InvariantCulture, out int overhead))
+        bool isInteger = int.TryParse(value, System.Globalization.NumberStyles.Integer,
+                                      System.Globalization.CultureInfo.InvariantCulture, out int number);
+
+        if (name.Equals("Move Overhead", StringComparison.OrdinalIgnoreCase) && isInteger)
         {
-            _moveOverheadMs = Math.Clamp(overhead, 0, UciTimeManager.MaxMoveOverheadMs);
+            _moveOverheadMs = Math.Clamp(number, 0, UciTimeManager.MaxMoveOverheadMs);
+        }
+        else if (name.Equals("Hash", StringComparison.OrdinalIgnoreCase) && isInteger)
+        {
+            _pendingHashMb = Math.Clamp(number, ChessEngine.MinHashSizeMb, ChessEngine.MaxHashSizeMb);
+
+            // Now if nothing is searching, so the memory is committed before the host's next
+            // "isready" is answered; otherwise at the next point where no search is running.
+            if (_searchTask is null || _searchTask.IsCompleted)
+                ApplyPendingHashSize();
+        }
+    }
+
+    /// <summary>
+    /// Resizes the transposition table if a Hash change is waiting. Only called where no search
+    /// is running. A size that cannot be allocated is reported and dropped; the engine keeps the
+    /// table it had rather than being left without one.
+    /// </summary>
+    private void ApplyPendingHashSize()
+    {
+        if (_pendingHashMb is not int hashMb) return;
+        _pendingHashMb = null;
+
+        try
+        {
+            _engine.SetHashSize(hashMb);
+        }
+        catch (OutOfMemoryException)
+        {
+            WriteLine($"info string cannot allocate {hashMb} MB for Hash; keeping {_engine.HashSizeMb} MB");
         }
     }
 
@@ -325,6 +372,7 @@ public sealed class UciSession : IDisposable
     private void StartSearch(GoParameters go)
     {
         StopSearch();
+        ApplyPendingHashSize();
 
         var settings = UciTimeManager.ToSearchSettings(go, _engine.SideToMove, _moveOverheadMs);
         settings.OnIterationComplete = WriteInfo;
