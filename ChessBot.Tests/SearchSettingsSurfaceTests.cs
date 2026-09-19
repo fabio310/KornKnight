@@ -35,6 +35,7 @@ public class SearchSettingsSurfaceTests
         nameof(SearchSettings.UseAspiration),
         nameof(SearchSettings.UseCheckExtension),
         nameof(SearchSettings.UseImproving),
+        nameof(SearchSettings.UseIir),
     };
 
     [Theory]

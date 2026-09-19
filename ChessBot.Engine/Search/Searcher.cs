@@ -74,6 +74,11 @@ internal class Searcher
     // accumulate.
     internal const int MAX_EXTENSIONS = 16;
 
+    // Internal iterative reduction: nodes at least this deep with no move from the table are
+    // searched one ply shallower. Below 4 the node is cheap enough that searching it unordered costs
+    // less than the ply the reduction gives up.
+    private const int IIR_MIN_DEPTH  = 4;
+
     // Delta pruning in quiescence
     private const int DELTA_MARGIN   = 200; // centipawns
 
@@ -181,6 +186,7 @@ internal class Searcher
     private long _repetitionDraws;
     private long _checkExtensions;
     private long _checkExtensionsCapped;
+    private long _iirReductions;
     private int  _maxExtensionsInLine;
 
     /// <summary>Static evaluation with a call counter, so evaluation cost is measurable.</summary>
@@ -360,6 +366,7 @@ internal class Searcher
         _repetitionDraws      = 0;
         _checkExtensions      = 0;
         _checkExtensionsCapped = 0;
+        _iirReductions         = 0;
         _maxExtensionsInLine  = 0;
 
         var result      = new SearchResult();
@@ -612,6 +619,7 @@ internal class Searcher
         result.RepetitionDraws       = _repetitionDraws;
         result.CheckExtensions       = _checkExtensions;
         result.CheckExtensionsCapped = _checkExtensionsCapped;
+        result.IirReductions         = _iirReductions;
         result.MaxCheckExtensionsInLine = _maxExtensionsInLine;
         result.HashFull       = _transpositionTable.GetFillPermille();
 
@@ -713,6 +721,19 @@ internal class Searcher
                     }
                 }
             }
+        }
+
+        // ── Internal iterative reduction ──────────────────────────────────
+        // No move from the table at a node this deep means the search is about to walk its move
+        // list in the order the heuristics guess, with nothing learned about this position — the
+        // most expensive way to search it. One ply less is cheaper, and the entry it stores gives
+        // the next visit, at full depth, a move to start from. The older answer, internal
+        // iterative deepening, runs a separate reduced search first just to find that move; the
+        // reduction gets the same move from the next iteration of the driver's own loop.
+        if (_settings.UseIir && depth >= IIR_MIN_DEPTH && ttMove == default)
+        {
+            depth--;
+            _iirReductions++;
         }
 
         // ── Check detection ───────────────────────────────────────────────

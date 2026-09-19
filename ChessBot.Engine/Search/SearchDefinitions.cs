@@ -112,6 +112,13 @@ public class SearchSettings
     public bool UseImproving { get; internal set; } = true;
 
     /// <summary>
+    /// Internal iterative reduction: a node deep enough to be expensive, with no move from the
+    /// transposition table to order by, is searched one ply shallower. A reduction, so unsound, and
+    /// it would fire at every node of the minimax gate — which runs with the table off.
+    /// </summary>
+    public bool UseIir { get; internal set; } = true;
+
+    /// <summary>
     /// Invoked once per *completed* iterative-deepening iteration — never per node — so a
     /// protocol layer (UCI "info depth ...") can report progress without the search having to
     /// know that a protocol exists. Null by default: no callback, no cost, and the search tree
@@ -143,6 +150,7 @@ public class SearchSettings
         UseAspiration         = false,
         UseCheckExtension     = false,
         UseImproving          = false,
+        UseIir                = false,
     };
 }
 
@@ -528,6 +536,9 @@ public class SearchResult
 
     /// <summary>Extensions the per-line budget refused. 0 means the budget never bound.</summary>
     public long CheckExtensionsCapped { get; set; }
+
+    /// <summary>Nodes searched one ply shallower by internal iterative reduction (no table move).</summary>
+    public long IirReductions { get; set; }
 }
 
 /// <summary>
