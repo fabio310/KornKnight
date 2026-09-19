@@ -516,6 +516,7 @@ public sealed class UciSession : IDisposable
             .Append(" score ").Append(FormatScore(progress.Score))
             .Append(" nodes ").Append(progress.Nodes)
             .Append(" nps ").Append((long)progress.NodesPerSecond)
+            .Append(" hashfull ").Append(progress.HashFull)
             .Append(" time ").Append(progress.ElapsedMs);
 
         var pv = progress.PrincipalVariation;
