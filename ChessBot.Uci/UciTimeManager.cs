@@ -68,13 +68,27 @@ public static class UciTimeManager
     {
         var settings = new SearchSettings
         {
-            MaxDepth  = go.Depth,
+            MaxDepth  = CombineDepthLimits(go.Depth, go.Mate),
             MaxNodes  = go.Nodes,
             MaxTimeMs = ResolveTimeBudgetMs(go, sideToMove, moveOverheadMs),
             StartTimestamp = go.ReceivedTimestamp,
         };
 
         return settings;
+    }
+
+    /// <summary>
+    /// The depth bound from "depth" and "mate" together, whichever is tighter. A mate in N moves
+    /// is 2N-1 plies deep, so that is the depth at which it first becomes visible; searching
+    /// further cannot find a mate in N that depth missed. At least one ply, so "mate 0" still
+    /// produces a searched move rather than the unsearched fallback.
+    /// </summary>
+    private static int? CombineDepthLimits(int? depth, int? mateInMoves)
+    {
+        if (mateInMoves is not int mate) return depth;
+
+        int mateDepth = (int)Math.Clamp(2L * mate - 1, 1, int.MaxValue);
+        return depth is int d ? Math.Min(d, mateDepth) : mateDepth;
     }
 
     /// <summary>

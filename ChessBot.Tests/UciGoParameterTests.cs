@@ -136,6 +136,44 @@ public class UciGoParameterTests
         Assert.Equal(UciTimeManager.NoTimeLimitMs, settings.MaxTimeMs);
     }
 
+    /// <summary>
+    /// Exactly the commands with nothing bounding them are unbounded: an operand the engine
+    /// ignores does not bound a search, and any operand it honours does.
+    /// </summary>
+    [Theory]
+    [InlineData("go",                        true)]
+    [InlineData("go ponder",                 true)]
+    [InlineData("go searchmoves e2e4 d2d4",  true)]
+    [InlineData("go infinite",               false)]   // unbounded, but said so itself
+    [InlineData("go mate 3",                 false)]
+    [InlineData("go depth 6",                false)]
+    [InlineData("go nodes 1000",             false)]
+    [InlineData("go movetime 100",           false)]
+    [InlineData("go wtime 1000 btime 1000",  false)]
+    [InlineData("go depth 0",                false)]
+    public void IsUnbounded_OnlyWhenNothingBoundsTheSearch(string command, bool unbounded)
+    {
+        Assert.Equal(unbounded, Parse(command).IsUnbounded);
+    }
+
+    /// <summary>
+    /// "go mate N" is a depth bound of 2N-1 plies — where a mate in N first becomes visible —
+    /// combined with any explicit depth by taking the tighter.
+    /// </summary>
+    [Theory]
+    [InlineData("go mate 1",          1)]
+    [InlineData("go mate 3",          5)]
+    [InlineData("go mate 3 depth 4",  4)]
+    [InlineData("go depth 9 mate 3",  5)]
+    [InlineData("go mate 0",          1)]
+    [InlineData("go mate -4",         1)]
+    public void Mate_BecomesADepthBound(string command, int expectedDepth)
+    {
+        var settings = UciTimeManager.ToSearchSettings(Parse(command), Color.White);
+
+        Assert.Equal(expectedDepth, settings.MaxDepth);
+    }
+
     [Fact]
     public void DepthAndClock_BothApply()
     {

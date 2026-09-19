@@ -339,7 +339,11 @@ public sealed class UciSession : IDisposable
         var cts = new CancellationTokenSource();
         _searchCts = cts;
 
-        bool holdBestMove = go.Infinite;
+        // A "go" with nothing bounding it is "go infinite" (see GoParameters.IsUnbounded): its
+        // bestmove waits for "stop" rather than going out whenever the depth loop runs dry.
+        bool holdBestMove = go.Infinite || go.IsUnbounded;
+        if (go.IsUnbounded)
+            WriteLine("info string no limit given; searching until stop");
         _searchTask = Task.Run(() => RunSearch(settings, holdBestMove, cts.Token));
     }
 
