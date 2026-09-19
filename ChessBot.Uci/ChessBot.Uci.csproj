@@ -91,24 +91,40 @@
     the harness's working tree, not the tree either arm was built from, and the two are routinely
     different commits. A dirty tree is marked as such, because a build with uncommitted changes
     is not traceable to a commit at all and must not be recorded as if it were.
+
+    With no repository — a release built from an extracted source zip — or no git at all, both
+    commands fail and the id is "nogit". Only a status that SUCCEEDED can mark a tree dirty: the
+    output captured from a failed "git status" is git's own error text, and reading that as a
+    list of modified files made every source-zip build report "nogit (Release, dirty)". The
+    failures are expected, so their exit codes are not raised as build warnings either.
+
+    A publish from a dirty tree is refused outright (override: -p:AllowDirtyPublish=true). A
+    published binary is a release, and a release whose id says "dirty" is one nobody can rebuild.
   -->
   <Target Name="StampBuildCommit" BeforeTargets="AddSourceRevisionToInformationalVersion;GetAssemblyVersion">
-    <Exec Command="git rev-parse --short=12 HEAD" ConsoleToMSBuild="true" ContinueOnError="true"
+    <Exec Command="git rev-parse --short=12 HEAD" ConsoleToMSBuild="true" IgnoreExitCode="true"
+          IgnoreStandardErrorWarningFormat="true"
           StandardOutputImportance="low" StandardErrorImportance="low">
       <Output TaskParameter="ConsoleOutput" PropertyName="_BuildCommitId" />
       <Output TaskParameter="ExitCode" PropertyName="_BuildCommitExitCode" />
     </Exec>
-    <Exec Command="git status --porcelain --untracked-files=no" ConsoleToMSBuild="true" ContinueOnError="true"
+    <Exec Command="git status --porcelain --untracked-files=no" ConsoleToMSBuild="true" IgnoreExitCode="true"
+          IgnoreStandardErrorWarningFormat="true"
           StandardOutputImportance="low" StandardErrorImportance="low">
       <Output TaskParameter="ConsoleOutput" PropertyName="_BuildWorkingTreeStatus" />
+      <Output TaskParameter="ExitCode" PropertyName="_BuildStatusExitCode" />
     </Exec>
 
     <PropertyGroup>
       <_BuildCommitId Condition="'$(_BuildCommitExitCode)' != '0'">nogit</_BuildCommitId>
       <_BuildCommitId Condition="'$(_BuildCommitId)' == ''">nogit</_BuildCommitId>
-      <_BuildCommitId Condition="'$(_BuildWorkingTreeStatus)' != ''">$(_BuildCommitId).dirty</_BuildCommitId>
+      <_BuildTreeDirty Condition="'$(_BuildCommitId)' != 'nogit' and '$(_BuildStatusExitCode)' == '0' and '$(_BuildWorkingTreeStatus)' != ''">true</_BuildTreeDirty>
+      <_BuildCommitId Condition="'$(_BuildTreeDirty)' == 'true'">$(_BuildCommitId).dirty</_BuildCommitId>
       <SourceRevisionId>$(_BuildCommitId)</SourceRevisionId>
     </PropertyGroup>
+
+    <Error Condition="'$(_IsPublishing)' == 'true' and '$(_BuildTreeDirty)' == 'true' and '$(AllowDirtyPublish)' != 'true'"
+           Text="Refusing to publish from a working tree with uncommitted changes: the binary would report '$(_BuildCommitId)' and could not be rebuilt from any commit. Commit first, or pass -p:AllowDirtyPublish=true for a throwaway build." />
   </Target>
 
 </Project>
