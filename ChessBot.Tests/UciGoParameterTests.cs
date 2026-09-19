@@ -128,6 +128,30 @@ public class UciGoParameterTests
         Assert.Null(settings.MaxDepth);
     }
 
+    /// <summary>
+    /// Operands at the int limits. The budget arithmetic subtracts the overhead, and in int
+    /// "-2147483648 - 10" wraps to +2,147,483,638 — a hostile or buggy host sending a negative
+    /// clock got a budget of weeks instead of an immediate move.
+    /// </summary>
+    [Theory]
+    [InlineData("go movetime -2147483648",                   1)]
+    [InlineData("go wtime -2147483648 btime -2147483648",    1)]
+    [InlineData("go wtime -5 btime -5",                      1)]
+    [InlineData("go movetime 0",                             1)]
+    public void Budget_AtTheIntLimits_DoesNotWrap(string command, int expected)
+    {
+        Assert.Equal(expected, UciTimeManager.ResolveTimeBudgetMs(Parse(command), Color.White));
+    }
+
+    [Fact]
+    public void Budget_WithTheLargestClock_StaysUnderHalfOfIt()
+    {
+        int budget = UciTimeManager.ResolveTimeBudgetMs(
+            Parse("go wtime 2147483647 btime 2147483647 winc 2147483647 binc 2147483647"), Color.White);
+
+        Assert.InRange(budget, 1, int.MaxValue / 2);
+    }
+
     [Fact]
     public void BareGo_IsTreatedAsInfinite()
     {

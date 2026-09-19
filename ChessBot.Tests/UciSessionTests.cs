@@ -57,6 +57,24 @@ public class UciSessionTests
             throw new TimeoutException(
                 $"No '{prefix}' line within {timeoutMs}ms. Output:\n{string.Join('\n', Lines)}");
         }
+
+        /// <summary>
+        /// Waits for a line with the given prefix written after the first <paramref name="skip"/>
+        /// lines — for a test that already has an older line with the same prefix in the buffer.
+        /// </summary>
+        public string WaitForLineAfter(int skip, string prefix, int timeoutMs = 15_000)
+        {
+            var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (Lines.Skip(skip).FirstOrDefault(l => l.StartsWith(prefix, StringComparison.Ordinal))
+                    is string line) return line;
+                Thread.Sleep(5);
+            }
+
+            throw new TimeoutException(
+                $"No new '{prefix}' line within {timeoutMs}ms. Output:\n{string.Join('\n', Lines)}");
+        }
     }
 
     private static (UciSession session, ChessEngine engine, RecordingWriter output) NewSession()
@@ -811,6 +829,148 @@ public class UciSessionTests
         }
 
         Assert.Equal("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", engine.ExportFen());
+    }
+
+    // ── Hostile host ─────────────────────────────────────────────────────────
+    // An exception escaping Execute reaches Run and ends the process; to a tournament manager
+    // that is a forfeit, and on CCRL an engine that does it is dropped from testing. So every
+    // shape of bad input a host can produce must leave a session that still answers and plays.
+
+    public static IEnumerable<object[]> HostileSequences() => new[]
+    {
+        new object[] { "stop with no search running",   new[] { "stop", "stop" } },
+        new object[] { "go with no preceding position", new[] { "go depth 3" } },
+        new object[] { "setoption with a missing value", new[]
+            { "setoption name Hash value", "setoption name Move Overhead value", "setoption name Threads value",
+              "setoption name value 5", "setoption name", "setoption value 3", "setoption" } },
+        new object[] { "position startpos moves <garbage>", new[]
+            { "position startpos moves e2e4 zz99 e7e5", "position startpos moves !! @@ e2e4", "go depth 2" } },
+        new object[] { "malformed position", new[]
+            { "position", "position fen", "position fen 8/8/8/8 w", "position startpos moves",
+              "position banana", "position fen rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - x y" } },
+        new object[] { "go depth 0",             new[] { "position startpos", "go depth 0" } },
+        new object[] { "go nodes 0",             new[] { "position startpos", "go nodes 0" } },
+        new object[] { "go wtime 1 btime 1",     new[] { "position startpos", "go wtime 1 btime 1" } },
+        new object[] { "a line of pure whitespace", new[] { "   ", "\t", " \t \t " } },
+        new object[] { "operands at the int limits", new[]
+            { "position startpos", "go movetime -2147483648", "go wtime -2147483648 btime -2147483648",
+              "go wtime 2147483647 btime 2147483647 winc 2147483647 binc 2147483647",
+              "go depth -5", "go nodes -1", "go movestogo 0 wtime 1000 btime 1000",
+              "go movetime 99999999999999999999" } },
+        new object[] { "operands with no values", new[]
+            { "position startpos", "go wtime", "go movetime", "go depth nodes", "go mate" } },
+        new object[] { "commands in the wrong order", new[]
+            { "go depth 2", "ucinewgame", "go depth 2", "uci", "go depth 2", "isready", "position startpos" } },
+    };
+
+    [Theory]
+    [MemberData(nameof(HostileSequences))]
+    public void HostileInput_NeverThrows_AndLeavesAWorkingEngine(string name, string[] commands)
+    {
+        var (session, engine, output) = NewSession();
+        using (session)
+        {
+            foreach (string command in commands)
+            {
+                Exception? thrown = Record.Exception(() => session.Execute(command));
+                Assert.True(thrown is null, $"{name}: '{command}' threw {thrown}");
+            }
+
+            session.Execute("stop");
+
+            int before = output.Lines.Count;
+            session.Execute("isready");
+            Assert.Contains("readyok", output.Lines.Skip(before));
+
+            // Still plays: a fresh position and a bounded search give a legal move.
+            session.Execute("position startpos moves e2e4");
+            before = output.Lines.Count;
+            session.Execute("go depth 3");
+            string best = output.WaitForLineAfter(before, "bestmove");
+
+            Assert.True(UciMoveNotation.TryParse(best.Split(' ')[1], engine.GetLegalMoves(), out _),
+                $"{name}: '{best}' is not legal afterwards");
+        }
+    }
+
+    /// <summary>
+    /// The degenerate bounds each still answer, promptly and legally: depth 0 and nodes 0 cannot
+    /// complete even depth 1, so they get the fallback move, but a move is what the GUI is owed.
+    /// </summary>
+    [Theory]
+    [InlineData("go depth 0")]
+    [InlineData("go nodes 0")]
+    [InlineData("go wtime 1 btime 1")]
+    [InlineData("go movetime 0")]
+    [InlineData("go depth 3")]   // with no position ever sent: the start position
+    public void DegenerateBounds_StillAnswerWithALegalMove(string command)
+    {
+        var (session, engine, output) = NewSession();
+        using (session)
+        {
+            session.Execute(command);
+            string best = output.WaitForLine("bestmove", 5_000);
+
+            Assert.True(UciMoveNotation.TryParse(best.Split(' ')[1], engine.GetLegalMoves(), out _),
+                $"'{command}' answered '{best}'");
+        }
+
+        Assert.Single(output.Lines, l => l.StartsWith("bestmove", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Whitespace_ProducesNoOutput()
+    {
+        var (session, _, output) = NewSession();
+        using (session)
+        {
+            Assert.True(session.Execute("   "));
+            Assert.True(session.Execute("\t \t"));
+        }
+
+        Assert.Empty(output.Lines);
+    }
+
+    /// <summary>
+    /// "quit" mid-search ends the session promptly: it stops the search rather than waiting for
+    /// an infinite one to finish, and the bestmove it owes is still written before it returns.
+    /// </summary>
+    [Fact]
+    public void Quit_MidSearch_EndsPromptly()
+    {
+        var (session, _, output) = NewSession();
+        using (session)
+        {
+            session.Execute("position startpos");
+            session.Execute("go infinite");
+            output.WaitForLine("info depth");
+
+            var quit = Task.Run(() => session.Execute("quit"));
+            Assert.True(quit.Wait(2_000), "quit did not return within 2 s of a running search");
+            Assert.False(quit.Result);
+        }
+
+        Assert.Single(output.Lines, l => l.StartsWith("bestmove", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A host that dies, or closes the pipe without "quit", must not leave an orphan process
+    /// searching forever: end of input ends the session, and the pending search with it.
+    /// </summary>
+    [Theory]
+    [InlineData("position startpos\ngo infinite\n")]
+    [InlineData("position startpos\ngo movetime 60000\n")]
+    [InlineData("uci\nisready\nposition startpos moves e2e4\ngo\n")]
+    public void Run_InputEndingWithoutQuit_EndsTheSession(string input)
+    {
+        var (session, _, output) = NewSession();
+        using (session)
+        {
+            var run = Task.Run(() => session.Run(new StringReader(input)));
+            Assert.True(run.Wait(5_000), "Run did not return at end of input");
+        }
+
+        Assert.Single(output.Lines, l => l.StartsWith("bestmove", StringComparison.Ordinal));
     }
 
     [Fact]

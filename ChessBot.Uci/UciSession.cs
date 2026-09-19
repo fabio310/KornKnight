@@ -120,8 +120,27 @@ public sealed class UciSession : IDisposable
     /// <summary>
     /// Executes a single command line. Returns false when the session should end ("quit").
     /// Unknown commands are ignored, as the protocol requires.
+    ///
+    /// Never throws. An exception escaping here reaches <see cref="Run"/> and ends the process,
+    /// and to a tournament manager an engine that vanishes mid-game is an engine that forfeits —
+    /// on CCRL, one that is dropped from testing. Every handler already refuses the malformed
+    /// input it knows about; this is for the case nobody thought of, which is reported on the
+    /// info channel and otherwise ignored like any other command the engine cannot use.
     /// </summary>
     public bool Execute(string line)
+    {
+        try
+        {
+            return ExecuteCore(line);
+        }
+        catch (Exception ex)
+        {
+            WriteLine($"info string error handling '{line.Trim()}': {ex.GetType().Name}: {ex.Message}");
+            return true;
+        }
+    }
+
+    private bool ExecuteCore(string line)
     {
         // Some hosts write a UTF-8 byte-order mark ahead of the first line they send, which
         // would otherwise turn the opening "uci" into an unrecognised command and leave the
