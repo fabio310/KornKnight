@@ -104,4 +104,114 @@ public class LichessBotReadinessTests
         Assert.True(at160 < 10, $"replaying 160 plies took {at160:F2} ms");
         Assert.True(at400 < 25, $"replaying 400 plies took {at400:F2} ms");
     }
+
+    /// <summary>
+    /// Stamps the instant the bestmove line is written, so a test can time a search to the
+    /// microsecond. Polling a buffer with Thread.Sleep would add up to a timer tick — 15.6 ms by
+    /// default on Windows — to a measurement whose whole budget is 40.
+    /// </summary>
+    private sealed class BestMoveClock : TextWriter
+    {
+        private readonly ManualResetEventSlim _written = new();
+        public long WrittenAt { get; private set; }
+        public string? BestMove { get; private set; }
+        public int? AnnouncedBudgetMs { get; private set; }
+
+        public override Encoding Encoding => Encoding.UTF8;
+
+        public override void WriteLine(string? value)
+        {
+            if (value is null) return;
+            if (value.StartsWith("info string budget ", StringComparison.Ordinal))
+                AnnouncedBudgetMs = int.Parse(value["info string budget ".Length..]);
+            if (value.StartsWith("bestmove", StringComparison.Ordinal))
+            {
+                WrittenAt = Stopwatch.GetTimestamp();
+                BestMove  = value;
+                _written.Set();
+            }
+        }
+
+        public void Reset() { _written.Reset(); BestMove = null; AnnouncedBudgetMs = null; }
+        public bool Wait(int timeoutMs) => _written.Wait(timeoutMs);
+    }
+
+    /// <summary>
+    /// The last seconds of a lost-on-time race: 40 ms on the clock and no increment. After the
+    /// move overhead there is nothing to allocate, so the budget is the 1 ms floor — and the
+    /// question is whether anything in the chain between "go" and "bestmove" (stopping the
+    /// previous search, the thread-pool hop, the deadline check's granularity, the unwinding)
+    /// still carries the move past the flag. Twenty searches per position, each timed from just
+    /// before "go" is handed to the session to the instant bestmove is written.
+    /// </summary>
+    [Theory]
+    [InlineData("go wtime 40 btime 40 winc 0 binc 0")]
+    [InlineData("go wtime 40 btime 40 winc 1000 binc 1000")]   // increment cannot overdraw the clock
+    [InlineData("go wtime 100 btime 100")]
+    public void AnAlmostEmptyClock_StillAnswersInsideIt(string go)
+    {
+        int clockMs = int.Parse(go.Split(' ')[2]);
+        var positions = new[]
+        {
+            "position startpos",
+            "position fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "position fen r2q1rk1/pP1p2pp/Q4n2/bbp1p3/Np6/1B3NBn/pPPP1PPP/R3K2R b KQ - 0 1",
+        };
+
+        var clock  = new BestMoveClock();
+        var engine = new ChessEngine();
+        using var session = new UciSession(engine, clock);
+
+        var worst = 0.0;
+        foreach (string position in positions)
+        {
+            for (int i = 0; i < 20; i++)
+            {
+                session.Execute(position);
+                clock.Reset();
+
+                long start = Stopwatch.GetTimestamp();
+                session.Execute(go);
+                Assert.True(clock.Wait(5_000), $"no bestmove for '{go}'");
+
+                double ms = (clock.WrittenAt - start) * 1000.0 / Stopwatch.Frequency;
+                worst = Math.Max(worst, ms);
+                Assert.True(ms < clockMs, $"'{go}' in '{position}' answered at {ms:F2} ms");
+                Assert.True(UciMoveNotation.TryParse(clock.BestMove!.Split(' ')[1], engine.GetLegalMoves(), out _));
+            }
+        }
+
+        _out.WriteLine(string.Format(System.Globalization.CultureInfo.InvariantCulture,
+            "{0}: budget {1} ms, worst of 60 answered at {2:F2} ms", go, clock.AnnouncedBudgetMs, worst));
+    }
+
+    /// <summary>
+    /// lichess-bot never sends movestogo, so every move of every game goes through the
+    /// default-horizon branch: remaining/30 plus the increment, capped at half the usable clock.
+    /// At 3+2 that is an 8 s first move that the increment mostly refunds, and a clock that
+    /// decays by a thirtieth a move rather than running out at a fixed move number.
+    /// </summary>
+    [Fact]
+    public void ALichessBotClock_UsesTheDefaultHorizon()
+    {
+        var go = GoParameters.Parse("go wtime 180000 btime 180000 winc 2000 binc 2000".Split(' '), 1);
+        int budget = UciTimeManager.ResolveTimeBudgetMs(go, Color.White);
+
+        Assert.Null(go.MovesToGo);
+        Assert.Equal((180_000 - UciTimeManager.DefaultMoveOverheadMs) / UciTimeManager.DefaultMovesToGo + 2_000,
+                     budget);
+
+        // Simulate the whole game on that rule, spending exactly the budget every move: the
+        // clock must never run out, and must never be spent faster than it is earned back plus
+        // a thirtieth of what is left.
+        long remaining = 180_000;
+        for (int move = 1; move <= 200; move++)
+        {
+            int spend = UciTimeManager.AllocateTimeMs((int)remaining, 2_000, null);
+            Assert.True(spend < remaining, $"move {move}: budget {spend} ms with {remaining} ms left");
+            remaining = remaining - spend + 2_000;
+        }
+
+        Assert.True(remaining > 2_000, $"after 200 moves only {remaining} ms remain");
+    }
 }
