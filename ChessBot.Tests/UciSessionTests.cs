@@ -1000,3 +1000,121 @@ public class UciSessionTests
         Assert.Equal("mate 3",  UciSession.FormatScore(ChessBot.Engine.Search.SearchScores.Mate - 5));
     }
 }
+
+/// <summary>
+/// Runs alone: the soak measures the managed heap of the whole test process, and tests running
+/// alongside it would allocate into the same measurement.
+/// </summary>
+[CollectionDefinition("Soak", DisableParallelization = true)]
+public class SoakCollection { }
+
+/// <summary>
+/// A long session the way a tournament manager or lichess-bot runs one: one process, game after
+/// game, each a ucinewgame followed by a position/go pair per move. What a short test cannot see
+/// is accumulation — something kept per search or per game that is never let go — and the
+/// place it shows is the heap after hundreds of games.
+/// </summary>
+[Collection("Soak")]
+public class UciSessionSoakTests
+{
+    private readonly Xunit.Abstractions.ITestOutputHelper _out;
+    public UciSessionSoakTests(Xunit.Abstractions.ITestOutputHelper output) => _out = output;
+
+    /// <summary>
+    /// Counts what the session writes without keeping it, so the harness's own memory is flat by
+    /// construction and anything that grows is the engine's.
+    /// </summary>
+    private sealed class CountingWriter : TextWriter
+    {
+        private readonly ManualResetEventSlim _bestMove = new();
+        public string? LastBestMove { get; private set; }
+        public int Errors { get; private set; }
+        public int BestMoves { get; private set; }
+
+        public override Encoding Encoding => Encoding.UTF8;
+
+        public override void WriteLine(string? value)
+        {
+            if (value is null) return;
+            if (value.StartsWith("info string error", StringComparison.Ordinal)
+                || value.StartsWith("info string search failed", StringComparison.Ordinal)) Errors++;
+            if (value.StartsWith("bestmove", StringComparison.Ordinal))
+            {
+                BestMoves++;
+                LastBestMove = value;
+                _bestMove.Set();
+            }
+        }
+
+        public string WaitForBestMove()
+        {
+            Assert.True(_bestMove.Wait(10_000), "no bestmove within 10 s");
+            _bestMove.Reset();
+            return LastBestMove!;
+        }
+    }
+
+    [Fact]
+    public void TwoHundredGames_InOneSession_NeitherThrowNorGrow()
+    {
+        const int Games = 200, PliesPerGame = 24, NodesPerMove = 1_000;
+
+        var output = new CountingWriter();
+        using var session = new UciSession(new ChessEngine(), output);
+        var random = new Random(20260919);
+
+        long heapAfterWarmUp = 0, heapAtHalf = 0;
+        int searches = 0;
+
+        for (int game = 0; game < Games; game++)
+        {
+            Assert.True(session.Execute("ucinewgame"));
+
+            // A few random opening plies so the games differ; the engine plays the rest of
+            // both sides. The moves string grows every ply, exactly as lichess-bot sends it.
+            var moves  = new List<string>();
+            var probe  = new ChessEngine(ChessEngine.MinHashSizeMb);   // only generates moves
+            int opening = random.Next(2, 8);
+            for (int i = 0; i < opening; i++)
+            {
+                var legal = probe.GetLegalMoves();
+                var move  = legal[random.Next(legal.Count)];
+                moves.Add(UciMoveNotation.Format(move));
+                probe.MakeMove(move);
+            }
+
+            while (moves.Count < PliesPerGame)
+            {
+                Assert.True(session.Execute("position startpos moves " + string.Join(' ', moves)));
+                Assert.True(session.Execute($"go nodes {NodesPerMove}"));
+                string best = output.WaitForBestMove().Split(' ')[1];
+                searches++;
+
+                if (best == UciMoveNotation.NullMove) break;   // mate or stalemate: game over
+                moves.Add(best);
+            }
+
+            if (game == 19)          heapAfterWarmUp = GC.GetTotalMemory(forceFullCollection: true);
+            if (game == Games / 2)   heapAtHalf      = GC.GetTotalMemory(forceFullCollection: true);
+        }
+
+        long heapAtEnd = GC.GetTotalMemory(forceFullCollection: true);
+
+        Assert.Equal(0, output.Errors);
+        Assert.Equal(searches, output.BestMoves);
+
+        // Flat: measured after 20 games (tables allocated, JIT settled) and at the end. The
+        // allowance is 2 MB — a leak of one PV list or one search result per search would be
+        // several times that over the ~4,400 searches here, while GC bookkeeping noise is well
+        // under it. The transposition table is 64 MB and allocated once, before the first
+        // measurement, so it is in all three figures alike.
+        long growth = heapAtEnd - heapAfterWarmUp;
+        _out.WriteLine($"{Games} games, {searches} searches; managed heap after 20 games " +
+                       $"{heapAfterWarmUp / 1024} KB, at {Games / 2} {heapAtHalf / 1024} KB, " +
+                       $"at end {heapAtEnd / 1024} KB (growth {growth / 1024} KB)");
+        Assert.True(growth < 2 * 1024 * 1024,
+            $"managed heap grew {growth / 1024} KB over {Games - 20} games " +
+            $"(after warm-up {heapAfterWarmUp / 1024} KB, at half {heapAtHalf / 1024} KB, " +
+            $"at end {heapAtEnd / 1024} KB, {searches} searches)");
+    }
+}
