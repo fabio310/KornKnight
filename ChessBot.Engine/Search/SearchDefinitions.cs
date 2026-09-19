@@ -28,6 +28,16 @@ public class SearchSettings
     public const int DefaultMaxTimeMs = 10_000;
 
     /// <summary>
+    /// The instant the caller's clock started running for this move, as a
+    /// <see cref="System.Diagnostics.Stopwatch.GetTimestamp"/> value. <see cref="MaxTimeMs"/> is
+    /// measured from here. Null means "from when the search starts", which is right for a caller
+    /// with no clock of its own and wrong for a protocol host: between a GUI writing "go" and the
+    /// search starting there is a previous search to stop, settings to build and a thread-pool
+    /// hop, and the GUI's clock runs through all of it.
+    /// </summary>
+    public long? StartTimestamp { get; set; }
+
+    /// <summary>
     /// Minimum number of nodes to search. If null, defaults to 300,000.
     /// </summary>
     /// <remarks>

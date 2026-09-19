@@ -42,6 +42,13 @@ public sealed class GoParameters
     public bool Infinite { get; set; }
 
     /// <summary>
+    /// When the session received the "go" line, as a <see cref="System.Diagnostics.Stopwatch"/>
+    /// timestamp. Not an operand — the session stamps it — but it travels with the command
+    /// because it is the instant the GUI's clock started, and every budget is measured from it.
+    /// </summary>
+    public long? ReceivedTimestamp { get; set; }
+
+    /// <summary>
     /// True when the command carried no operand that bounds the search in time. A bare "go" is
     /// treated as "go infinite", which is what the protocol prescribes.
     /// </summary>
