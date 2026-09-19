@@ -61,24 +61,41 @@ public class UciGoParameterTests
 
     // ── Mapping to SearchSettings ────────────────────────────────────────────
 
+    /// <summary>
+    /// "movetime" is the GUI's wall clock, overhead included, so the engine's share is the
+    /// instruction minus the move overhead — the same deduction a clock gets.
+    /// </summary>
     [Fact]
-    public void MoveTime_BecomesTheExactTimeLimit()
+    public void MoveTime_LessTheMoveOverhead_BecomesTheTimeLimit()
     {
         var settings = UciTimeManager.ToSearchSettings(Parse("go movetime 2500"), Color.White);
 
-        Assert.Equal(2500, settings.MaxTimeMs);
+        Assert.Equal(2500 - UciTimeManager.DefaultMoveOverheadMs, settings.MaxTimeMs);
         Assert.Null(settings.MaxDepth);
         Assert.Null(settings.MaxNodes);
+    }
+
+    [Theory]
+    [InlineData(1000, 0,    1000)]
+    [InlineData(1000, 250,  750)]
+    [InlineData(50,   5000, 1)]      // more overhead than instruction: move at once, not never
+    [InlineData(1000, -40,  1000)]   // a negative overhead is clamped, not added
+    public void MoveTime_TakesTheOverheadTheOperatorSet(int moveTime, int overhead, int expected)
+    {
+        int budget = UciTimeManager.ResolveTimeBudgetMs(
+            Parse($"go movetime {moveTime}"), Color.White, overhead);
+
+        Assert.Equal(expected, budget);
     }
 
     [Fact]
     public void MoveTime_OverridesTheClock()
     {
-        // A GUI that sends both means the movetime: it is an instruction, not an estimate.
+        // A GUI that sends both means the movetime.
         var settings = UciTimeManager.ToSearchSettings(
             Parse("go wtime 600000 btime 600000 movetime 100"), Color.White);
 
-        Assert.Equal(100, settings.MaxTimeMs);
+        Assert.Equal(100 - UciTimeManager.DefaultMoveOverheadMs, settings.MaxTimeMs);
     }
 
     [Fact]
