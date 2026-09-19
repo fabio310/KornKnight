@@ -1002,19 +1002,12 @@ public class UciSessionTests
 }
 
 /// <summary>
-/// Runs alone: the soak measures the managed heap of the whole test process, and tests running
-/// alongside it would allocate into the same measurement.
-/// </summary>
-[CollectionDefinition("Soak", DisableParallelization = true)]
-public class SoakCollection { }
-
-/// <summary>
 /// A long session the way a tournament manager or lichess-bot runs one: one process, game after
 /// game, each a ucinewgame followed by a position/go pair per move. What a short test cannot see
 /// is accumulation — something kept per search or per game that is never let go — and the
 /// place it shows is the heap after hundreds of games.
 /// </summary>
-[Collection("Soak")]
+[Collection(SerialCollection.Name)]   // measures the whole process's heap
 public class UciSessionSoakTests
 {
     private readonly Xunit.Abstractions.ITestOutputHelper _out;
