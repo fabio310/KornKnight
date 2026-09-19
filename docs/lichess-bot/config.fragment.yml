@@ -1,0 +1,61 @@
+# lichess-bot configuration fragment for KornKnight.
+#
+# Merge these keys into lichess-bot's config.yml (copy config.yml.default from
+# https://github.com/lichess-bot-devs/lichess-bot and edit that). Keys not shown here keep
+# lichess-bot's defaults. Checked against lichess-bot master, lib/engine_wrapper.py, 2026-09-19.
+#
+# Build the engine with scripts/publish.ps1 (or: dotnet publish ChessBot.Uci
+# -p:PublishProfile=linux-x64) and copy the single file into lichess-bot's engines/ folder.
+
+engine:
+  dir: "./engines/"
+  name: "KornKnight-1.0.0-linux-x64"   # scripts/publish.ps1 -Runtime linux-x64; "...-win-x64.exe" on Windows.
+  working_dir: ""
+  protocol: "uci"
+
+  # No pondering: the engine does not advertise Ponder and has no ponderhit handling. Left on,
+  # lichess-bot would send "go ponder" and treat the reply as a real move decision.
+  ponder: false
+
+  uci_options:
+    # The transposition table, in MB (1..4096). 256 suits a small VPS running one game at a time;
+    # scale it with challenge.concurrency, since every concurrent game is its own engine process.
+    Hash: 256
+
+    # The engine is single-threaded and advertises Threads with min 1 max 1. Any other value is
+    # accepted and ignored, so this line is only here to be explicit.
+    Threads: 1
+
+    # The ENGINE's share of the overhead: the local pipe between lichess-bot and the engine
+    # process. Measured at under 0.1 ms p50 on a local pipe (scripts/timing-probe.ps1); the
+    # engine's default of 10 ms covers it with margin, including a preempted thread. Do NOT
+    # set this to lichess-bot's move_overhead below — see the note there.
+    Move Overhead: 10
+
+# lichess-bot's share: the network round trip to lichess.org. lichess-bot subtracts this, plus
+# the time it spent since the opponent's move arrived, from our clock BEFORE it sends "go
+# wtime ... btime ...", so the engine never sees that time at all (engine_wrapper.py,
+# game_clock_time). The engine then subtracts its own Move Overhead from what it was sent.
+#
+# The two are reserves for different legs, and they add. "Matching" them — setting the engine's
+# Move Overhead to 2000 too — would reserve the network lag twice and throw away 2 s of every
+# move's budget on top of the 2 s lichess-bot already keeps back. Tune this one if the bot
+# flags; leave the engine's at 10.
+move_overhead: 2000
+
+challenge:
+  # Standard chess only. Chess960 must be declined: castling generation is standard-only, and
+  # the engine does not advertise UCI_Chess960. Every other variant is a different game the
+  # engine does not play. "fromPosition" is standard rules from a set-up position and would
+  # work, but is left out so the bot plays only what it has been tested on.
+  variants:
+    - standard
+
+  # The engine handles every realtime control. The first move of each game is searched with a
+  # fixed "go movetime 10000" (lichess-bot's first_move_time); the engine honours movetime inside
+  # the instruction, overhead included.
+  time_controls:
+    - bullet
+    - blitz
+    - rapid
+    - classical
