@@ -14,9 +14,18 @@ public class SearchSettings
     public int? MaxDepth { get; set; }
 
     /// <summary>
-    /// Maximum time allowed for search in milliseconds. If null, no time limit.
+    /// Maximum time allowed for search in milliseconds. If null,
+    /// <see cref="DefaultMaxTimeMs"/> applies — null is NOT "no limit"; a caller that wants an
+    /// unbounded search passes a very large value.
     /// </summary>
     public int? MaxTimeMs { get; set; }
+
+    /// <summary>
+    /// The time limit a search gets when <see cref="MaxTimeMs"/> is null. One definition, read
+    /// once when the search starts: it used to be repeated as a literal at every place the
+    /// clock was checked, three of them, which is three places for a change to miss.
+    /// </summary>
+    public const int DefaultMaxTimeMs = 10_000;
 
     /// <summary>
     /// Minimum number of nodes to search. If null, defaults to 300,000.

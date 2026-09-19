@@ -106,6 +106,13 @@ internal class Searcher
     private Stopwatch      _searchTimer = null!;
     private SearchSettings _settings    = null!;
 
+    // The two time limits, computed once in Search() and only read after that. They are
+    // different questions: the soft limit decides whether to START another iteration, which is
+    // a bet that the next one can finish; the hard limit decides when to abandon the one in
+    // flight, which is the budget itself.
+    private long _softLimitMs;
+    private long _hardLimitMs;
+
     // The caller's cancellation token, kept as a field so the node loop can observe it. Checking
     // it only between iterations (as the iterative-deepening loop does) is not enough for a UCI
     // "stop": an unbounded iteration would then run to completion before noticing, which for
@@ -341,14 +348,17 @@ internal class Searcher
         }
 
         int maxDepth    = _settings.MaxDepth ?? MAX_PLY;
-        int allocatedMs = _settings.MaxTimeMs ?? 10_000;
+        int allocatedMs = _settings.MaxTimeMs ?? SearchSettings.DefaultMaxTimeMs;
+
+        // Soft: no new iteration past 90% of the budget, since one started that late would be
+        // abandoned before it could change the move. Hard: the budget itself.
+        _softLimitMs = (long)(allocatedMs * 0.9);
+        _hardLimitMs = allocatedMs;
 
         // ── Iterative deepening ────────────────────────────────────────────
         for (int depth = 1; depth <= maxDepth; depth++)
         {
-            // Hard time cap: stop if we've consumed >90% of allowed time to prevent timeout
-            long timeLimit = (long)(allocatedMs * 0.9);
-            if (_searchTimer.ElapsedMilliseconds > timeLimit) break;
+            if (_searchTimer.ElapsedMilliseconds > _softLimitMs) break;
             if (ct.IsCancellationRequested) { _cancelRequested = true; break; }
 
             Array.Clear(_pvLength, 0, _pvLength.Length);
@@ -484,8 +494,8 @@ internal class Searcher
                     $"Depth {depth}: Score={score} Nodes={result.NodesSearched} NPS={nps:F0}");
             }
 
-            // Check hard cap at end of iteration too
-            if (_searchTimer.ElapsedMilliseconds > timeLimit) break;
+            // Check the soft limit at the end of the iteration too
+            if (_searchTimer.ElapsedMilliseconds > _softLimitMs) break;
         }
 
         // Extremely small node/time budgets can expire before even depth 1 completes, leaving
@@ -577,7 +587,7 @@ internal class Searcher
         // conditions that only need to be noticed promptly, not exactly.
         if ((_nodesSearched & 2047) == 0 &&
             (_ct.IsCancellationRequested ||
-             _searchTimer.ElapsedMilliseconds > (_settings.MaxTimeMs ?? 10_000)))
+             _searchTimer.ElapsedMilliseconds > _hardLimitMs))
         {
             _cancelRequested = true;
             return 0;
@@ -986,7 +996,7 @@ internal class Searcher
         // a flag risk under a real clock.
         if ((_qnodesSearched & 2047) == 0 &&
             (_ct.IsCancellationRequested ||
-             _searchTimer.ElapsedMilliseconds > (_settings.MaxTimeMs ?? 10_000)))
+             _searchTimer.ElapsedMilliseconds > _hardLimitMs))
         {
             _cancelRequested = true;
             return 0;
