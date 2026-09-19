@@ -62,6 +62,7 @@ public static class UciTimeManager
             MaxDepth  = go.Depth,
             MaxNodes  = go.Nodes,
             MaxTimeMs = ResolveTimeBudgetMs(go, sideToMove, moveOverheadMs),
+            StartTimestamp = go.ReceivedTimestamp,
         };
 
         return settings;

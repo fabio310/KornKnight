@@ -154,8 +154,17 @@ public sealed class UciSession : IDisposable
                 return true;
 
             case "go":
-                StartSearch(GoParameters.Parse(tokens, 1));
+            {
+                // First, before anything that takes time: the GUI started its clock when it
+                // wrote this line, and StartSearch begins by waiting for any previous search to
+                // finish. Every budget is measured from here, so none of that wait is free.
+                long receivedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+
+                var go = GoParameters.Parse(tokens, 1);
+                go.ReceivedTimestamp = receivedAt;
+                StartSearch(go);
                 return true;
+            }
 
             case "stop":
                 StopSearch();

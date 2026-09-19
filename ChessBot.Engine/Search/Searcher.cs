@@ -368,14 +368,24 @@ internal class Searcher
 
         // Soft: no new iteration past 90% of the budget, since one started that late would be
         // abandoned before it could change the move. Hard: the budget itself.
-        long searchStart = Stopwatch.GetTimestamp();
+        //
+        // Both run from the caller's timestamp when there is one — for UCI, the moment the "go"
+        // line arrived — not from here. By the time this line runs the host's clock has already
+        // been going through the previous search's shutdown, the settings, the thread-pool hop
+        // and the board lock, and a budget measured from here spends that time twice.
+        long searchStart = _settings.StartTimestamp ?? Stopwatch.GetTimestamp();
         _softDeadline = searchStart + MillisecondsToTicks(allocatedMs * 0.9);
         _hardDeadline = searchStart + MillisecondsToTicks(allocatedMs);
 
         // ── Iterative deepening ────────────────────────────────────────────
         for (int depth = 1; depth <= maxDepth; depth++)
         {
-            if (Stopwatch.GetTimestamp() >= _softDeadline) break;
+            // Depth 1 always starts. With the clock running from the caller's timestamp, a budget
+            // of a few milliseconds can be spent before the search is even entered, and skipping
+            // depth 1 then returns the unsearched fallback move — root move 0 in generation order,
+            // which is a move chosen by nothing. Depth 1 is tens of nodes; the hard deadline still
+            // stops it if it is not.
+            if (depth > 1 && Stopwatch.GetTimestamp() >= _softDeadline) break;
             if (ct.IsCancellationRequested) { _cancelRequested = true; break; }
 
             Array.Clear(_pvLength, 0, _pvLength.Length);
