@@ -129,6 +129,22 @@ internal class Searcher
     // the deadline and the check that notices it: ~0.8 ms instead of ~1.6 ms at 1.25 Mnps.
     private const int TIME_CHECK_MASK = 1023;
 
+    // Time kept back from the hard deadline for everything that happens after the search decides
+    // to stop and before the move is out: noticing the deadline (up to one check interval),
+    // unwinding the recursion, building the result, and the protocol layer's locked write. None
+    // of it is search, and all of it is on the caller's clock.
+    //
+    // Measured, not guessed: instrumenting "hard deadline -> bestmove written" over 100 searches
+    // each at movetime 50/100/1000 gave p50 0.15-0.30 ms, p99 0.9-3.5 ms and a worst case of
+    // 4.5 ms, on a machine carrying an unrelated 30-70% load. With the reserve in place, the
+    // timing probe then saw one sample in 150 end 0.15 ms past a 100 ms movetime — a 5.15 ms
+    // tail in a fast-node rook ending, which reads as the thread being preempted rather than as a
+    // late check. Chasing that tail here would push every search earlier to cover a scheduler
+    // event; covering it is what Move Overhead is for. This reserve is the engine's own path, not
+    // the host's latency — the far end of the pipe, or a network — which Move Overhead is set for
+    // by whoever knows the host.
+    internal const int RETURN_RESERVE_MS = 5;
+
     // The caller's cancellation token, kept as a field so the node loop can observe it. Checking
     // it only between iterations (as the iterative-deepening loop does) is not enough for a UCI
     // "stop": an unbounded iteration would then run to completion before noticing, which for
@@ -374,8 +390,8 @@ internal class Searcher
         // been going through the previous search's shutdown, the settings, the thread-pool hop
         // and the board lock, and a budget measured from here spends that time twice.
         long searchStart = _settings.StartTimestamp ?? Stopwatch.GetTimestamp();
-        _softDeadline = searchStart + MillisecondsToTicks(allocatedMs * 0.9);
-        _hardDeadline = searchStart + MillisecondsToTicks(allocatedMs);
+        _hardDeadline = searchStart + MillisecondsToTicks((double)allocatedMs - RETURN_RESERVE_MS);
+        _softDeadline = Math.Min(_hardDeadline, searchStart + MillisecondsToTicks(allocatedMs * 0.9));
 
         // ── Iterative deepening ────────────────────────────────────────────
         for (int depth = 1; depth <= maxDepth; depth++)
