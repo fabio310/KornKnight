@@ -110,12 +110,21 @@ internal static class PassedPawns
     /// </summary>
     internal static int Evaluate(ulong whitePawns, ulong blackPawns, int phase)
     {
-        int midgame = 0, endgame = 0;
+        Raw(whitePawns, blackPawns, out int midgame, out int endgame);
+        return PieceSquareTables.Interpolate(midgame, endgame, phase);
+    }
+
+    /// <summary>
+    /// The same score before interpolation, midgame and endgame separately — what the pawn table
+    /// caches, since it depends on the pawns alone and the phase does not.
+    /// </summary>
+    internal static void Raw(ulong whitePawns, ulong blackPawns, out int midgame, out int endgame)
+    {
+        midgame = 0;
+        endgame = 0;
 
         Accumulate(whitePawns, blackPawns, white: true, ref midgame, ref endgame);
         Accumulate(blackPawns, whitePawns, white: false, ref midgame, ref endgame);
-
-        return PieceSquareTables.Interpolate(midgame, endgame, phase);
     }
 
     /// <summary>

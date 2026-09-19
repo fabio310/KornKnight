@@ -17,6 +17,13 @@ internal class Evaluator
     // was the single hottest allocation in the engine. Max 32 pieces on a legal board.
     private readonly (Square sq, Piece p)[] _pieceBuffer = new (Square, Piece)[32];
 
+    // Pawn-only terms, cached by pawn structure. Only the fast path uses it: the full scan stays
+    // an independent computation, which is what lets the two be compared position by position.
+    private readonly PawnTable _pawnTable = new();
+
+    /// <summary>Pawn table hits and misses since this evaluator was created, for telemetry.</summary>
+    internal (long Hits, long Misses) PawnTableStats => (_pawnTable.Hits, _pawnTable.Misses);
+
     /// <summary>
     /// Evaluates the current position statically (without search).
     /// Positive score favors White; negative favors Black.
@@ -120,14 +127,19 @@ internal class Evaluator
             board.IncrementalEndgameMaterialScore + board.IncrementalEndgamePstScore,
             board.IncrementalPhase);
 
-        // Pawn structure from the incrementally maintained per-file pawn counts.
-        score += EvaluatePawnStructureFromCounts(board.WhitePawnFileCounts, board.BlackPawnFileCounts,
-                                                 board.IncrementalPhase);
-
-        // Passed pawns from the incrementally maintained pawn occupancy — the same two bitboards
-        // Evaluate() rebuilds by scanning, so the two agree by construction.
-        score += PassedPawns.Evaluate(board.WhitePawnBitboard, board.BlackPawnBitboard,
-                                      board.IncrementalPhase);
+        // Pawn structure and passed pawns, from the pawn table when these pawns have been seen
+        // before. Kept as two raw pairs and interpolated separately, exactly as the two terms were
+        // combined before the table existed — one blended pair would round differently.
+        ref var pawns = ref _pawnTable.Probe(board.WhitePawnBitboard, board.BlackPawnBitboard, out bool hit);
+        if (!hit)
+        {
+            PawnStructureRaw(board.WhitePawnFileCounts, board.BlackPawnFileCounts,
+                             out pawns.StructureMg, out pawns.StructureEg);
+            PassedPawns.Raw(board.WhitePawnBitboard, board.BlackPawnBitboard,
+                            out pawns.PassedMg, out pawns.PassedEg);
+        }
+        score += PieceSquareTables.Interpolate(pawns.StructureMg, pawns.StructureEg, board.IncrementalPhase);
+        score += PieceSquareTables.Interpolate(pawns.PassedMg, pawns.PassedEg, board.IncrementalPhase);
 
         // Bishop pair and rook placement, from the incrementally maintained counts and rook
         // occupancy — again the same quantities Evaluate() rebuilds by scanning.
@@ -170,8 +182,16 @@ internal class Evaluator
                                                        ReadOnlySpan<int> blackPawnFiles,
                                                        int phase)
     {
-        int midgame = 0;
-        int endgame = 0;
+        PawnStructureRaw(whitePawnFiles, blackPawnFiles, out int midgame, out int endgame);
+        return PieceSquareTables.Interpolate(midgame, endgame, phase);
+    }
+
+    /// <summary>The pawn-structure score before interpolation, midgame and endgame separately.</summary>
+    private static void PawnStructureRaw(ReadOnlySpan<int> whitePawnFiles, ReadOnlySpan<int> blackPawnFiles,
+                                         out int midgame, out int endgame)
+    {
+        midgame = 0;
+        endgame = 0;
 
         for (int file = 0; file < 8; file++)
         {
@@ -209,8 +229,6 @@ internal class Evaluator
                 }
             }
         }
-
-        return PieceSquareTables.Interpolate(midgame, endgame, phase);
     }
 
     /// <summary>Bishop pair bonus, on each scale.</summary>
