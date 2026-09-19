@@ -600,6 +600,52 @@ public class UciSessionTests
         Assert.True(UciMoveNotation.TryParse(token, engine.GetLegalMoves(), out _));
     }
 
+    /// <summary>
+    /// A bare "go" is "go infinite". The sharp case is a position whose search ends at once — a
+    /// checkmate has no moves to search — where the old behaviour sent an unsolicited bestmove
+    /// the instant the search returned.
+    /// </summary>
+    [Theory]
+    [InlineData("go")]
+    [InlineData("go ponder")]
+    [InlineData("go searchmoves e2e4")]
+    public void UnboundedGo_HoldsItsBestMoveUntilStop(string command)
+    {
+        var (session, _, output) = NewSession();
+        using (session)
+        {
+            session.Execute("position fen rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3");
+            session.Execute(command);
+
+            Thread.Sleep(300);
+            Assert.DoesNotContain(output.Lines, l => l.StartsWith("bestmove", StringComparison.Ordinal));
+
+            session.Execute("stop");
+        }
+
+        Assert.Single(output.Lines, l => l.StartsWith("bestmove", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// "go mate N" is bounded, so it answers on its own — and with the mate.
+    /// </summary>
+    [Fact]
+    public void GoMate_AnswersWithoutStop()
+    {
+        var (session, engine, output) = NewSession();
+        using (session)
+        {
+            session.Execute("position fen 6k1/Q7/6K1/8/8/8/8/8 w - - 0 1");
+            session.Execute("go mate 1");
+            output.WaitForLine("bestmove", 10_000);
+        }
+
+        string token = output.LastLineStartingWith("bestmove")!.Split(' ')[1];
+        Assert.True(UciMoveNotation.TryParse(token, engine.GetLegalMoves(), out Move mateMove));
+        engine.MakeMove(mateMove);
+        Assert.Empty(engine.GetLegalMoves());
+    }
+
     [Fact]
     public void Stop_WithNoSearchRunning_DoesNothing()
     {
