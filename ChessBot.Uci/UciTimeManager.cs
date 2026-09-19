@@ -20,10 +20,19 @@ public static class UciTimeManager
     ///
     /// The right value depends on the host, not on the engine — a local pipe and a network game
     /// against a remote GUI are not the same number — which is why it is a UCI option with this
-    /// as its default rather than a constant. Nothing here measures it; the engine has no way to,
-    /// and the operator does.
+    /// as its default rather than a constant.
+    ///
+    /// 10 ms, down from an unmeasured 30. On a local pipe the host's side is small: comparing
+    /// scripts/timing-probe.ps1 (the GUI's view, "go" written to "bestmove" read) against the
+    /// engine's own "deadline to bestmove written", the difference is under 0.1 ms at p50, and
+    /// the worst total tail past the hard deadline seen in 450 loaded-machine samples was
+    /// 5.2 ms — a preempted thread. 10 covers that twice over, and is Stockfish's default, so a
+    /// tester's conditions written for it carry over. Kept at 30 now that the overhead also
+    /// comes off movetime, "go movetime 1000" would answer ~35 ms early, spending 3.5% of every
+    /// fixed-time move on nothing. A network host (lichess-bot) reserves its own lag before it
+    /// sends the clock, and an operator who knows the host is slower sets this option.
     /// </summary>
-    public const int DefaultMoveOverheadMs = 30;
+    public const int DefaultMoveOverheadMs = 10;
 
     /// <summary>The largest overhead an operator may set, in milliseconds.</summary>
     public const int MaxMoveOverheadMs = 5000;
@@ -69,15 +78,21 @@ public static class UciTimeManager
     }
 
     /// <summary>
-    /// The per-move time budget in milliseconds. "movetime" is an instruction, not an
-    /// estimate, so it wins over any clock; "infinite" and a command with no clock at all are
-    /// unbounded and rely on "stop".
+    /// The per-move time budget in milliseconds. "movetime" wins over any clock; "infinite" and
+    /// a command with no clock at all are unbounded and rely on "stop".
+    ///
+    /// "movetime" is an instruction about the GUI's wall clock, and the move overhead comes off
+    /// it exactly as it comes off a clock. A GUI that says "movetime 1000" measures 1000 ms from
+    /// writing "go" to reading "bestmove", pipe and scheduling included, so honouring the
+    /// instruction means finishing inside it — the engine's share is the instruction minus the
+    /// part the host spends. Taking it literally is how "go movetime 1000" came back at 1002 ms.
     /// </summary>
     public static int ResolveTimeBudgetMs(GoParameters go, Color sideToMove,
                                           int moveOverheadMs = DefaultMoveOverheadMs)
     {
-        if (go.Infinite)             return NoTimeLimitMs;
-        if (go.MoveTimeMs is int mt) return Math.Max(1, mt);
+        if (go.Infinite) return NoTimeLimitMs;
+        if (go.MoveTimeMs is int mt)
+            return Math.Max(1, mt - Math.Clamp(moveOverheadMs, 0, MaxMoveOverheadMs));
         if (go.HasNoTimeSource)      return NoTimeLimitMs;
 
         int? remaining = sideToMove == Color.White ? go.WhiteTimeMs : go.BlackTimeMs;

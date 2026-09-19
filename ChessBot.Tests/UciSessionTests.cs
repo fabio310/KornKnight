@@ -133,8 +133,8 @@ public class UciSessionTests
             int withLarge = UciTimeManager.ResolveTimeBudgetMs(go, engine.SideToMove, 5000);
 
             // 60,000 ms over 10 moves: the overhead comes off the clock before the split, so
-            // 4,970 ms of extra overhead costs a tenth of that per move.
-            Assert.Equal((60_000 - 30) / 10, withDefault);
+            // extra overhead costs a tenth of itself per move.
+            Assert.Equal((60_000 - UciTimeManager.DefaultMoveOverheadMs) / 10, withDefault);
             Assert.Equal((60_000 - 5_000) / 10, withLarge);
         }
     }
