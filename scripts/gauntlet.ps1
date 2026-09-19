@@ -20,9 +20,9 @@
 
     Nothing here computes Elo. fastchess prints its own table, and this script shows it.
 
-    COST. A 2+1 game lasts about five minutes. At the default 500 games per opponent, two
+    COST. A 2+1 game lasts about five minutes. At the default 500 games per opponent, four
     opponents and concurrency = physical cores / 2 (7 on a 14-core machine), that is roughly
-    1,000 x 5 / 7 = 12 hours. -GamesPerOpponent 100 is a ~2.5 h sanity check (+/-70 Elo).
+    2,000 x 5 / 7 = 24 hours. -GamesPerOpponent 100 is a ~5 h sanity check (+/-70 Elo each).
 
 .PARAMETER Engine
     The KornKnight executable. Defaults to the published win-x64 release, falling back to the
@@ -64,9 +64,16 @@
 param(
     [string]   $Engine,
     [string]   $Fastchess        = 'C:\Tools\fastchess-windows-x86-64\fastchess.exe',
+    # The rating anchor: one engine family at four strengths, spaced ~100 Elo apart on CCRL
+    # (7.2.0 ~2425, 7.4.0 ~2532, 7.6.0 ~2631, 8.5.5 ~2700), so KornKnight always has an opponent
+    # it scores 25-75% against — the range where a game carries information. Leorik 3.2 (NNUE,
+    # ~3300) stays installed as a wall and is not part of the anchor: at a 1% score the
+    # interval is unbounded, which is what the 0.5/8 smoke run against it showed.
     [string[]] $Opponents        = @(
+        'C:\Tools\blunder-7.2.0\blunder-7.2.0\windows\blunder-windows.exe'
+        'C:\Tools\blunder-7.4.0\blunder-7.4.0\windows\blunder-windows.exe'
+        'C:\Tools\blunder-7.6.0\blunder-7.6.0\windows\blunder-windows.exe'
         'C:\Tools\blunder-8.5.5\windows\blunder-8.5.5-avx2.exe'
-        'C:\Tools\Leorik 3.2 Windows\Leorik-3.2.1.exe'
     ),
     [string]   $Tc               = '2:00+1',
     [int]      $GamesPerOpponent = 500,
@@ -123,7 +130,11 @@ $logPath = Join-Path $OutDir 'fastchess.log'
 
 $fcArgs = @()
 foreach ($e in $engines) {
-    $name = if ($e.label -eq 'KornKnight') { 'KornKnight' } else { [IO.Path]::GetFileNameWithoutExtension($e.path) }
+    # Named from the engine's own "id name", not its file name: Blunder 7.2.0, 7.4.0 and 7.6.0
+    # all ship as blunder-windows.exe, and fastchess needs every name distinct.
+    $name = if ($e.label -eq 'KornKnight') { 'KornKnight' }
+            elseif ($e.idName) { $e.idName -replace '\s+', '-' }
+            else { "$([IO.Path]::GetFileNameWithoutExtension($e.path))-$($e.label)" }
     $fcArgs += @('-engine', "cmd=$($e.path)", "name=$name")
 }
 $fcArgs += @(

@@ -388,3 +388,7 @@ runs/
 # fastchess writes this into the working directory when a tournament is interrupted, so it can
 # be resumed with -config file=config.json. It is scratch state for one machine, never a record.
 config.json
+
+# Third-party opening books: downloaded, not versioned (UHO is 175 MB).
+# See tools/sprt.ps1 for where to get it.
+openings/UHO_*.epd
