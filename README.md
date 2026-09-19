@@ -141,17 +141,28 @@ dotnet run -c Release --project ChessBot.MatchRunner -- `
   --pgn-dir matches/anchor
 ```
 
-Last measured: **~2253 Elo, 95% CI [2204, 2300]** — +83 =7 -110 over 200 games, 36 min at
-concurrency 1.
+Last measured, on **v1.0.0** (e3acd63, 2026-09-19): **~2367 Elo, 95% CI [2319, 2415]**. The
+result was +116 =6 −78 over 200 games (59.5%, +66.8 ± 48 against UCI_Elo 2300, LOS 99.7%), in
+32 min at concurrency 1. The full record, including every earlier anchor and the release's timing
+acceptance, is in [`docs/RATING.md`](docs/RATING.md).
 
-The opponent was re-pitched from 2100 to 2300 for this measurement. Against 2100 the engine now
-scores far enough above 50% that the interval widens and the limiter is doing most of the talking;
-an anchor is only informative while the opponent is close. The previous **~2058 Elo, CI
-[2009, 2105]** was measured against 2100 and is superseded — both are estimates on Stockfish's
-own `UCI_Elo` scale so the two numbers can be compared as ratings, but `UCI_LimitStrength` is not
-linear, so a change of anchor opponent carries uncertainty the intervals above do not show.
+The previous anchor, **~2253 Elo [2204, 2300]** (+83 =7 −110, at cada4f2), is superseded. The
+gain comes from the 51 commits between the two, mostly node-rate work: the lockless and
+single-probe transposition table, and the packed `Move`. The release work (time control,
+protocol, packaging) leaves the search tree bit-identical, and it gives this anchor 95 ms per
+move where the previous one got 100, because of the new 5 ms return reserve. The two intervals
+only just separate, so read this as "at least as strong, very probably stronger" rather than as a
+measured +114.
 
-Run-to-run spread is larger than the interval suggests. Three measurements of this same build
+The opponent was re-pitched from 2100 to 2300 at cada4f2. An anchor is only informative while
+the opponent is close, and against 2100 the engine was scoring far enough above 50% that the
+limiter was doing most of the talking. The earliest figure, **~2058 Elo, CI [2009, 2105]**, was
+measured against 2100. All three are estimates on Stockfish's own `UCI_Elo` scale, so they can
+be compared as ratings; but `UCI_LimitStrength` is not linear, so a change of anchor opponent
+carries uncertainty the intervals do not show. At 59.5% the 2300 opponent is still close enough
+to use. If a later build scores much above 65%, re-pitch it again.
+
+Run-to-run spread is larger than the interval suggests. Three measurements of one earlier build
 scored 55.8% (60 games, concurrency 1), 49.25% (200 games, concurrency 7) and 43.25% (200 games,
 concurrency 1). They are mutually consistent, but a single 200-game anchor moves by several score
 points between runs, so treat a change under about 50 Elo as unmeasured rather than real.
@@ -176,8 +187,8 @@ larger `--games` narrows the interval, at a cost this table sets:
 | several thousand | +10 Elo |
 
 Ten games cannot distinguish anything below roughly +200 Elo and are not a rating. These are
-figures measured on this project, not borrowed rules of thumb; `docs/ENGINEERING.md` is where
-they are maintained.
+figures measured on this project, not borrowed rules of thumb; [`docs/RATING.md`](docs/RATING.md)
+is where they are maintained.
 
 ### Openings
 
