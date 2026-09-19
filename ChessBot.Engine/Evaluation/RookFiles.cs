@@ -23,23 +23,23 @@ internal static class RookFiles
     /// A file with no pawn of either colour on it. A rook there sees the whole board, which is
     /// worth most while there are still pieces to attack down it.
     /// </summary>
-    private const int OpenMidgame = 20;
-    private const int OpenEndgame = 10;
+    internal const int DefaultOpenMidgame = 20;
+    internal const int DefaultOpenEndgame = 10;
 
     /// <summary>
     /// A file with none of our own pawns but at least one of theirs: the rook bears down on a
     /// pawn that cannot be defended by another pawn on that file.
     /// </summary>
-    private const int HalfOpenMidgame = 10;
-    private const int HalfOpenEndgame = 5;
+    internal const int DefaultHalfOpenMidgame = 10;
+    internal const int DefaultHalfOpenEndgame = 5;
 
     /// <summary>
     /// The seventh rank, counted from the rook's own side. Worth more in an endgame, where it cuts
     /// the enemy king off and eats the pawns that can no longer be defended by pieces — but the
     /// endgame table already pays +5 for that rank, so this is the remainder, not the whole value.
     /// </summary>
-    private const int SeventhMidgame = 15;
-    private const int SeventhEndgame = 20;
+    internal const int DefaultSeventhMidgame = 15;
+    internal const int DefaultSeventhEndgame = 20;
 
     /// <summary>One bit per square of each file, for asking whether a file holds any pawn.</summary>
     private static readonly ulong[] FileMask = BuildFileMasks();
@@ -89,16 +89,16 @@ internal static class RookFiles
             {
                 // Open if neither side has a pawn there; half-open if only theirs.
                 bool open = (file & theirPawns) == 0;
-                mg += open ? OpenMidgame : HalfOpenMidgame;
-                eg += open ? OpenEndgame : HalfOpenEndgame;
+                mg += open ? EvalParams.V[EvalParams.RookOpenMg] : EvalParams.V[EvalParams.RookHalfOpenMg];
+                eg += open ? EvalParams.V[EvalParams.RookOpenEg] : EvalParams.V[EvalParams.RookHalfOpenEg];
             }
 
             // Rank counted from the rook's own side, so both colours index the same rule.
             int rank = white ? square / 8 : 7 - square / 8;
             if (rank == 6)
             {
-                mg += SeventhMidgame;
-                eg += SeventhEndgame;
+                mg += EvalParams.V[EvalParams.RookSeventhMg];
+                eg += EvalParams.V[EvalParams.RookSeventhEg];
             }
 
             midgame += sign * mg;

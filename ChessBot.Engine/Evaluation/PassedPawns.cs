@@ -29,26 +29,26 @@ internal static class PassedPawns
     /// an endgame and the term amplified the PST's shape instead of discriminating against it.
     /// It measured -4.5 +/- 9.8 Elo over 4,000 games.
     /// </summary>
-    private static readonly int[] MidgameByRank = { 0, 3, 6, 12, 20, 35, 55, 0 };
+    internal static readonly int[] DefaultMidgameByRank = { 0, 3, 6, 12, 20, 35, 55, 0 };
 
     /// <summary>
     /// The same curve on the endgame scale. Larger than the midgame one, because a runner matters
     /// more once the pieces that would blockade it are gone — but only about half what it was, for
     /// the reason given above.
     /// </summary>
-    private static readonly int[] EndgameByRank = { 0, 8, 14, 24, 40, 65, 100, 0 };
+    internal static readonly int[] DefaultEndgameByRank = { 0, 8, 14, 24, 40, 65, 100, 0 };
 
     /// <summary>Extra for a passer defended by one of its own pawns — it cannot simply be taken.</summary>
-    private const int ProtectedMidgame = 12;
-    private const int ProtectedEndgame = 20;
+    internal const int DefaultProtectedMidgame = 12;
+    internal const int DefaultProtectedEndgame = 20;
 
     /// <summary>
     /// Extra for a passer with a friendly pawn abreast of it on an adjacent file. Two connected
     /// passers support each other up the board and are far harder to blockade than two separate
     /// ones, which is why this is counted apart from being protected.
     /// </summary>
-    private const int ConnectedMidgame = 8;
-    private const int ConnectedEndgame = 15;
+    internal const int DefaultConnectedMidgame = 8;
+    internal const int DefaultConnectedEndgame = 15;
 
     /// <summary>
     /// For each square, the squares an enemy pawn would have to occupy to stop a White pawn there
@@ -139,23 +139,23 @@ internal static class PassedPawns
             // Rank counted from the pawn's own side, so both colours index the same curve.
             int rank = white ? square / 8 : 7 - square / 8;
 
-            int mg = MidgameByRank[rank];
-            int eg = EndgameByRank[rank];
+            int mg = EvalParams.V[EvalParams.PassedMg + rank];
+            int eg = EvalParams.V[EvalParams.PassedEg + rank];
 
             // Protected: one of our own pawns attacks the square it stands on, which means the
             // square behind it on an adjacent file, measured in our own direction of travel.
             int behind = white ? square - 8 : square + 8;
             if (behind >= 0 && behind < 64 && (AdjacentFileSameRank[behind] & ourPawns) != 0)
             {
-                mg += ProtectedMidgame;
-                eg += ProtectedEndgame;
+                mg += EvalParams.V[EvalParams.ProtectedMg];
+                eg += EvalParams.V[EvalParams.ProtectedEg];
             }
 
             // Connected: a friendly pawn abreast on an adjacent file.
             if ((AdjacentFileSameRank[square] & ourPawns) != 0)
             {
-                mg += ConnectedMidgame;
-                eg += ConnectedEndgame;
+                mg += EvalParams.V[EvalParams.ConnectedMg];
+                eg += EvalParams.V[EvalParams.ConnectedEg];
             }
 
             midgame += sign * mg;

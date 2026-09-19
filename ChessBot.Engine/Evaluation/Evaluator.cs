@@ -57,17 +57,13 @@ internal class Evaluator
             // both scales, so it contributes nothing but its piece-square term — which is the
             // whole point: the king's midgame-to-endgame transition is the largest single thing
             // a taper buys, and a king scored outside the interpolation bypasses it.
-            int matVal = piece.Type.MaterialValue();
+            int matVal = EvalParams.MaterialMidgame(piece.Type);
             int sign = piece.Color == Color.White ? 1 : -1;
 
-            // PST
-            int rank = piece.Color == Color.White ? square.Rank : 7 - square.Rank;
-            int file = piece.Color == Color.White ? square.File : 7 - square.File;
+            midgame += sign * (matVal + EvalParams.PstMidgame(piece.Color, piece.Type, square.Index));
 
-            midgame += sign * (matVal + PieceSquareTables.TableFor(piece.Type)[rank][file]);
-
-            endgame += sign * (PieceSquareTables.EndgameMaterialValue(piece.Type)
-                             + PieceSquareTables.EndgameTableFor(piece.Type)[rank][file]);
+            endgame += sign * (EvalParams.MaterialEndgame(piece.Type)
+                             + EvalParams.PstEndgame(piece.Color, piece.Type, square.Index));
 
             // Track pawn files for structure evaluation
             if (piece.Type == PieceType.Pawn)
@@ -146,12 +142,12 @@ internal class Evaluator
     }
 
     /// <summary>Doubled pawn penalty, per extra pawn on a file, on each scale.</summary>
-    private const int DoubledMidgame = 15;
-    private const int DoubledEndgame = 30;
+    internal const int DefaultDoubledMidgame = 15;
+    internal const int DefaultDoubledEndgame = 30;
 
     /// <summary>Isolated pawn penalty, per pawn with no friendly pawn on either neighbouring file.</summary>
-    private const int IsolatedMidgame = 8;
-    private const int IsolatedEndgame = 18;
+    internal const int DefaultIsolatedMidgame = 8;
+    internal const int DefaultIsolatedEndgame = 18;
 
     /// <summary>
     /// Evaluates pawn structure (doubled, isolated) from pre-computed file counts, blended on the
@@ -182,13 +178,13 @@ internal class Evaluator
             // Doubled pawns penalty
             if (whitePawnFiles[file] > 1)
             {
-                midgame -= DoubledMidgame * (whitePawnFiles[file] - 1);
-                endgame -= DoubledEndgame * (whitePawnFiles[file] - 1);
+                midgame -= EvalParams.V[EvalParams.DoubledMg] * (whitePawnFiles[file] - 1);
+                endgame -= EvalParams.V[EvalParams.DoubledEg] * (whitePawnFiles[file] - 1);
             }
             if (blackPawnFiles[file] > 1)
             {
-                midgame += DoubledMidgame * (blackPawnFiles[file] - 1);
-                endgame += DoubledEndgame * (blackPawnFiles[file] - 1);
+                midgame += EvalParams.V[EvalParams.DoubledMg] * (blackPawnFiles[file] - 1);
+                endgame += EvalParams.V[EvalParams.DoubledEg] * (blackPawnFiles[file] - 1);
             }
 
             // Isolated pawn penalty
@@ -198,8 +194,8 @@ internal class Evaluator
                                (file < 7 && whitePawnFiles[file + 1] > 0);
                 if (!support)
                 {
-                    midgame -= IsolatedMidgame * whitePawnFiles[file];
-                    endgame -= IsolatedEndgame * whitePawnFiles[file];
+                    midgame -= EvalParams.V[EvalParams.IsolatedMg] * whitePawnFiles[file];
+                    endgame -= EvalParams.V[EvalParams.IsolatedEg] * whitePawnFiles[file];
                 }
             }
             if (blackPawnFiles[file] > 0)
@@ -208,8 +204,8 @@ internal class Evaluator
                                (file < 7 && blackPawnFiles[file + 1] > 0);
                 if (!support)
                 {
-                    midgame += IsolatedMidgame * blackPawnFiles[file];
-                    endgame += IsolatedEndgame * blackPawnFiles[file];
+                    midgame += EvalParams.V[EvalParams.IsolatedMg] * blackPawnFiles[file];
+                    endgame += EvalParams.V[EvalParams.IsolatedEg] * blackPawnFiles[file];
                 }
             }
         }
@@ -218,8 +214,8 @@ internal class Evaluator
     }
 
     /// <summary>Bishop pair bonus, on each scale.</summary>
-    private const int BishopPairMidgame = 25;
-    private const int BishopPairEndgame = 40;
+    internal const int DefaultBishopPairMidgame = 25;
+    internal const int DefaultBishopPairEndgame = 40;
 
     /// <summary>
     /// The bishop pair: two bishops cover both colour complexes, which no other piece combination
@@ -239,8 +235,8 @@ internal class Evaluator
         int count = (whiteBishops >= 2 ? 1 : 0) - (blackBishops >= 2 ? 1 : 0);
         if (count == 0) return 0;
 
-        return PieceSquareTables.Interpolate(count * BishopPairMidgame,
-                                             count * BishopPairEndgame, phase);
+        return PieceSquareTables.Interpolate(count * EvalParams.V[EvalParams.BishopPairMg],
+                                             count * EvalParams.V[EvalParams.BishopPairEg], phase);
     }
 
 }

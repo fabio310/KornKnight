@@ -383,7 +383,7 @@ public class Board
         _evalPhase += GamePhase.WeightFor(type);
 
         int sign = color == Color.White ? 1 : -1;
-        _evalMaterial += sign * type.MaterialValue();
+        _evalMaterial += sign * EvalParams.MaterialMidgame(type);
         _evalPst      += sign * PieceSquareTables.Value(color, type, square);
 
         _evalMaterialEndgame += sign * PieceSquareTables.EndgameMaterialValue(type);
@@ -414,7 +414,7 @@ public class Board
         _evalPhase -= GamePhase.WeightFor(type);
 
         int sign = color == Color.White ? 1 : -1;
-        _evalMaterial -= sign * type.MaterialValue();
+        _evalMaterial -= sign * EvalParams.MaterialMidgame(type);
         _evalPst      -= sign * PieceSquareTables.Value(color, type, square);
 
         _evalMaterialEndgame -= sign * PieceSquareTables.EndgameMaterialValue(type);

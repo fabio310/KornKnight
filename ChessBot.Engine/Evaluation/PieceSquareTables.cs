@@ -104,6 +104,8 @@ internal static class PieceSquareTables
 
     /// <summary>
     /// Returns the jagged PST for a piece type (White-perspective, [rank][file]).
+    /// These are the DEFAULT tables — the literals <see cref="EvalParams.Default"/> is built from.
+    /// The evaluation reads the active weight vector; a tuned vector can differ from them.
     /// Pawn table is the fallback for unexpected types, matching the Evaluator's historic behavior.
     /// </summary>
     public static int[][] TableFor(PieceType type) => type switch
@@ -123,9 +125,7 @@ internal static class PieceSquareTables
     /// </summary>
     public static int Value(Color color, PieceType type, Square square)
     {
-        int rank = color == Color.White ? square.Rank : 7 - square.Rank;
-        int file = color == Color.White ? square.File : 7 - square.File;
-        return TableFor(type)[rank][file];
+        return EvalParams.PstMidgame(color, type, square.Index);
     }
 
     // ── Endgame tables and values (tapered evaluation) ────────────────────────
@@ -267,9 +267,7 @@ internal static class PieceSquareTables
     /// </summary>
     public static int EndgameValue(Color color, PieceType type, Square square)
     {
-        int rank = color == Color.White ? square.Rank : 7 - square.Rank;
-        int file = color == Color.White ? square.File : 7 - square.File;
-        return EndgameTableFor(type)[rank][file];
+        return EvalParams.PstEndgame(color, type, square.Index);
     }
 
     /// <summary>
@@ -280,7 +278,12 @@ internal static class PieceSquareTables
     /// The midgame values are <see cref="PieceTypeExtensions.MaterialValue"/>, which the
     /// interpolation returns on its own at full phase.
     /// </summary>
-    public static int EndgameMaterialValue(PieceType type) => type switch
+    public static int EndgameMaterialValue(PieceType type) => EvalParams.MaterialEndgame(type);
+
+    /// <summary>
+    /// The endgame material value the default weight vector starts from (see <see cref="EvalParams"/>).
+    /// </summary>
+    internal static int DefaultEndgameMaterialValue(PieceType type) => type switch
     {
         PieceType.Pawn   => 120,
         PieceType.Knight => 310,
