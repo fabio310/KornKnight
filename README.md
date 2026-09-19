@@ -38,6 +38,25 @@ project does not control.
 - The search runs on a background thread so `stop` and `isready` are answered while it is
   running; `stop` returns the best move found so far.
 
+#### Release build
+
+Testers do not install a .NET runtime, so a release is one self-contained executable per
+platform. The publish profiles in `ChessBot.Uci/Properties/PublishProfiles/` hold the settings:
+
+```powershell
+dotnet publish ChessBot.Uci -p:PublishProfile=win-x64     # -> publish/win-x64/ChessBot.Uci.exe
+dotnet publish ChessBot.Uci -p:PublishProfile=linux-x64   # -> publish/linux-x64/ChessBot.Uci
+
+# which is the same as spelling it out:
+dotnet publish ChessBot.Uci -c Release -r win-x64 --self-contained true `
+  -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+  -p:InvariantGlobalization=true
+```
+
+`scripts/publish.ps1` does this, names the file after the version, and prints what the binary
+reports. The result is ~65 MB with no dependencies: run with no .NET on `PATH` and `DOTNET_ROOT`
+pointed at nothing, the Windows build loads nothing from any .NET install.
+
 ```powershell
 # Play the engine against itself in cutechess-cli
 cutechess-cli -engine cmd=ChessBot.Uci/bin/Release/net8.0/ChessBot.Uci.exe `
