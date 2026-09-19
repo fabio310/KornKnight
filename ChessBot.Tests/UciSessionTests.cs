@@ -264,6 +264,25 @@ public class UciSessionTests
             output.Lines);
     }
 
+    /// <summary>
+    /// An advertised option is a promise. Ponder would need ponderhit handling, and UCI_Chess960
+    /// would need Chess960 castling — MoveGenerator.GenerateCastlingMoves is standard-only — and
+    /// the engine has neither. A host that sees either offered will use it.
+    /// </summary>
+    [Theory]
+    [InlineData("Ponder")]
+    [InlineData("UCI_Chess960")]
+    [InlineData("MultiPV")]
+    [InlineData("UCI_LimitStrength")]
+    public void Uci_DoesNotAdvertiseWhatItDoesNotImplement(string option)
+    {
+        var (session, _, output) = NewSession();
+        using (session) session.Execute("uci");
+
+        Assert.DoesNotContain(output.Lines,
+            l => l.StartsWith($"option name {option} ", StringComparison.OrdinalIgnoreCase));
+    }
+
     [Fact]
     public void Uci_IdNameCarriesTheCommitAndConfigurationTheBinaryWasBuiltFrom()
     {
