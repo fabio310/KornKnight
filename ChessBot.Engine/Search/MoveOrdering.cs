@@ -35,7 +35,7 @@ internal class MoveOrdering
     /// inside ±250 on a table whose ceiling is 16,384 because entries were being cancelled, not
     /// because they were being capped.
     /// </summary>
-    private readonly int[,] _history;
+    private readonly int[] _history;
 
     /// <summary>
     /// The magnitude a history entry approaches but never reaches. Updates move an entry toward
@@ -69,7 +69,7 @@ internal class MoveOrdering
     /// the move offered at 150,000 was as often as not a move the side to move could not even
     /// play.
     /// </summary>
-    private readonly Move[,,] _counterMoves;
+    private readonly Move[] _counterMoves;
 
     /// <summary>
     /// Continuation history: how well a quiet move has done at producing a beta cutoff *given the
@@ -123,8 +123,8 @@ internal class MoveOrdering
         _board = board;
         _killerMoves1 = new Move[Searcher.MAX_PLY];
         _killerMoves2 = new Move[Searcher.MAX_PLY];
-        _history = new int[PieceIndexCount, 64];
-        _counterMoves = new Move[2, 64, 64];
+        _history = new int[PieceIndexCount * 64];
+        _counterMoves = new Move[2 * 64 * 64];
         _continuationHistory = new int[ContinuationStride * ContinuationStride];
     }
 
@@ -254,7 +254,7 @@ internal class MoveOrdering
         // Counter-move heuristic: good response to opponent's last move
         if (lastOpponentMove != default && lastOpponentMove.From.Index < 64 && lastOpponentMove.To.Index < 64)
         {
-            if (move == _counterMoves[side, lastOpponentMove.From.Index, lastOpponentMove.To.Index])
+            if (move == _counterMoves[CounterMoveSlot(side, lastOpponentMove)])
                 return 150000;
         }
 
@@ -262,7 +262,7 @@ internal class MoveOrdering
         // are bounded by the same ceiling, so a quiet move spans 100,000 +/- 32,768 and the band
         // still sits clear of the counter-move band at 150,000.
         int slot = MoveSlot(move);
-        int score = 100000 + _history[slot / 64, slot % 64];
+        int score = 100000 + _history[slot];
 
         if (previous >= 0)
             score += _continuationHistory[previous * ContinuationStride + slot];
@@ -381,7 +381,7 @@ internal class MoveOrdering
     /// <c>UndoMove</c>, which is where the cutoff bookkeeping runs.
     /// </summary>
     internal int HistoryScore(Move move) =>
-        _history[PieceIndex(_board.GetPiece(move.From)), move.To.Index];
+        _history[MoveSlot(move)];
 
     /// <summary>
     /// The current continuation value of a move given the move played before it. Signed; 0 when
@@ -419,7 +419,7 @@ internal class MoveOrdering
     {
         int slot = MoveSlot(move);
 
-        ref int entry = ref _history[slot / 64, slot % 64];
+        ref int entry = ref _history[slot];
         entry += bonus - entry * Math.Abs(bonus) / HistoryMax;
 
         int previous = ContinuationSlot(lastOpponentMove);
@@ -437,9 +437,17 @@ internal class MoveOrdering
     public void RecordCounterMove(Move lastOpponentMove, Move counterMove)
     {
         if (lastOpponentMove.From.Index < 64 && lastOpponentMove.To.Index < 64)
-            _counterMoves[(int)_board.State.ActiveColor,
-                          lastOpponentMove.From.Index, lastOpponentMove.To.Index] = counterMove;
+            _counterMoves[CounterMoveSlot((int)_board.State.ActiveColor, lastOpponentMove)] = counterMove;
     }
+
+    /// <summary>
+    /// [side, from, to] flattened. The tables here were CLR multidimensional arrays, and a
+    /// multidimensional access is a call-free but check-heavy affair: a bounds check per dimension
+    /// against stored lower bounds and lengths, and a multiply per extra dimension, none of which
+    /// the JIT removes. The flat form is one check and the same arithmetic written out.
+    /// </summary>
+    private static int CounterMoveSlot(int side, Move lastOpponentMove) =>
+        (side * 64 + lastOpponentMove.From.Index) * 64 + lastOpponentMove.To.Index;
 
     // ── Static exchange evaluation ────────────────────────────────────────────
     //
@@ -758,9 +766,8 @@ internal class MoveOrdering
     /// </summary>
     public void NewSearch()
     {
-        for (int i = 0; i < PieceIndexCount; i++)
-            for (int j = 0; j < 64; j++)
-                _history[i, j] /= 2;
+        for (int i = 0; i < _history.Length; i++)
+            _history[i] /= 2;
 
         // The continuation table is aged for the same reason and is 768 times larger, so this is a
         // 2.4 MB pass. It runs once per move played, not once per node, which puts it at a few
@@ -778,9 +785,7 @@ internal class MoveOrdering
         Array.Clear(_killerMoves1, 0, _killerMoves1.Length);
         Array.Clear(_killerMoves2, 0, _killerMoves2.Length);
 
-        for (int i = 0; i < PieceIndexCount; i++)
-            for (int j = 0; j < 64; j++)
-                _history[i, j] = 0;
+        Array.Clear(_history);
 
         Array.Clear(_counterMoves);
         Array.Clear(_continuationHistory);

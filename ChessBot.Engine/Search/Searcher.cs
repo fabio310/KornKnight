@@ -208,11 +208,18 @@ internal class Searcher
         _rootMovesCompleted = 0;
     }
 
-    /// <summary>Precomputed LMR reductions indexed by [depth, moveNumber]; built in the constructor.</summary>
-    private readonly int[,] _lmrTable;
+    /// <summary>
+    /// Precomputed LMR reductions, [depth * LMR_MAX_MOVES + moveNumber]; built in the constructor.
+    /// Flat for the reason given at MoveOrdering.CounterMoveSlot: a CLR multidimensional array
+    /// checks every dimension against stored bounds on every read, and this one is read once per
+    /// reduced move.
+    /// </summary>
+    private readonly int[] _lmrTable;
 
-    // Triangular PV table: _pvTable[ply, ply..ply+len] stores the PV from ply
-    private readonly Move[,] _pvTable;
+    // Triangular PV table, flat: row ply starts at ply * MAX_PLY, and _pvTable[ply * MAX_PLY + ply
+    // .. + len] stores the PV from ply. A row never runs into the next: _pvLength[p] is at most
+    // MAX_PLY - p by construction (the deepest ply has no child to copy from).
+    private readonly Move[] _pvTable;
     private readonly int[]   _pvLength;
 
     // Guard against recursive null moves. Scoped per-ply (not a single instance-wide flag)
@@ -250,7 +257,7 @@ internal class Searcher
         _zobristHasher      = zobristHasher;
         _transpositionTable = new TranspositionTable(hashSizeMb);
         _moveOrdering       = new MoveOrdering(board);
-        _pvTable            = new Move[MAX_PLY, MAX_PLY];
+        _pvTable            = new Move[MAX_PLY * MAX_PLY];
         _pvLength           = new int[MAX_PLY];
 
         _moveGen        = new MoveGenerator(board);
@@ -276,11 +283,11 @@ internal class Searcher
         // regression corpus showed only 0.7% of reduced searches ever needed a full-depth
         // re-search — reductions were so timid they almost never changed an outcome, so the
         // nodes they saved were nodes that could have bought depth instead.
-        _lmrTable = new int[MAX_PLY, LMR_MAX_MOVES];
+        _lmrTable = new int[MAX_PLY * LMR_MAX_MOVES];
 
         for (int d = 1; d < MAX_PLY; d++)
             for (int m = 1; m < LMR_MAX_MOVES; m++)
-                _lmrTable[d, m] = (int)(LMR_BASE + Math.Log(d) * Math.Log(m) / LMR_DIVISOR);
+                _lmrTable[d * LMR_MAX_MOVES + m] = (int)(LMR_BASE + Math.Log(d) * Math.Log(m) / LMR_DIVISOR);
     }
 
     // ── Public search entry point ─────────────────────────────────────────────
@@ -508,10 +515,10 @@ internal class Searcher
             // Extract PV from triangular table
             result.PrincipalVariation.Clear();
             for (int i = 0; i < _pvLength[0]; i++)
-                result.PrincipalVariation.Add(_pvTable[0, i]);
+                result.PrincipalVariation.Add(_pvTable[i]);
 
             if (_pvLength[0] > 0)
-                result.BestMove = _pvTable[0, 0];
+                result.BestMove = _pvTable[0];
 
             // Report the finished iteration before deciding whether to start another one, so a
             // search that stops on the time cap below has still published its deepest result.
@@ -525,7 +532,7 @@ internal class Searcher
                 _progress.HashFull  = _transpositionTable.GetFillPermille();
                 _progress.PvBuffer.Clear();
                 for (int i = 0; i < _pvLength[0]; i++)
-                    _progress.PvBuffer.Add(_pvTable[0, i]);
+                    _progress.PvBuffer.Add(_pvTable[i]);
 
                 onIterationComplete(_progress);
             }
@@ -876,8 +883,8 @@ internal class Searcher
             if (_settings.UseLmr
                 && !inCheck && depth >= LMR_MIN_DEPTH && moveCount > LMR_FULL_MOVES && isQuiet)
             {
-                reduction = _lmrTable[Math.Min(depth, MAX_PLY - 1),
-                                      Math.Min(moveCount, LMR_MAX_MOVES - 1)];
+                reduction = _lmrTable[Math.Min(depth, MAX_PLY - 1) * LMR_MAX_MOVES
+                                    + Math.Min(moveCount, LMR_MAX_MOVES - 1)];
 
                 // PV nodes carry the principal variation; reduce them one ply less so the
                 // main line keeps its accuracy while the rest of the tree is cut harder.
@@ -944,10 +951,11 @@ internal class Searcher
                 bestMove  = move;
 
                 // Update triangular PV table
-                _pvTable[ply, ply] = move;
+                _pvTable[ply * MAX_PLY + ply] = move;
                 int childLen = ply + 1 < MAX_PLY ? _pvLength[ply + 1] : 0;
-                for (int i = 0; i < childLen; i++)
-                    _pvTable[ply, ply + 1 + i] = _pvTable[ply + 1, ply + 1 + i];
+                if (childLen > 0)
+                    _pvTable.AsSpan((ply + 1) * MAX_PLY + ply + 1, childLen)
+                            .CopyTo(_pvTable.AsSpan(ply * MAX_PLY + ply + 1, childLen));
                 _pvLength[ply] = 1 + childLen;
 
                 if (score > alpha)
