@@ -11,6 +11,16 @@
 	<GenerateDocumentationFile>true</GenerateDocumentationFile>
 
 	<!--
+	  The release version, reported first in "id name" (KornKnight 1.0.0+<commit> (Release)).
+	  A rating list files results under the name and version an engine reports, so this is what
+	  the public sees; the commit stamp after the "+" is what makes a binary traceable. Set
+	  explicitly — until now it was the SDK's default 1.0.0, which no release ever chose.
+	  Bump it for every release and tag that commit vX.Y.Z; scripts/publish.ps1 names the
+	  published file after it.
+	-->
+	<Version>1.0.0</Version>
+
+	<!--
 	  Runtime configuration for the playing binary.
 
 	  These live here and not in ChessBot.Engine.csproj because they do not work there:

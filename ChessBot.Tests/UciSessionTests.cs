@@ -316,6 +316,21 @@ public class UciSessionTests
         Assert.Matches(@"\((Debug|Release)(, dirty)?\)$", idName);
     }
 
+    /// <summary>
+    /// A rating list files results under the reported name and version, so the version has to be
+    /// a release version — major.minor.patch — ahead of the commit stamp, not a bare hash.
+    /// </summary>
+    [Fact]
+    public void Uci_IdNameLeadsWithAReleaseVersion()
+    {
+        var (session, _, output) = NewSession();
+        using (session) session.Execute("uci");
+
+        string idName = output.Lines.Single(l => l.StartsWith("id name ", StringComparison.Ordinal));
+
+        Assert.Matches($@"^id name {UciSession.EngineName} \d+\.\d+\.\d+\+([0-9a-f]{{12}}|nogit) ", idName);
+    }
+
     [Fact]
     public void Uci_PrefixedWithAByteOrderMark_IsStillRecognised()
     {
