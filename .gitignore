@@ -375,3 +375,13 @@ elo-reports/
 match_result.json
 run_manifest.json
 ab_runs/
+
+# fastchess measurement output (tools/sprt.ps1, tools/gauntlet.ps1). Run directories hold PGNs
+# and logs that are large, machine-specific and regenerable; the manifest and result JSON inside
+# them are the parts worth keeping, and they are kept by copying them into a run report, not by
+# committing the whole directory.
+runs/
+
+# fastchess writes this into the working directory when a tournament is interrupted, so it can
+# be resumed with -config file=config.json. It is scratch state for one machine, never a record.
+config.json

@@ -1,0 +1,75 @@
+﻿Indexing opening suite...
+Started game 3 of 10000 (change vs base)
+Started game 2 of 10000 (base vs change)
+Started game 4 of 10000 (base vs change)
+Started game 1 of 10000 (change vs base)
+Started game 5 of 10000 (change vs base)
+Started game 6 of 10000 (base vs change)
+Finished game 4 (base vs change): 1-0 {White mates}
+Started game 7 of 10000 (change vs base)
+Finished game 2 (base vs change): 0-1 {Black mates}
+Started game 8 of 10000 (base vs change)
+Finished game 6 (base vs change): 1-0 {White mates}
+Started game 9 of 10000 (change vs base)
+Finished game 3 (change vs base): 1-0 {White mates}
+Started game 10 of 10000 (base vs change)
+Finished game 1 (change vs base): 1-0 {White mates}
+Started game 11 of 10000 (change vs base)
+Finished game 5 (change vs base): 1-0 {White mates}
+Started game 12 of 10000 (base vs change)
+Finished game 11 (change vs base): 1/2-1/2 {Draw by 3-fold repetition}
+Started game 13 of 10000 (change vs base)
+Finished game 8 (base vs change): 1-0 {White mates}
+Started game 14 of 10000 (base vs change)
+Finished game 12 (base vs change): 1/2-1/2 {Draw by 3-fold repetition}
+Started game 15 of 10000 (change vs base)
+Finished game 7 (change vs base): 1-0 {White mates}
+--------------------------------------------------
+Results of change vs base (1+0.01, NULL, NULL, generated-500.epd):
+Elo: 70.44 +/- 133.94, nElo: 122.84 +/- 215.34
+LOS: 86.82 %, DrawRatio: 80.00 %, PairsRatio: inf
+Games: 10, Wins: 5, Losses: 3, Draws: 2, Points: 6.0 (60.00 %)
+Ptnml(0-2): [0, 0, 4, 0, 1], WL/DD Ratio: 3.00
+LLR: -1.00 (-34.0%) (-2.94, 2.94) [100.00, 200.00]
+--------------------------------------------------
+Started game 16 of 10000 (base vs change)
+Finished game 9 (change vs base): 1-0 {White mates}
+Started game 17 of 10000 (change vs base)
+Finished game 10 (base vs change): 1-0 {White mates}
+Started game 18 of 10000 (base vs change)
+Finished game 17 (change vs base): 1/2-1/2 {Draw by 3-fold repetition}
+Started game 19 of 10000 (change vs base)
+Finished game 15 (change vs base): 0-1 {Black mates}
+Started game 20 of 10000 (base vs change)
+Finished game 13 (change vs base): 1/2-1/2 {Draw by insufficient mating material}
+Started game 21 of 10000 (change vs base)
+Finished game 18 (base vs change): 0-1 {Black mates}
+Started game 22 of 10000 (base vs change)
+Finished game 16 (base vs change): 1/2-1/2 {Draw by 3-fold repetition}
+--------------------------------------------------
+Results of change vs base (1+0.01, NULL, NULL, generated-500.epd):
+Elo: 43.66 +/- 104.59, nElo: 74.07 +/- 170.24
+LOS: 80.31 %, DrawRatio: 62.50 %, PairsRatio: 2.00
+Games: 16, Wins: 7, Losses: 5, Draws: 4, Points: 9.0 (56.25 %)
+Ptnml(0-2): [0, 1, 5, 1, 1], WL/DD Ratio: 4.00
+LLR: -2.10 (-71.4%) (-2.94, 2.94) [100.00, 200.00]
+--------------------------------------------------
+Started game 23 of 10000 (change vs base)
+Finished game 14 (base vs change): 1/2-1/2 {Draw by fifty moves rule}
+Started game 24 of 10000 (base vs change)
+Finished game 20 (base vs change): 1-0 {White mates}
+Started game 25 of 10000 (change vs base)
+Finished game 19 (change vs base): 1/2-1/2 {Draw by 3-fold repetition}
+--------------------------------------------------
+Results of change vs base (1+0.01, NULL, NULL, generated-500.epd):
+Elo: 17.39 +/- 91.75, nElo: 29.58 +/- 152.27
+LOS: 64.83 %, DrawRatio: 60.00 %, PairsRatio: 1.00
+Games: 20, Wins: 7, Losses: 6, Draws: 7, Points: 10.5 (52.50 %)
+Ptnml(0-2): [0, 2, 6, 1, 1], WL/DD Ratio: 2.00
+LLR: -3.00 (-101.8%) (-2.94, 2.94) [100.00, 200.00]
+--------------------------------------------------
+SPRT ([100.00, 200.00]) completed - H0 was accepted
+Finished match
+Total Time: 00:00:14 (hours:minutes:seconds)
+
+
