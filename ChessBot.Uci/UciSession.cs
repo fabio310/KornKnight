@@ -417,7 +417,16 @@ public sealed class UciSession : IDisposable
         bool holdBestMove = go.Infinite || go.IsUnbounded;
         if (go.IsUnbounded)
             WriteLine("info string no limit given; searching until stop");
-        _searchTask = Task.Run(() => RunSearch(settings, holdBestMove, cts.Token));
+        // A dedicated thread, not the thread pool. A search is long-running, and a held "go
+        // infinite" blocks its thread until "stop"; on the pool that is a pool thread parked for
+        // the duration, and a search that has to wait for the pool to inject a thread starts late
+        // by however long that takes — up to seconds under load, all of it on the GUI's clock.
+        // Measured in the test host, where many sessions run at once: a "go mate 1" produced no
+        // output at all for 10 s waiting for a pool thread. A new thread starts in well under a
+        // millisecond, and does so whatever else the process is doing.
+        _searchTask = Task.Factory.StartNew(
+            () => RunSearch(settings, holdBestMove, cts.Token),
+            CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
     }
 
     /// <summary>
