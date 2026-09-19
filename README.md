@@ -28,15 +28,28 @@ The solution (`ChessBot.sln`) contains six projects:
 A UCI front end over `ChessEngine`, so the engine's strength can be measured by tools this
 project does not control.
 
-- **Commands**: `uci`, `isready`, `ucinewgame`, `position startpos|fen [moves ...]`, `go`, `stop`, `quit`.
-- **`go` operands**: `wtime`, `btime`, `winc`, `binc`, `movestogo`, `movetime`, `depth`, `nodes`, `infinite`.
+- **Commands**: `uci`, `isready`, `setoption`, `ucinewgame`, `position startpos|fen [moves ...]`,
+  `go`, `stop`, `quit`. Unknown commands and options are ignored; no input ends the process.
+- **Options**: `Hash` (MB, 1–4096, default 64), `Threads` (exactly 1 — the search is
+  single-threaded), `Move Overhead` (ms, 0–5000, default 10). No `Ponder`, no `UCI_Chess960`.
+- **`go` operands**: `wtime`, `btime`, `winc`, `binc`, `movestogo`, `movetime`, `depth`, `nodes`,
+  `mate` (a depth bound of 2N−1 plies), `infinite`. A `go` with nothing bounding it is treated as
+  `go infinite`: its bestmove waits for `stop`.
 - **Time management** (`UciTimeManager`): a move gets `remaining / movestogo` (30 assumed when
-  the GUI sends none) plus the increment, capped at half the remaining clock and reduced by a
-  fixed move overhead, so a small clock cannot be overdrawn by a large increment.
+  the GUI sends none) plus the increment, capped at half the remaining clock; the move overhead
+  comes off the clock and off `movetime` alike. The budget runs from the instant `go` arrives,
+  and the search keeps a 5 ms return reserve inside it, so `go movetime X` answers inside X as
+  the GUI measures it (`scripts/timing-probe.ps1`). The budget is announced as
+  `info string budget <ms>`.
 - **Output**: one `info` line per completed iteration (`depth`, `seldepth`, `score cp|mate`,
-  `nodes`, `nps`, `time`, `pv`) and one `bestmove` per `go`, in long algebraic notation.
+  `nodes`, `nps`, `hashfull`, `time`, `pv`) and one `bestmove` per `go`, in long algebraic
+  notation.
 - The search runs on a background thread so `stop` and `isready` are answered while it is
   running; `stop` returns the best move found so far.
+- **Release tooling** (`scripts/`): `publish.ps1` (self-contained build), `uci-compliance.ps1`
+  (protocol contract on the binary), `timing-probe.ps1` (go-to-bestmove distribution),
+  `gauntlet.ps1` (fastchess gauntlet), `sprt.ps1` (A/B for every search change). A lichess-bot
+  config fragment is in `docs/lichess-bot/`.
 
 #### Release build
 
