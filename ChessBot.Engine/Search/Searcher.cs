@@ -107,17 +107,33 @@ internal class Searcher
     private SearchSettings _settings    = null!;
 
     // The two time limits, computed once in Search() and only read after that. They are
-    // different questions: the soft limit decides whether to START another iteration, which is
-    // a bet that the next one can finish; the hard limit decides when to abandon the one in
-    // flight, which is the budget itself.
-    private long _softLimitMs;
-    private long _hardLimitMs;
+    // different questions: the soft deadline decides whether to START another iteration, which
+    // is a bet that the next one can finish; the hard deadline decides when to abandon the one
+    // in flight, which is the budget itself.
+    //
+    // Both are absolute Stopwatch timestamps rather than millisecond counts, so the check in the
+    // node loop is one GetTimestamp and one compare. Stopwatch.ElapsedMilliseconds, which this
+    // replaced, is a property that reads the same counter and then divides it on every call.
+    private long _softDeadline;
+    private long _hardDeadline;
+
+    // How often the node loop looks at the clock and the cancellation token: once every
+    // TIME_CHECK_INTERVAL nodes, counting main and quiescence nodes together. Counting them
+    // together is the point — each counter used to be masked separately, so a stretch spent
+    // mostly in one of them went up to 2 x 2048 nodes between looks, whichever it was.
+    //
+    // 1024, not 2048. The cost is one clock read (~20 ns) per 1024 nodes of ~0.8 us each, about
+    // 0.003% — and bench agrees there is nothing to see: 12 interleaved pairs at mask 1023 vs
+    // 2047 gave a median node-rate ratio of 1.02, with pairs spread 0.89-1.16 on a loaded
+    // machine, and identical node counts. What it buys is half the worst-case distance between
+    // the deadline and the check that notices it: ~0.8 ms instead of ~1.6 ms at 1.25 Mnps.
+    private const int TIME_CHECK_MASK = 1023;
 
     // The caller's cancellation token, kept as a field so the node loop can observe it. Checking
     // it only between iterations (as the iterative-deepening loop does) is not enough for a UCI
     // "stop": an unbounded iteration would then run to completion before noticing, which for
-    // "go infinite" means never. It is read inside the existing throttled (every 2048 nodes)
-    // check, so the hot path gains nothing per node.
+    // "go infinite" means never. It is read inside the existing throttled clock check (see
+    // TIME_CHECK_MASK), so the hot path gains nothing per node.
     private CancellationToken _ct;
 
     // Reused across iterations so progress reporting costs no allocation (see SearchProgress).
@@ -352,13 +368,14 @@ internal class Searcher
 
         // Soft: no new iteration past 90% of the budget, since one started that late would be
         // abandoned before it could change the move. Hard: the budget itself.
-        _softLimitMs = (long)(allocatedMs * 0.9);
-        _hardLimitMs = allocatedMs;
+        long searchStart = Stopwatch.GetTimestamp();
+        _softDeadline = searchStart + MillisecondsToTicks(allocatedMs * 0.9);
+        _hardDeadline = searchStart + MillisecondsToTicks(allocatedMs);
 
         // ── Iterative deepening ────────────────────────────────────────────
         for (int depth = 1; depth <= maxDepth; depth++)
         {
-            if (_searchTimer.ElapsedMilliseconds > _softLimitMs) break;
+            if (Stopwatch.GetTimestamp() >= _softDeadline) break;
             if (ct.IsCancellationRequested) { _cancelRequested = true; break; }
 
             Array.Clear(_pvLength, 0, _pvLength.Length);
@@ -495,7 +512,7 @@ internal class Searcher
             }
 
             // Check the soft limit at the end of the iteration too
-            if (_searchTimer.ElapsedMilliseconds > _softLimitMs) break;
+            if (Stopwatch.GetTimestamp() >= _softDeadline) break;
         }
 
         // Extremely small node/time budgets can expire before even depth 1 completes, leaving
@@ -585,13 +602,7 @@ internal class Searcher
 
         // Clock and caller cancellation share the same throttle: both are external stop
         // conditions that only need to be noticed promptly, not exactly.
-        if ((_nodesSearched & 2047) == 0 &&
-            (_ct.IsCancellationRequested ||
-             _searchTimer.ElapsedMilliseconds > _hardLimitMs))
-        {
-            _cancelRequested = true;
-            return 0;
-        }
+        if (IsTimeUp()) return 0;
 
         bool pvNode = beta - alpha > 1;
 
@@ -994,13 +1005,7 @@ internal class Searcher
         // NegamaxSearch, so a capture-heavy qsearch entered just after the last check runs
         // unbounded — measured at 29% over the move budget in tactical positions, which is
         // a flag risk under a real clock.
-        if ((_qnodesSearched & 2047) == 0 &&
-            (_ct.IsCancellationRequested ||
-             _searchTimer.ElapsedMilliseconds > _hardLimitMs))
-        {
-            _cancelRequested = true;
-            return 0;
-        }
+        if (IsTimeUp()) return 0;
 
         // Quiescence is where a dead draw is usually entered: it searches captures, and the
         // last capture is what empties the board. Without this the stand-pat below scores the
@@ -1123,6 +1128,36 @@ internal class Searcher
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The throttled external stop check shared by both node loops: every
+    /// <see cref="TIME_CHECK_MASK"/>+1 nodes, abandon the search if the caller cancelled or the
+    /// hard deadline has been reached. At the deadline, not after it — the deadline is the last
+    /// instant the budget allows, so reaching it is already the signal.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private bool IsTimeUp() =>
+        ((_nodesSearched + _qnodesSearched) & TIME_CHECK_MASK) == 0 && IsStopDue();
+
+    // Out of line so that the per-node part above is a mask test the JIT can inline, and the
+    // clock read is paid for only on the one node in 1024 that asks.
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private bool IsStopDue()
+    {
+        if (!_ct.IsCancellationRequested && Stopwatch.GetTimestamp() < _hardDeadline) return false;
+
+        _cancelRequested = true;
+        return true;
+    }
+
+    /// <summary>
+    /// Converts a duration to Stopwatch ticks. Saturates rather than overflows, because the
+    /// protocol layer asks for an unbounded search with a budget of int.MaxValue milliseconds.
+    /// </summary>
+    private static long MillisecondsToTicks(double ms) =>
+        ms <= 0 ? 0 : (long)Math.Min(ms * Stopwatch.Frequency / 1000.0, long.MaxValue / 4);
 
     // Reusable buffer for HasNonPawnMaterial — avoids the per-call heap allocation that
     // Board.GetAllPieces() incurs (it's a `yield return` iterator, so every invocation
