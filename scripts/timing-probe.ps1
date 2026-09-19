@@ -73,6 +73,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# The CSV and JSON are read by other tools and by people on other machines; on a German Windows
+# Export-Csv would otherwise write 100.1497 as "100,1497".
+[Threading.Thread]::CurrentThread.CurrentCulture = [Globalization.CultureInfo]::InvariantCulture
+
 [int[]] $MoveTimes = @($MoveTimes -split '[,\s]+' | Where-Object { $_ } | ForEach-Object { [int] $_ })
 
 if (-not (Test-Path -LiteralPath $Engine -PathType Leaf)) {
