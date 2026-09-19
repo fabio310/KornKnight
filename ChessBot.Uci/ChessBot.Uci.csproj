@@ -83,6 +83,15 @@
 	  them; and every hot method in this engine contains a loop. Confirmed by measuring the
 	  interaction directly: with TieredPGO already off the flag is worth nothing either way,
 	  because there is no longer a profile for it to prevent.
+
+	  Re-checked after the flattened-table commit (45fa716), because the strength plan proposed
+	  adding exactly these properties to ChessBot.Engine.csproj:
+	    - set on the engine LIBRARY, TieredPGO / QuickJitForLoops / InvariantGlobalization leave
+	      this binary's runtimeconfig.json byte-identical — they cannot reach the runtime from a
+	      referenced library, as found the first time;
+	    - QuickJitForLoops=false alone, swapped into this runtimeconfig: 8 interleaved bench
+	      rounds, median node-rate ratio 0.9738 (0.9627-0.9864), every round slower. Smaller than
+	      the first measurement's 8.2%, still a regression. Still not set.
 	-->
 	<InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
