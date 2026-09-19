@@ -58,6 +58,32 @@ public class SearchDeadlineTests
     }
 
     /// <summary>
+    /// The search returns inside its budget, not at it: the hard deadline sits a return reserve
+    /// before the end of the budget, so that unwinding and building the result are paid for out of
+    /// the budget rather than on top of it. Several positions, because a capture-heavy one is where
+    /// a check that is not reached often enough shows up.
+    /// </summary>
+    [Theory]
+    [InlineData("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")]
+    [InlineData("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1")]
+    [InlineData("r2q1rk1/pP1p2pp/Q4n2/bbp1p3/Np6/1B3NBn/pPPP1PPP/R3K2R b KQ - 0 1")]
+    public void TheSearchReturnsInsideItsBudget(string fen)
+    {
+        var engine = new ChessEngine();
+        engine.LoadFen(fen);
+
+        for (int i = 0; i < 3; i++)
+        {
+            long start  = Stopwatch.GetTimestamp();
+            var  result = engine.FindBestMove(new SearchSettings { MaxTimeMs = 100, StartTimestamp = start });
+            double ms   = (Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency;
+
+            Assert.True(ms < 100, $"a 100 ms budget returned at {ms:F2} ms");
+            Assert.True(result.DepthAchieved >= 1);
+        }
+    }
+
+    /// <summary>
     /// With no timestamp the budget runs from the call, which is what every caller without a
     /// clock of its own (the match runner, the UI) has always had.
     /// </summary>
