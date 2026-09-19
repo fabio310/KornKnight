@@ -212,6 +212,31 @@ public class UciSessionTests
         Assert.Single(output.Lines, l => l.StartsWith("bestmove", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// Threads is advertised as exactly 1 and any value is accepted without effect or reply: a
+    /// host that asks for 8 still gets a working single-threaded engine and nothing it has to
+    /// parse.
+    /// </summary>
+    [Theory]
+    [InlineData("setoption name Threads value 1")]
+    [InlineData("setoption name Threads value 8")]
+    [InlineData("setoption name Threads value 0")]
+    [InlineData("setoption name Threads value many")]
+    [InlineData("setoption name Threads")]
+    public void SetOption_Threads_IsAcceptedAndIgnored(string command)
+    {
+        var (session, _, output) = NewSession();
+        using (session)
+        {
+            session.Execute(command);
+            Assert.Empty(output.Lines);
+
+            session.Execute("position startpos");
+            session.Execute("go depth 3");
+            output.WaitForLine("bestmove");
+        }
+    }
+
     // ── Handshake ────────────────────────────────────────────────────────────
 
     [Fact]
@@ -231,6 +256,7 @@ public class UciSessionTests
                 $"id name {UciSession.EngineName} {UciSession.BuildIdentity}",
                 $"id author {UciSession.EngineAuthor}",
                 "option name Hash type spin default 64 min 1 max 4096",
+                "option name Threads type spin default 1 min 1 max 1",
                 $"option name Move Overhead type spin default {UciTimeManager.DefaultMoveOverheadMs}" +
                     $" min 0 max {UciTimeManager.MaxMoveOverheadMs}",
                 "uciok",
