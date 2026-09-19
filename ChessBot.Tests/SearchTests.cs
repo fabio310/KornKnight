@@ -137,24 +137,6 @@ public class SearchTests
     }
 
     [Fact]
-    public void FindBestMove_CancellationToken_StopsSearch()
-    {
-        var engine = new ChessEngine();
-        using (var cts = new System.Threading.CancellationTokenSource())
-        {
-            var settings = new SearchSettings { MaxDepth = 20, MaxTimeMs = 10000 };
-
-            // Cancel after 100ms
-            cts.CancelAfter(100);
-
-            var result = engine.FindBestMove(settings, cts.Token);
-
-            // Should have stopped early (not reached depth 20)
-            Assert.True(result.DepthAchieved < 10, $"Expected early cancellation, got depth {result.DepthAchieved}");
-        }
-    }
-
-    [Fact]
     public void FindBestMove_TimeLimit_RespectsMaxTime()
     {
         var engine = new ChessEngine();

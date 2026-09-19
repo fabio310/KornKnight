@@ -10,6 +10,7 @@ namespace ChessBot.Tests;
 /// start. A GUI measures from the moment it wrote "go", and everything between that and the
 /// first node — a previous search being stopped, a thread-pool hop, a lock — is on its clock.
 /// </summary>
+[Collection(SerialCollection.Name)]   // asserts wall-clock bounds
 public class SearchDeadlineTests
 {
     private static long TicksAgo(int ms) =>
@@ -81,6 +82,32 @@ public class SearchDeadlineTests
             Assert.True(ms < 100, $"a 100 ms budget returned at {ms:F2} ms");
             Assert.True(result.DepthAchieved >= 1);
         }
+    }
+
+    /// <summary>
+    /// A caller's cancellation stops the search, promptly. Moved here from SearchTests, where it
+    /// asserted "depth &lt; 10 after a 100 ms cancel" — a claim about node rate, not about
+    /// cancellation. Run warm, after the rest of the suite has let the JIT optimise the search,
+    /// the start position completes depth 11 (164,450 nodes) inside 100 ms plus CancelAfter's
+    /// 15.6 ms timer tick, and it failed for that reason alone. It now measures what its name says:
+    /// the time from the cancel to the return, against a depth nothing reaches in that time.
+    /// </summary>
+    [Fact]
+    public void FindBestMove_CancellationToken_StopsSearch()
+    {
+        var engine = new ChessEngine();
+        using var cts = new CancellationTokenSource();
+        var settings = new SearchSettings { MaxDepth = 64, MaxTimeMs = 60_000 };
+
+        cts.CancelAfter(100);
+        var clock  = Stopwatch.StartNew();
+        var result = engine.FindBestMove(settings, cts.Token);
+        clock.Stop();
+
+        Assert.True(result.DepthAchieved < 64, $"the search ran to depth {result.DepthAchieved}");
+        Assert.True(clock.ElapsedMilliseconds < 500,
+            $"cancelled at 100 ms, returned at {clock.ElapsedMilliseconds} ms");
+        Assert.False(result.IsUnsearchedFallbackMove);
     }
 
     /// <summary>

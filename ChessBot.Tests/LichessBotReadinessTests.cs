@@ -14,6 +14,7 @@ namespace ChessBot.Tests;
 /// increment and no movestogo. Both are ordinary UCI, and both have a way of going wrong that
 /// only shows in a long game or on a short clock.
 /// </summary>
+[Collection(SerialCollection.Name)]   // asserts wall-clock bounds
 public class LichessBotReadinessTests
 {
     private readonly ITestOutputHelper _out;
