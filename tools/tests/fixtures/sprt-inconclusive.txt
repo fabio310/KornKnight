@@ -1,0 +1,12 @@
+Finished game 16 (change vs base): 0-1 {Black mates}
+--------------------------------------------------
+Results of base vs change (1+0.01, NULL, NULL, generated-500.epd):
+Elo: -43.66 +/- 82.47, nElo: -92.86 +/- 170.24
+LOS: 14.25 %, DrawRatio: 50.00 %, PairsRatio: 0.33
+Games: 16, Wins: 4, Losses: 6, Draws: 6, Points: 7.0 (43.75 %)
+Ptnml(0-2): [0, 3, 4, 1, 0], WL/DD Ratio: 3.00
+LLR: -0.11 (-3.9%) (-2.94, 2.94) [0.00, 5.00]
+--------------------------------------------------
+Finished match
+Total Time: 00:00:14 (hours:minutes:seconds)
+

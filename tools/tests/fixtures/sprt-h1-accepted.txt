@@ -1,0 +1,13 @@
+Started game 34 of 10000 (base vs change)
+Finished game 27 (change vs base): 1-0 {White mates}
+--------------------------------------------------
+Results of change vs base (1+0.01, NULL, NULL, generated-500.epd):
+Elo: -62.71 +/- 86.01, nElo: -98.03 +/- 128.69
+LOS: 6.77 %, DrawRatio: 50.00 %, PairsRatio: 0.40
+Games: 28, Wins: 7, Losses: 12, Draws: 9, Points: 11.5 (41.07 %)
+Ptnml(0-2): [2, 3, 7, 2, 0], WL/DD Ratio: 2.50
+LLR: 3.11 (105.6%) (-2.94, 2.94) [-200.00, -100.00]
+--------------------------------------------------
+SPRT ([-200.00, -100.00]) completed - H1 was accepted
+Finished match
+Total Time: 00:00:17 (hours:minutes:seconds)
