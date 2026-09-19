@@ -119,6 +119,13 @@ public class SearchSettings
     public bool UseIir { get; internal set; } = true;
 
     /// <summary>
+    /// History-scaled late move reductions: a quiet move's reduction shrinks with a strong record
+    /// of cutting and grows with a strong record of failing. Part of LMR, so off with it for the
+    /// minimax gate; a switch of its own so it can be measured apart from the base schedule.
+    /// </summary>
+    public bool UseHistoryLmr { get; internal set; } = true;
+
+    /// <summary>
     /// Invoked once per *completed* iterative-deepening iteration — never per node — so a
     /// protocol layer (UCI "info depth ...") can report progress without the search having to
     /// know that a protocol exists. Null by default: no callback, no cost, and the search tree
@@ -151,6 +158,7 @@ public class SearchSettings
         UseCheckExtension     = false,
         UseImproving          = false,
         UseIir                = false,
+        UseHistoryLmr         = false,
     };
 }
 

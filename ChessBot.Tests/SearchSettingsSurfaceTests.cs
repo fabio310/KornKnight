@@ -36,6 +36,7 @@ public class SearchSettingsSurfaceTests
         nameof(SearchSettings.UseCheckExtension),
         nameof(SearchSettings.UseImproving),
         nameof(SearchSettings.UseIir),
+        nameof(SearchSettings.UseHistoryLmr),
     };
 
     [Theory]

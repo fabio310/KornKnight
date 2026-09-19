@@ -59,6 +59,7 @@ internal class Searcher
     private const int LMR_MAX_MOVES  = 64;  // move-count axis of the reduction table
     private const double LMR_BASE    = 0.75;
     private const double LMR_DIVISOR = 2.25;
+    private const int LMR_HISTORY_DIVISOR = 128;    // history points per ply of reduction (see the loop)
 
     private bool   _inAspirationRetry;
     private bool   _cancelledDuringAspirationRetry;
@@ -915,6 +916,11 @@ internal class Searcher
                 continue;
             }
 
+            // Read before the move is made: the history tables are keyed by the piece standing on
+            // the move's origin square.
+            int quietHistory = isQuiet && _settings.UseHistoryLmr
+                ? _moveOrdering.QuietHistoryScore(move, lastOpponentMove) : 0;
+
             _board.MakeMove(move);
 
             // ── Late Move Reductions ──────────────────────────────────────
@@ -928,6 +934,23 @@ internal class Searcher
                 // PV nodes carry the principal variation; reduce them one ply less so the
                 // main line keeps its accuracy while the rest of the tree is cut harder.
                 if (pvNode) reduction--;
+
+                // And by the move's own record: up to two plies less for a quiet move with a strong
+                // history of cutting, up to two more for one with a strong history of failing to.
+                // The ordering already ranked it by exactly this score; the reduction now trusts the
+                // same evidence.
+                //
+                // The divisor is set from what the table actually holds, not from its range. The
+                // combined score can span +/-32,768, but measured at this line over bench (316k
+                // quiet moves reaching LMR): 85% within +/-64, 10% within 64-128, 4.6% at 128 or
+                // more, 1.8% at 256 or more, none past 4,096 — gravity and the halving in
+                // NewSearch keep it there. A first cut at 8,192 (a quarter of the range) moved no
+                // reduction at all: bench was identical to the node. 128 moves one ply for the
+                // ~4.6% with real evidence, two for the ~1.8% with the strongest, and leaves the
+                // near-zero majority alone. The record leans negative — 220k below zero against
+                // 39k above, since every tried quiet takes the failure malus — so in practice this
+                // mostly reduces the proven failures harder.
+                reduction -= Math.Clamp(quietHistory / LMR_HISTORY_DIVISOR, -2, 2);
 
                 // Leave at least one real ply below the reduction: the null-window probe has
                 // to be a search, not a jump straight into quiescence, or the full-depth

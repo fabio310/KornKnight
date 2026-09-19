@@ -384,6 +384,23 @@ internal class MoveOrdering
         _history[MoveSlot(move)];
 
     /// <summary>
+    /// The quiet-move record the ordering ranks by: plain history plus continuation history
+    /// against <paramref name="lastOpponentMove"/>, each in ±<see cref="HistoryMax"/>, so the sum
+    /// is in ±2 x <see cref="HistoryMax"/>. The same two terms <see cref="CalculateMoveScore"/>
+    /// adds, exposed so a reduction can be scaled by the evidence the ordering already used.
+    /// Same precondition as <see cref="HistoryScore"/>: the board stands where the move is made
+    /// from.
+    /// </summary>
+    internal int QuietHistoryScore(Move move, Move lastOpponentMove)
+    {
+        int slot     = MoveSlot(move);
+        int score    = _history[slot];
+        int previous = ContinuationSlot(lastOpponentMove);
+        if (previous >= 0) score += _continuationHistory[previous * ContinuationStride + slot];
+        return score;
+    }
+
+    /// <summary>
     /// The current continuation value of a move given the move played before it. Signed; 0 when
     /// either move is one the table cannot key, as <see cref="ContinuationSlot"/> describes.
     /// </summary>
