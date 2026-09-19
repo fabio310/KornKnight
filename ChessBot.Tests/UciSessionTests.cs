@@ -546,6 +546,35 @@ public class UciSessionTests
             $"a 300ms search took {clock.ElapsedMilliseconds}ms");
     }
 
+    /// <summary>
+    /// The timing harness judges a clock-based search against the budget the engine says it
+    /// allocated, so the announcement has to carry exactly the budget the search was given, and
+    /// has to be absent when there is no budget rather than announce a sentinel.
+    /// </summary>
+    [Fact]
+    public void Go_AnnouncesItsTimeBudget_AndOnlyWhenItHasOne()
+    {
+        var (session, engine, output) = NewSession();
+        using (session)
+        {
+            session.Execute("position startpos");
+
+            var go = GoParameters.Parse("go wtime 60000 btime 60000 winc 600 binc 600".Split(' '), 1);
+            int expected = UciTimeManager.ResolveTimeBudgetMs(go, engine.SideToMove);
+
+            session.Execute("go wtime 60000 btime 60000 winc 600 binc 600");
+            session.Execute("stop");
+            Assert.Contains($"info string budget {expected}", output.Lines);
+
+            int before = output.Lines.Count;
+            session.Execute("go depth 2");
+            session.Execute("stop");   // waits for the search, so its output is all in
+
+            Assert.DoesNotContain(output.Lines.Skip(before),
+                l => l.StartsWith("info string budget", StringComparison.Ordinal));
+        }
+    }
+
     [Fact]
     public void Stop_EndsAnInfiniteSearchAndReturnsTheBestMoveFound()
     {

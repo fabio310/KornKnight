@@ -320,6 +320,13 @@ public sealed class UciSession : IDisposable
         var settings = UciTimeManager.ToSearchSettings(go, _engine.SideToMove, _moveOverheadMs);
         settings.OnIterationComplete = WriteInfo;
 
+        // Announced so a harness can judge a clock-based search against what the engine meant
+        // to spend (scripts/timing-probe.ps1). A clock implies no single budget of its own, so
+        // without this line an overshoot under a real time control cannot even be defined.
+        // Unbounded searches have no budget to announce.
+        if (settings.MaxTimeMs is int budgetMs && budgetMs != UciTimeManager.NoTimeLimitMs)
+            WriteLine($"info string budget {budgetMs}");
+
         var cts = new CancellationTokenSource();
         _searchCts = cts;
 
