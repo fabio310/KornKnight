@@ -5,6 +5,64 @@ estimated. Every row below says which build it measured and how. `matches/` and 
 gitignored, so this file is the durable record. Add a row whenever the anchor is rerun, and keep
 the old rows.
 
+## Strength phase 1 — cheap search wins (2026-09-20)
+
+Each item was measured by SPRT (elo0=0, elo1=5, alpha=beta=0.05) at 8+0.08 on the UHO book,
+change against base as its own binary, several runs in parallel. Elo is from the point of view of
+the change; the first figure is at the moment the run was called, the second is fastchess's tally
+over all games played.
+
+| Item | Measured against | Verdict | Elo | Games |
+|---|---|---|---:|---:|
+| P1.1a improving flag, RFP charged one ply less when improving | v1.0.0 + P4.1 | **adopted** | +31.1 → +23.6 | 842 |
+| P1.2 internal iterative reduction | P1.1a | **adopted** | +24.4 → +18.2 | 880 |
+| P1.4 late move reductions scaled by move history | P1.1a | **adopted** | +33.1 → +26.7 | 522 |
+| **The three together** | **v1.0.0 + P4.1** | **adopted** | **+45.7 → +35.6** | **500** |
+| P1.1c one more LMR ply when not improving | P1.1b | rejected | −29.5 | 640 |
+| P1.3a null-move R scaled by depth and eval | P1.1a | rejected | −23.6 | 700 |
+| P1.1b late move pruning count halved when not improving | P1.1a | running | — | — |
+| P1.5 aspiration window widening | P1.1a | running | — | — |
+| P1.3b null-move cutoff returns the score it found | P1.1a | running | — | — |
+
+The combined row is the one to quote: the three adopted items were each measured alone, and
++35.6 over the pre-phase base is what they are worth together.
+
+Two of the plan's predicted wins measured clearly negative in this engine. Reducing MORE at a
+non-improving node (P1.1c) and scaling the null-move reduction by how far the static score sits
+above beta (P1.3a) each cost 20-30 Elo, on ~700 games, with their own toggles and tests in place.
+P1.3b and P1.3c were first measured on top of P1.3a, which is not a fair test of them; P1.3b is
+being re-measured on its own.
+
+How the runs were called, which is a deliberate loosening of the SPRT's own stopping rule:
+- **Early call.** After 500 games, a 90% interval entirely above elo1 adopts and one entirely
+  below 0 discards, without waiting for the formal bound. Every such call is recorded in
+  `early_verdict.json` beside the run, with the games and interval behind it.
+- **Cut.** An item still measuring below zero at 2,000 games is dropped rather than proven.
+- Both were chosen for throughput over rigour, so a marginal item (+2 or +3 Elo) is discarded
+  rather than proven, and an adopted item rests on weaker evidence than alpha=0.05 implies.
+
+Speed-only work in the same phase, node counts identical and 10 interleaved bench rounds each on
+an idle machine:
+
+| Item | Node rate | Kept |
+|---|---|---|
+| P4.1 flatten the four multidimensional tables | +0.8% (1.0006-1.0268) | yes |
+| P2.1 every eval weight in one flat tunable vector | +3.3% (1.0237-1.0479) | yes |
+| P2.2 pawn hash table | +1.2% (1.0025-1.0252) | yes |
+| P4.4 transposition prefetch after MakeMove | +0.26% (0.9835-1.0167) | yes, on mechanism |
+| P4.3 AggressiveInlining on 13 small methods | −0.3% (0.9873-1.0089) | **no** |
+| P4.2 runtime build flags on the engine project | no effect / −2.6% | **no** |
+
+P4.3 is the rule working: it promised to go if the measurement landed inside the noise, it did,
+and it is not on the branch. P4.2 was rejected twice — the properties cannot reach the runtime
+from a library, and the one flag that would (`QuickJitForLoops=false`) costs 2.6%.
+
+Timing acceptance re-checked on the merged branch (100 samples each, machine under SPRT load):
+0 of 300 samples over budget; p99 11.9 / 13.5 / 13.7 ms under the 50 / 100 / 1000 ms limits. The
+contract in the next section still holds.
+
+The rating anchor for this phase (the four Blunders) has not been run yet.
+
 ## Rating anchor
 
 The protocol is in the README ("Rating anchor"). KornKnight plays in-process through
