@@ -288,16 +288,31 @@ function Resolve-OpeningBook {
     # Only EPD. A PGN book's comments are part of the format and fastchess reads them.
     if ($format -ne 'epd') { return $result }
 
-    $lines = Get-Content -LiteralPath $original
-    $clean = @($lines | Where-Object { $_.Trim() -and -not $_.TrimStart().StartsWith('#') })
+    # Streamed, in two passes, rather than Get-Content into a variable. The UHO book is 175 MB and
+    # 2.6 million lines: materialised as PowerShell line objects it took 68 s and 4.4 GB of working
+    # set BEFORE a single game started, on every run — the machine sat at 6% while it churned. This
+    # reads it with a StreamReader and keeps nothing, and only walks the file a second time on the
+    # rare book that actually needs stripping.
+    $total = 0
+    $bad   = 0
+    foreach ($line in [IO.File]::ReadLines($original)) {
+        $total++
+        if ($line.Length -eq 0 -or $line.TrimStart().StartsWith('#') -or $line.Trim().Length -eq 0) { $bad++ }
+    }
 
-    if ($clean.Count -eq $lines.Count) { return $result }
+    if ($bad -eq 0) { return $result }
 
     $sanitisedPath = Join-Path $OutDir ([IO.Path]::GetFileNameWithoutExtension($original) + '.sanitised.epd')
-    Set-Content -LiteralPath $sanitisedPath -Value $clean -Encoding ascii
+    $writer = [IO.StreamWriter]::new($sanitisedPath, $false, [Text.Encoding]::ASCII)
+    try {
+        foreach ($line in [IO.File]::ReadLines($original)) {
+            if ($line.Length -eq 0 -or $line.TrimStart().StartsWith('#') -or $line.Trim().Length -eq 0) { continue }
+            $writer.WriteLine($line)
+        }
+    } finally { $writer.Dispose() }
 
     Write-Warning ("Opening book $([IO.Path]::GetFileName($original)) has " +
-        "$($lines.Count - $clean.Count) comment/blank line(s), which fastchess rejects mid-run. " +
+        "$bad comment/blank line(s) of $total, which fastchess rejects mid-run. " +
         "Using a stripped copy: $sanitisedPath")
 
     $result.Path      = $sanitisedPath
