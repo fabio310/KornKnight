@@ -8,6 +8,12 @@
 	<AssemblyName>ChessBot.Engine</AssemblyName>
 	<RootNamespace>ChessBot.Engine</RootNamespace>
 	<GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+	<!--
+	  For the transposition-table prefetch (Sse.Prefetch0 takes a pointer, so the one method that
+	  issues it is unsafe). Nothing else in the engine uses it; this is the item P4.2 deferred it to.
+	-->
+	<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>

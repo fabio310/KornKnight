@@ -923,6 +923,10 @@ internal class Searcher
 
             _board.MakeMove(move);
 
+            // The child probes this slot first thing; start the fetch now, while this node still
+            // has the reduction schedule to work out and the child has its prologue to run.
+            if (_settings.UseTranspositionTable) _transpositionTable.Prefetch(_board.ZobristHash);
+
             // ── Late Move Reductions ──────────────────────────────────────
             int reduction = 0;
             if (_settings.UseLmr

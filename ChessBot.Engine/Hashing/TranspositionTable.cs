@@ -1,5 +1,8 @@
 namespace ChessBot.Engine.Hashing;
 
+using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics.X86;
+
 using System.Threading;
 using ChessBot.Engine.Types;
 
@@ -174,6 +177,29 @@ internal class TranspositionTable
     /// per node.
     /// </summary>
     private int SlotOf(ulong hash) => (int)(hash & _indexMask);
+
+    /// <summary>
+    /// Asks the CPU to start pulling this hash's slot into L1, without reading it.
+    ///
+    /// The search calls it immediately after making a move: the child node's first act is to probe
+    /// this exact slot, and the table is far larger than any cache, so that probe is a miss that
+    /// stalls the node. Between the make and the probe the search still has the child's prologue to
+    /// run — draw checks, the ply guard — which is time the memory system can spend fetching.
+    ///
+    /// Prefetch0 (all cache levels) rather than a non-temporal hint: the slot is about to be read
+    /// and, on a store, written. A no-op where SSE is unavailable, and a hint everywhere — it
+    /// cannot fault or change a result, only the time taken to get one.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal unsafe void Prefetch(ulong hash)
+    {
+        if (!Sse.IsSupported) return;
+
+        fixed (TTEntry* slot = &_table[SlotOf(hash)])
+        {
+            Sse.Prefetch0(slot);
+        }
+    }
 
     /// <summary>
     /// Stores an entry in the transposition table.
