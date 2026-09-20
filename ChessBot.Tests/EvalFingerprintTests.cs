@@ -27,8 +27,13 @@ public class EvalFingerprintTests
 
     internal const int PositionCount = 10_000;
 
-    /// <summary>The fingerprint of the evaluation as of v1.0.0 + Phase 1 (strength/p1.5).</summary>
-    internal const ulong RecordedHash = 0xCD3AFFE5FD01C12BUL;
+    /// <summary>
+    /// The fingerprint of the evaluation as of P2.3 (king pawn shelter and storm), the first
+    /// change that was MEANT to move it. It was 0xCD3AFFE5FD01C12B from v1.0.0 through the whole
+    /// of phase 1, including the move of every weight into a tunable vector and the pawn hash
+    /// table, which is what those two commits claimed and this number proved.
+    /// </summary>
+    internal const ulong RecordedHash = 0x017A51835A3C6545UL;
 
     /// <summary>
     /// Seeded random playouts, 80 plies each or until the game ends, every position kept, until

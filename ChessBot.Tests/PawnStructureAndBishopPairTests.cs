@@ -36,7 +36,27 @@ public class PawnStructureAndBishopPairTests
     /// which is what leaves the term under test on its own.
     /// </summary>
     private static int NonTableDelta(string from, string to)
-        => (Eval(to) - Eval(from)) - (TableScoreOf(to) - TableScoreOf(from));
+        => (Eval(to) - Eval(from))
+         - (TableScoreOf(to) - TableScoreOf(from))
+         - (KingSafetyOf(to) - KingSafetyOf(from));
+
+    /// <summary>
+    /// King safety is subtracted for the same reason the tables are: it is not the term under
+    /// test, and it moves here. The midgame pair below doubles the c-file by moving the e-pawn,
+    /// which empties the file in front of a king on e1 — worth -25 on the shelter scale, enough on
+    /// its own to make a midgame delta look larger than an endgame one.
+    /// </summary>
+    private static int KingSafetyOf(string fen)
+    {
+        var engine = new ChessEngine();
+        engine.LoadFen(fen);
+        var board = engine.GetBoardSnapshot();
+
+        return KingSafety.Evaluate(board.WhitePawnBitboard, board.BlackPawnBitboard,
+                                   board.GetKingPosition(Color.White),
+                                   board.GetKingPosition(Color.Black),
+                                   board.IncrementalPhase);
+    }
 
     private static int TableScoreOf(string fen)
     {

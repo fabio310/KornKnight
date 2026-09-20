@@ -52,9 +52,13 @@ public sealed class EvalParams
     public const int RookHalfOpenEg = RookHalfOpenMg + 1;
     public const int RookSeventhMg  = RookHalfOpenEg + 1;
     public const int RookSeventhEg  = RookSeventhMg + 1;
+    public const int KingShelterMg  = RookSeventhEg + 1;    // 4, by distance of the nearest own pawn ahead
+    public const int KingShelterEg  = KingShelterMg + 4;    // 4
+    public const int KingStormMg    = KingShelterEg + 4;    // 4, by distance of the nearest enemy pawn
+    public const int KingStormEg    = KingStormMg + 4;      // 4
 
     /// <summary>Number of weights.</summary>
-    public const int Count = RookSeventhEg + 1;
+    public const int Count = KingStormEg + 4;
 
     /// <summary>The weights. Indexed by the offsets above.</summary>
     public int[] Values { get; }
@@ -147,6 +151,14 @@ public sealed class EvalParams
         v[RookHalfOpenMg] = RookFiles.DefaultHalfOpenMidgame;    v[RookHalfOpenEg] = RookFiles.DefaultHalfOpenEndgame;
         v[RookSeventhMg]  = RookFiles.DefaultSeventhMidgame;     v[RookSeventhEg]  = RookFiles.DefaultSeventhEndgame;
 
+        for (int d = 0; d < 4; d++)
+        {
+            v[KingShelterMg + d] = KingSafety.DefaultShelterMidgame[d];
+            v[KingStormMg   + d] = KingSafety.DefaultStormMidgame[d];
+            // The endgame scale stays 0: a king that has left its shield behind in an endgame is
+            // doing the right thing, and the taper is what makes that so.
+        }
+
         return new EvalParams(v);
     }
 
@@ -165,6 +177,10 @@ public sealed class EvalParams
         if (index < DoubledMg)  return $"PstEg.{PieceNames[(index - PstEg) / 64]}.{Sq((index - PstEg) % 64)}";
         if (index >= PassedMg && index < PassedEg)    return $"PassedMg.Rank{index - PassedMg + 1}";
         if (index >= PassedEg && index < ProtectedMg) return $"PassedEg.Rank{index - PassedEg + 1}";
+        if (index >= KingShelterMg && index < KingShelterEg) return $"KingShelterMg.D{index - KingShelterMg}";
+        if (index >= KingShelterEg && index < KingStormMg)   return $"KingShelterEg.D{index - KingShelterEg}";
+        if (index >= KingStormMg   && index < KingStormEg)   return $"KingStormMg.D{index - KingStormMg}";
+        if (index >= KingStormEg   && index < Count)         return $"KingStormEg.D{index - KingStormEg}";
 
         return index switch
         {

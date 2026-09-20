@@ -103,6 +103,11 @@ internal class Evaluator
         score += BishopPair(whiteBishops, blackBishops, phase);
         score += RookFiles.Evaluate(whiteRooks, blackRooks, whitePawns, blackPawns, phase);
 
+        // King safety: what is left of the pawn shield, and what is coming at it.
+        score += KingSafety.Evaluate(whitePawns, blackPawns,
+                                     board.GetKingPosition(Color.White),
+                                     board.GetKingPosition(Color.Black), phase);
+
         // Negamax convention: return score relative to the side to move.
         int sideSign = board.State.ActiveColor == Color.White ? 1 : -1;
         return score * sideSign;
@@ -147,6 +152,12 @@ internal class Evaluator
         score += RookFiles.Evaluate(board.WhiteRookBitboard, board.BlackRookBitboard,
                                     board.WhitePawnBitboard, board.BlackPawnBitboard,
                                     board.IncrementalPhase);
+
+        // King safety from the same pawn occupancy and the incrementally tracked king squares.
+        score += KingSafety.Evaluate(board.WhitePawnBitboard, board.BlackPawnBitboard,
+                                     board.GetKingPosition(Color.White),
+                                     board.GetKingPosition(Color.Black),
+                                     board.IncrementalPhase);
 
         // Negamax convention: return score relative to the side to move.
         int sideSign = board.State.ActiveColor == Color.White ? 1 : -1;
