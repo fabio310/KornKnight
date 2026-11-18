@@ -18,7 +18,7 @@
 	  Bump it for every release and tag that commit vX.Y.Z; scripts/publish.ps1 names the
 	  published file after it.
 	-->
-	<Version>1.0.0</Version>
+	<Version>1.1.0</Version>
 
 	<!--
 	  Runtime configuration for the playing binary.
