@@ -176,7 +176,7 @@ internal class MoveOrdering
 
     /// <summary>
     /// Whether the tactical move now sitting at <paramref name="index"/> cleared SEE at a
-    /// threshold of zero, as computed by the last <see cref="OrderMoves"/> call.
+    /// threshold of zero, as computed by the last <see cref="OrderMoves(Move[], int, Move, Move, int)"/> call.
     ///
     /// Handed back rather than recomputed. The exchange is the single most expensive thing move
     /// ordering does — measured at 17.6% of the engine's node rate — and it has already been paid
@@ -184,7 +184,7 @@ internal class MoveOrdering
     /// question a second time at a quiescence node would double that across the 54-61% of nodes
     /// that live there, which is more than any pruning rule it could feed is likely to win back.
     ///
-    /// Meaningful only for tactical moves, and only until the next <see cref="OrderMoves"/> call.
+    /// Meaningful only for tactical moves, and only until the next <see cref="OrderMoves(Move[], int, Move, Move, int)"/> call.
     /// A move that scored as the TT move never reached the exchange and reports false; quiescence,
     /// the only caller, passes no TT move.
     /// </summary>

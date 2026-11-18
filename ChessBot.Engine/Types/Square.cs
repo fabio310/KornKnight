@@ -150,18 +150,28 @@ public readonly struct Square : IEquatable<Square>, IComparable<Square>
         }
     }
 
+    /// <summary>True if <paramref name="obj"/> is a square with the same index.</summary>
     public override bool Equals(object? obj) => obj is Square square && Equals(square);
 
+    /// <summary>True if both squares have the same index.</summary>
     public bool Equals(Square other) => _index == other._index;
 
+    /// <summary>Orders squares by index, a1 first and h8 last.</summary>
     public int CompareTo(Square other) => _index.CompareTo(other._index);
 
+    /// <summary>The index's hash code: distinct squares never collide.</summary>
     public override int GetHashCode() => _index.GetHashCode();
 
+    /// <summary>True if both squares have the same index.</summary>
     public static bool operator ==(Square left, Square right) => left.Equals(right);
+    /// <summary>True if the squares have different indices.</summary>
     public static bool operator !=(Square left, Square right) => !left.Equals(right);
+    /// <summary>Compares by index, a1 first and h8 last.</summary>
     public static bool operator <(Square left, Square right) => left._index < right._index;
+    /// <summary>Compares by index, a1 first and h8 last.</summary>
     public static bool operator <=(Square left, Square right) => left._index <= right._index;
+    /// <summary>Compares by index, a1 first and h8 last.</summary>
     public static bool operator >(Square left, Square right) => left._index > right._index;
+    /// <summary>Compares by index, a1 first and h8 last.</summary>
     public static bool operator >=(Square left, Square right) => left._index >= right._index;
 }

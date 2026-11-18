@@ -108,14 +108,17 @@ public readonly struct GameState : IEquatable<GameState>
     public bool IsFiftyMoveRuleDraw => HalfmoveClock >= 100;
 
     /// <summary>
-    /// Returns true if no en passant capture is available this turn.
+    /// Returns true if an en passant capture is available this turn.
     /// </summary>
     public bool HasEnPassant => EnPassantTarget.Index != 0;
 
+    /// <summary>The FEN fields this state covers, from the active colour onwards.</summary>
     public override string ToString() => ToFenState();
 
+    /// <summary>True if <paramref name="obj"/> is a state equal in every field.</summary>
     public override bool Equals(object? obj) => obj is GameState state && Equals(state);
 
+    /// <summary>True if both states agree on every field, clocks included.</summary>
     public bool Equals(GameState other) =>
         ActiveColor == other.ActiveColor &&
         CastlingRights == other.CastlingRights &&
@@ -123,9 +126,12 @@ public readonly struct GameState : IEquatable<GameState>
         HalfmoveClock == other.HalfmoveClock &&
         FullmoveNumber == other.FullmoveNumber;
 
+    /// <summary>Combines every field, so it changes with any of them.</summary>
     public override int GetHashCode() =>
         HashCode.Combine(ActiveColor, CastlingRights, EnPassantTarget, HalfmoveClock, FullmoveNumber);
 
+    /// <summary>True if both states agree on every field, clocks included.</summary>
     public static bool operator ==(GameState left, GameState right) => left.Equals(right);
+    /// <summary>True if the states differ in any field.</summary>
     public static bool operator !=(GameState left, GameState right) => !left.Equals(right);
 }

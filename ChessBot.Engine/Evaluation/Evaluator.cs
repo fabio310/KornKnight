@@ -188,6 +188,8 @@ internal class Evaluator
     /// same whatever stands beside or behind it — so unlike the passed pawn case there is no table
     /// here to double.
     /// </summary>
+    /// <param name="whitePawnFiles">White pawns per file, index 0 = the a-file.</param>
+    /// <param name="blackPawnFiles">Black pawns per file, index 0 = the a-file.</param>
     /// <param name="phase">The position's 24-point material phase (see <see cref="GamePhase"/>).</param>
     private static int EvaluatePawnStructureFromCounts(ReadOnlySpan<int> whitePawnFiles,
                                                        ReadOnlySpan<int> blackPawnFiles,
@@ -258,6 +260,8 @@ internal class Evaluator
     /// against a midgame 320, while a knight's falls from 320 to 310, so a bishop already gains on
     /// a knight as pieces come off. What is left for this term is the pair as such.
     /// </summary>
+    /// <param name="whiteBishops">Number of white bishops on the board.</param>
+    /// <param name="blackBishops">Number of black bishops on the board.</param>
     /// <param name="phase">The position's 24-point material phase (see <see cref="GamePhase"/>).</param>
     private static int BishopPair(int whiteBishops, int blackBishops, int phase)
     {

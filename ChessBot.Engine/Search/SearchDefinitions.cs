@@ -137,6 +137,7 @@ public class SearchSettings
     /// </summary>
     public Action<SearchProgress>? OnIterationComplete { get; set; }
 
+    /// <summary>Default settings, with the node-budget floor applied.</summary>
     public SearchSettings()
     {
         MinNodeTarget ??= 300_000;
@@ -503,10 +504,19 @@ public class SearchResult
     /// <summary>Upper bound of the LMR telemetry buckets; values at or above land in the last bucket.</summary>
     public const int LmrBucketCount = 32;
 
+    /// <summary>Nodes at which a null move was tried.</summary>
     public long NullMoveAttempts   { get; set; }
+
+    /// <summary>Null-move searches that returned a cutoff, so the subtree was never searched.</summary>
     public long NullMoveCutoffs    { get; set; }
+
+    /// <summary>Moves searched at a reduced depth by late move reductions.</summary>
     public long LmrReductions      { get; set; }
+
+    /// <summary>Reduced searches that beat alpha and had to be repeated at full depth.</summary>
     public long LmrReSearches      { get; set; }
+
+    /// <summary>Quiet moves skipped by forward futility pruning.</summary>
     public long FutilitySkips      { get; set; }
 
     /// <summary>
@@ -525,8 +535,13 @@ public class SearchResult
 
     /// <summary>Captures skipped in quiescence because the exchange said they lose material.</summary>
     public long QSeeSkips          { get; set; }
+    /// <summary>Null-window searches that beat alpha and were repeated on the full window.</summary>
     public long PvsReSearches      { get; set; }
+
+    /// <summary>Iterations whose score fell below the aspiration window, forcing a re-search.</summary>
     public long AspirationFailLow  { get; set; }
+
+    /// <summary>Iterations whose score rose above the aspiration window, forcing a re-search.</summary>
     public long AspirationFailHigh { get; set; }
 
     /// <summary>Draw scores returned for repetition, split out because they are path-dependent.</summary>

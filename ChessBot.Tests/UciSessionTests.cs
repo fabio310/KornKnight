@@ -1,3 +1,9 @@
+// xUnit1031 (blocking task operations) is suppressed for this file on purpose. These tests assert
+// that a UCI command RETURNS WITHIN A DEADLINE while a search is running — the bug they guard
+// against is a command loop that blocks. Task.Wait(timeout) is the instrument for that; awaiting
+// would wait forever and report the regression as a hung test run rather than a failure.
+#pragma warning disable xUnit1031
+
 using System.Text;
 using Xunit;
 using ChessBot.Engine;
@@ -1122,3 +1128,5 @@ public class UciSessionSoakTests
             $"at end {heapAtEnd / 1024} KB, {searches} searches)");
     }
 }
+
+#pragma warning restore xUnit1031

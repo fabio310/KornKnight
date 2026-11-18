@@ -80,14 +80,19 @@ public readonly struct Piece : IEquatable<Piece>
         _ => Empty
     };
 
+    /// <summary>True if <paramref name="obj"/> is a piece of the same colour and type.</summary>
     public override bool Equals(object? obj) => obj is Piece piece && Equals(piece);
 
+    /// <summary>True if both pieces have the same colour and type.</summary>
     public bool Equals(Piece other) =>
         Color == other.Color && Type == other.Type;
 
+    /// <summary>Combines colour and type.</summary>
     public override int GetHashCode() =>
         HashCode.Combine(Color, Type);
 
+    /// <summary>True if both pieces have the same colour and type.</summary>
     public static bool operator ==(Piece left, Piece right) => left.Equals(right);
+    /// <summary>True if the pieces differ in colour or type.</summary>
     public static bool operator !=(Piece left, Piece right) => !left.Equals(right);
 }

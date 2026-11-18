@@ -28,34 +28,61 @@ public sealed class EvalParams
     // Piece-indexed blocks are indexed by (PieceType - 1): pawn 0 .. king 5. Piece-square blocks
     // hold 64 White-perspective squares per piece, a1 = 0 .. h8 = 63; Black reads square 63 - index.
 
+    /// <summary>Piece types a piece-indexed block covers: pawn, knight, bishop, rook, queen, king.</summary>
     public const int PieceTypes = 6;
 
+    /// <summary>Midgame material values, one per piece type.</summary>
     public const int MaterialMg     = 0;
+    /// <summary>Endgame material values, one per piece type.</summary>
     public const int MaterialEg     = MaterialMg + PieceTypes;
+    /// <summary>Midgame piece-square tables, 64 squares per piece type.</summary>
     public const int PstMg          = MaterialEg + PieceTypes;
+    /// <summary>Endgame piece-square tables, 64 squares per piece type.</summary>
     public const int PstEg          = PstMg + PieceTypes * 64;
+    /// <summary>Midgame penalty per doubled pawn.</summary>
     public const int DoubledMg      = PstEg + PieceTypes * 64;
+    /// <summary>Endgame penalty per doubled pawn.</summary>
     public const int DoubledEg      = DoubledMg + 1;
+    /// <summary>Midgame penalty per isolated pawn.</summary>
     public const int IsolatedMg     = DoubledEg + 1;
+    /// <summary>Endgame penalty per isolated pawn.</summary>
     public const int IsolatedEg     = IsolatedMg + 1;
-    public const int PassedMg       = IsolatedEg + 1;          // 8, by relative rank
-    public const int PassedEg       = PassedMg + 8;            // 8, by relative rank
+    /// <summary>Midgame passed-pawn bonus, 8 weights by relative rank.</summary>
+    public const int PassedMg       = IsolatedEg + 1;
+    /// <summary>Endgame passed-pawn bonus, 8 weights by relative rank.</summary>
+    public const int PassedEg       = PassedMg + 8;
+    /// <summary>Midgame bonus per pawn defended by another pawn.</summary>
     public const int ProtectedMg    = PassedEg + 8;
+    /// <summary>Endgame bonus per pawn defended by another pawn.</summary>
     public const int ProtectedEg    = ProtectedMg + 1;
+    /// <summary>Midgame bonus per pair of pawns side by side.</summary>
     public const int ConnectedMg    = ProtectedEg + 1;
+    /// <summary>Endgame bonus per pair of pawns side by side.</summary>
     public const int ConnectedEg    = ConnectedMg + 1;
+    /// <summary>Midgame bishop-pair bonus.</summary>
     public const int BishopPairMg   = ConnectedEg + 1;
+    /// <summary>Endgame bishop-pair bonus.</summary>
     public const int BishopPairEg   = BishopPairMg + 1;
+    /// <summary>Midgame bonus for a rook on a file with no pawns.</summary>
     public const int RookOpenMg     = BishopPairEg + 1;
+    /// <summary>Endgame bonus for a rook on a file with no pawns.</summary>
     public const int RookOpenEg     = RookOpenMg + 1;
+    /// <summary>Midgame bonus for a rook on a file with no own pawn.</summary>
     public const int RookHalfOpenMg = RookOpenEg + 1;
+    /// <summary>Endgame bonus for a rook on a file with no own pawn.</summary>
     public const int RookHalfOpenEg = RookHalfOpenMg + 1;
+    /// <summary>Midgame bonus for a rook on the seventh rank.</summary>
     public const int RookSeventhMg  = RookHalfOpenEg + 1;
+    /// <summary>Endgame bonus for a rook on the seventh rank.</summary>
     public const int RookSeventhEg  = RookSeventhMg + 1;
-    public const int KingShelterMg  = RookSeventhEg + 1;    // 4, by distance of the nearest own pawn ahead
-    public const int KingShelterEg  = KingShelterMg + 4;    // 4
-    public const int KingStormMg    = KingShelterEg + 4;    // 4, by distance of the nearest enemy pawn
-    public const int KingStormEg    = KingStormMg + 4;      // 4
+    /// <summary>Midgame king shelter, 4 weights by distance of the nearest own pawn ahead.</summary>
+    public const int KingShelterMg  = RookSeventhEg + 1;
+    /// <summary>Endgame king shelter, 4 weights. Zero by default: the taper decides this.</summary>
+    public const int KingShelterEg  = KingShelterMg + 4;
+    /// <summary>Midgame pawn storm, 4 weights by distance of the nearest enemy pawn.</summary>
+    public const int KingStormMg    = KingShelterEg + 4;
+    /// <summary>Endgame pawn storm, 4 weights. Zero by default: the taper decides this.</summary>
+    public const int KingStormEg    = KingStormMg + 4;
 
     /// <summary>Number of weights.</summary>
     public const int Count = KingStormEg + 4;
@@ -63,6 +90,12 @@ public sealed class EvalParams
     /// <summary>The weights. Indexed by the offsets above.</summary>
     public int[] Values { get; }
 
+    /// <summary>
+    /// Wraps a weight vector. The array is taken as-is, not copied, so a tuner can perturb it in
+    /// place; use <see cref="Clone"/> for an independent copy.
+    /// </summary>
+    /// <param name="values">Exactly <see cref="Count"/> weights, in the layout the offsets above describe.</param>
+    /// <exception cref="ArgumentException">The vector does not hold <see cref="Count"/> weights.</exception>
     public EvalParams(int[] values)
     {
         if (values.Length != Count)

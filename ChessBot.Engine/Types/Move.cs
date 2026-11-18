@@ -163,6 +163,7 @@ public readonly struct Move : IEquatable<Move>
         return baseNotation + moveTypeName;
     }
 
+    /// <summary>True if <paramref name="obj"/> is a move with the same packed representation.</summary>
     public override bool Equals(object? obj) => obj is Move move && Equals(move);
 
     /// <summary>
@@ -171,8 +172,11 @@ public readonly struct Move : IEquatable<Move>
     /// </summary>
     public bool Equals(Move other) => _packed == other._packed;
 
+    /// <summary>The packed representation itself: distinct moves never collide.</summary>
     public override int GetHashCode() => (int)_packed;
 
+    /// <summary>True if both moves are the same move, by one integer comparison.</summary>
     public static bool operator ==(Move left, Move right) => left._packed == right._packed;
+    /// <summary>True if the moves differ, by one integer comparison.</summary>
     public static bool operator !=(Move left, Move right) => left._packed != right._packed;
 }

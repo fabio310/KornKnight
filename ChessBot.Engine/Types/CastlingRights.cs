@@ -145,14 +145,20 @@ public readonly struct CastlingRights : IEquatable<CastlingRights>
     /// </summary>
     public byte Mask => _rights;
 
+    /// <summary>The FEN spelling of these rights, for example <c>KQkq</c> or <c>-</c>.</summary>
     public override string ToString() => ToFenString();
 
+    /// <summary>True if <paramref name="obj"/> is a rights value with the same mask.</summary>
     public override bool Equals(object? obj) => obj is CastlingRights rights && Equals(rights);
 
+    /// <summary>True if both values permit exactly the same castlings.</summary>
     public bool Equals(CastlingRights other) => _rights == other._rights;
 
+    /// <summary>The mask's hash code.</summary>
     public override int GetHashCode() => _rights.GetHashCode();
 
+    /// <summary>True if both values permit exactly the same castlings.</summary>
     public static bool operator ==(CastlingRights left, CastlingRights right) => left.Equals(right);
+    /// <summary>True if the values differ in any castling.</summary>
     public static bool operator !=(CastlingRights left, CastlingRights right) => !left.Equals(right);
 }

@@ -256,6 +256,9 @@ internal class Searcher
     /// <summary>
     /// Creates a searcher over the given board.
     /// </summary>
+    /// <param name="board">The board the search makes and unmakes moves on.</param>
+    /// <param name="evaluator">Static evaluation for leaf and quiescence nodes.</param>
+    /// <param name="zobristHasher">Supplies the position hashes the transposition table is keyed on.</param>
     /// <param name="hashSizeMb">
     /// Transposition table size in megabytes. A parameter rather than a constant because the
     /// bench harness pins it — the table size decides how many transpositions are found, so it
@@ -1333,8 +1336,9 @@ internal class Searcher
     /// <summary>
     /// Detects a repetition draw via the position hash history: true once the current position
     /// appears <paramref name="occurrencesNeeded"/> times among the earlier positions.
-    /// Uses indexed array access (no List<T>, no ToArray() allocation) and iterates
-    /// newest→oldest, stopping at the first irreversible move (capture) to bound the search.
+    /// Uses indexed array access (no <c>List&lt;T&gt;</c>, no <c>ToArray()</c> allocation) and
+    /// iterates newest→oldest, stopping at the first irreversible move (capture) to bound the
+    /// search.
     /// Zobrist hashes encode the active color, so only same-color-to-move positions
     /// can ever match, making the color check implicit.
     /// </summary>

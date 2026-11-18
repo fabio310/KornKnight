@@ -219,6 +219,10 @@ public class Board
     /// <summary>How many bishops Black has on the board, maintained incrementally.</summary>
     internal int BlackBishopCount => _blackBishopCount;
 
+    /// <summary>
+    /// An empty board with its buffers allocated: no pieces, White to move. Load a position with
+    /// <see cref="LoadFromFen"/> or <see cref="ResetToStartingPosition"/>.
+    /// </summary>
     public Board()
     {
         _pieces = new Piece[64];
