@@ -37,15 +37,19 @@
 #>
 [CmdletBinding()]
 param(
-    [string] $Engine        = (Join-Path $PSScriptRoot '..\ChessBot.Uci\bin\Release\net8.0\ChessBot.Uci.exe'),
+    [string] $Engine,
     [int]    $StopLatencyMs = 100
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+Import-Module (Join-Path $PSScriptRoot '..\tools\lib\RunSupport.psm1') -Force
+
+if (-not $Engine) { $Engine = Resolve-EngineBinary -RepoRoot (Join-Path $PSScriptRoot '..') }
+
 if (-not (Test-Path -LiteralPath $Engine -PathType Leaf)) {
-    throw "Engine not found: $Engine (build it with: dotnet build ChessBot.Uci -c Release)"
+    throw "Engine not found: $Engine (publish it with: pwsh scripts/publish.ps1)"
 }
 $Engine = (Resolve-Path -LiteralPath $Engine).Path
 

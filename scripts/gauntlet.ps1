@@ -94,12 +94,7 @@ Import-Module (Join-Path $PSScriptRoot '..\tools\lib\RunSupport.psm1') -Force
 
 # ── Resolve everything before starting anything ──────────────────────────────
 
-if (-not $Engine) {
-    $published = Get-ChildItem -Path (Join-Path $PSScriptRoot '..\publish') -Filter 'KornKnight-*-win-x64.exe' -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    $Engine = if ($published) { $published.FullName }
-              else { Join-Path $PSScriptRoot '..\ChessBot.Uci\bin\Release\net8.0\ChessBot.Uci.exe' }
-}
+if (-not $Engine) { $Engine = Resolve-EngineBinary -RepoRoot (Join-Path $PSScriptRoot '..') }
 
 foreach ($path in @($Fastchess, $Engine) + $Opponents) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Not found: $path" }

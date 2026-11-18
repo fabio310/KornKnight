@@ -355,6 +355,28 @@ function Get-ToolVersion {
     }
 }
 
+<#
+.SYNOPSIS
+    The engine binary a script should measure when the caller named none.
+
+.DESCRIPTION
+    Prefers the newest self-contained release in publish/, and falls back to the
+    framework-dependent Release build. The release binary is the one a tester runs, so it is the
+    one a protocol or timing claim has to be about; it also runs on a machine that has no .NET 8
+    runtime installed, which the bin/ build does not.
+#>
+function Resolve-EngineBinary {
+    param([Parameter(Mandatory)] [string] $RepoRoot)
+
+    $suffix    = if ($IsWindows) { '-win-x64.exe' } else { '-linux-x64' }
+    $published = Get-ChildItem -Path (Join-Path $RepoRoot 'publish') -Filter "KornKnight-*$suffix" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($published) { return $published.FullName }
+
+    $exe = if ($IsWindows) { 'ChessBot.Uci.exe' } else { 'ChessBot.Uci' }
+    return (Join-Path $RepoRoot (Join-Path 'ChessBot.Uci' (Join-Path 'bin' (Join-Path 'Release' (Join-Path 'net8.0' $exe)))))
+}
+
 Export-ModuleMember -Function Get-PhysicalCoreCount, Get-FileSha256, Get-EngineIdName,
     Resolve-ExternalTool, Get-EngineDescriptor, Write-RunManifest, Get-ToolVersion,
-    Resolve-OpeningBook, Format-Invariant
+    Resolve-OpeningBook, Format-Invariant, Resolve-EngineBinary

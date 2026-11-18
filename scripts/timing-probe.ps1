@@ -58,7 +58,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]   $Engine       = (Join-Path $PSScriptRoot '..\ChessBot.Uci\bin\Release\net8.0\ChessBot.Uci.exe'),
+    [string]   $Engine,
     # Strings, split below, rather than [int[]]: under "pwsh -File" on a German-locale machine
     # "-MoveTimes 50,100,1000" binds to the single integer 501001000 — the commas are read as
     # thousands separators — and the probe then waits 5.8 days for its first bestmove.
@@ -73,6 +73,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+Import-Module (Join-Path $PSScriptRoot '..\tools\lib\RunSupport.psm1') -Force
+
+if (-not $Engine) { $Engine = Resolve-EngineBinary -RepoRoot (Join-Path $PSScriptRoot '..') }
+
 # The CSV and JSON are read by other tools and by people on other machines; on a German Windows
 # Export-Csv would otherwise write 100.1497 as "100,1497".
 [Threading.Thread]::CurrentThread.CurrentCulture = [Globalization.CultureInfo]::InvariantCulture
@@ -80,7 +84,7 @@ $ErrorActionPreference = 'Stop'
 [int[]] $MoveTimes = @($MoveTimes -split '[,\s]+' | Where-Object { $_ } | ForEach-Object { [int] $_ })
 
 if (-not (Test-Path -LiteralPath $Engine -PathType Leaf)) {
-    throw "Engine not found: $Engine (build it with: dotnet build ChessBot.Uci -c Release)"
+    throw "Engine not found: $Engine (publish it with: pwsh scripts/publish.ps1)"
 }
 $Engine = (Resolve-Path -LiteralPath $Engine).Path
 
