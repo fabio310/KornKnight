@@ -25,7 +25,8 @@
     Output folder. Defaults to runs/sprt/<yyyy-MM-dd_HHmmss>.
 
 .PARAMETER Fastchess
-    Path to fastchess.exe.
+    Path to fastchess.exe. Defaults to $env:KORNKNIGHT_FASTCHESS, and to this machine's
+    install when that is unset.
 
 .PARAMETER Book
     Opening book. Default: the UHO book tools/sprt.ps1 expects, which is deliberately unbalanced
@@ -54,7 +55,8 @@ param(
     [Parameter(Mandatory)] [string] $Base,
     [Parameter(Mandatory)] [string] $Change,
     [string] $Out,
-    [string] $Fastchess   = 'C:\Tools\fastchess-windows-x86-64\fastchess.exe',
+    [string] $Fastchess   = $(if ($env:KORNKNIGHT_FASTCHESS) { $env:KORNKNIGHT_FASTCHESS }
+                              else { 'C:\Tools\fastchess-windows-x86-64\fastchess.exe' }),
     [string] $Book        = (Join-Path $PSScriptRoot '..\openings\UHO_Lichess_4852_v1.epd'),
     [string] $Tc          = '8+0.08',
     [long]   $Nodes       = 0,

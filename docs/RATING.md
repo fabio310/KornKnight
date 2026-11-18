@@ -3,7 +3,20 @@
 What the engine is worth, and what the release binary does with a clock, measured rather than
 estimated. Every row below says which build it measured and how. `matches/` and `runs/` are
 gitignored, so this file is the durable record. Add a row whenever the anchor is rerun, and keep
-the old rows.
+the old rows. Commit ids below are from the current history; the v1.0.0 binary's own build stamp
+(`e3acd6351c83`) was taken before the commit messages were rewritten and no longer resolves.
+
+## Earlier arms, kept for the record (phase 3, 2026-09)
+
+Measured with `MatchRunner --ab` at a 50,000-node budget before the fastchess harness existed.
+None of these are on the branch; the arms themselves were deleted once the decision was made.
+
+| Arm | Verdict | Elo | Games |
+|---|---|---:|---:|
+| Checks exempt from LMR and futility | inconclusive | −4.3 ± 9.4 | 4,000 |
+| Killers and counter-moves exempt from LMR | inconclusive | +2.1 ± 9.4 | 4,000 |
+| Both exemptions together | inconclusive | +0.9 ± 9.4 | 4,000 |
+| SEE pruning at ≥ −100 instead of ≥ 0 | rejected | +33.2 vs baseline, lost head-to-head to ≥ 0 | — |
 
 ## Strength phase 1 — cheap search wins (2026-09-20)
 
@@ -20,9 +33,9 @@ over all games played.
 | **The three together** | **v1.0.0 + P4.1** | **adopted** | **+45.7 → +35.6** | **500** |
 | P1.1c one more LMR ply when not improving | P1.1b | rejected | −29.5 | 640 |
 | P1.3a null-move R scaled by depth and eval | P1.1a | rejected | −23.6 | 700 |
-| P1.1b late move pruning count halved when not improving | P1.1a | running | — | — |
-| P1.5 aspiration window widening | P1.1a | running | — | — |
-| P1.3b null-move cutoff returns the score it found | P1.1a | running | — | — |
+| P1.1b late move pruning count halved when not improving | P1.1a | not concluded | — | — |
+| P1.5 aspiration window widening | P1.1a | not concluded | — | — |
+| P1.3b null-move cutoff returns the score it found | P1.1a | not concluded | — | — |
 
 The combined row is the one to quote: the three adopted items were each measured alone, and
 +35.6 over the pre-phase base is what they are worth together.
@@ -30,8 +43,9 @@ The combined row is the one to quote: the three adopted items were each measured
 Two of the plan's predicted wins measured clearly negative in this engine. Reducing MORE at a
 non-improving node (P1.1c) and scaling the null-move reduction by how far the static score sits
 above beta (P1.3a) each cost 20-30 Elo, on ~700 games, with their own toggles and tests in place.
-P1.3b and P1.3c were first measured on top of P1.3a, which is not a fair test of them; P1.3b is
-being re-measured on its own.
+P1.3b and P1.3c were first measured on top of P1.3a, which is not a fair test of them, so neither
+is adopted. The three items marked "not concluded" above were still in flight when the phase was
+closed; their arms are not on any branch, so they would have to be rebuilt to be measured.
 
 How the runs were called, which is a deliberate loosening of the SPRT's own stopping rule:
 - **Early call.** After 500 games, a 90% interval entirely above elo1 adopts and one entirely
@@ -61,7 +75,8 @@ Timing acceptance re-checked on the merged branch (100 samples each, machine und
 0 of 300 samples over budget; p99 11.9 / 13.5 / 13.7 ms under the 50 / 100 / 1000 ms limits. The
 contract in the next section still holds.
 
-The rating anchor for this phase (the four Blunders) has not been run yet.
+The rating anchor for this phase (the four Blunders) has not been run: the last anchor in the
+table below is still v1.0.0's.
 
 ## Rating anchor
 
@@ -74,9 +89,9 @@ repeatable yardstick and not a FIDE or CCRL rating.
 
 | Date | Build | Opponent | Result (W/D/L) | Score | Elo vs opponent | Rating (95% CI) |
 |---|---|---|---|---|---|---|
-| — | before cada4f2 | UCI_Elo 2100 | — | — | — | ~2058 [2009, 2105] |
-| — | cada4f2 | UCI_Elo 2300 | +83 =7 −110 | 43.25% | −47 | ~2253 [2204, 2300] |
-| 2026-09-19 | **v1.0.0** (e3acd63) | UCI_Elo 2300 | **+116 =6 −78** | **59.5%** | **+66.8 ± 48** | **~2367 [2319, 2415]** |
+| — | before 821b8f3 | UCI_Elo 2100 | — | — | — | ~2058 [2009, 2105] |
+| — | 821b8f3 | UCI_Elo 2300 | +83 =7 −110 | 43.25% | −47 | ~2253 [2204, 2300] |
+| 2026-09-19 | **v1.0.0** (a3817d8) | UCI_Elo 2300 | **+116 =6 −78** | **59.5%** | **+66.8 ± 48** | **~2367 [2319, 2415]** |
 
 v1.0.0 details: 200 games, 32 min (15:51–16:23), LOS 99.7%. As White +64 =2 −34 (65.0%,
 +108 ± 71); as Black +52 =4 −44 (54.0%, +28 ± 67). Average depth 12.0 at about 1.65 Mnps on
@@ -84,7 +99,7 @@ the pinned core. No illegal or rejected moves.
 
 ### Reading the change from 2253 to 2367
 
-- **Where it comes from.** The 51 commits between cada4f2 and the start of the release work.
+- **Where it comes from.** The 51 commits between 821b8f3 and the start of the release work.
   Among them: the lockless transposition table, one transposition probe per node instead of two,
   the index mask, the packed 32-bit `Move` and the cheaper `Square`. The release work itself
   (the time-control, protocol and packaging tasks) leaves the search tree bit-identical: bench is
@@ -103,7 +118,8 @@ the pinned core. No illegal or rejected moves.
 
 `scripts/timing-probe.ps1` measures from writing "go" to reading "bestmove", as a GUI sees it.
 The binary under test was `publish/KornKnight-1.0.0-win-x64.exe` (id `KornKnight
-1.0.0+e3acd6351c83`) with default options (Move Overhead 10 ms). There were 200 searches per row,
+1.0.0+e3acd6351c83`, the build stamp as the binary reports it) with default options (Move
+Overhead 10 ms). There were 200 searches per row,
 cycled over 8 positions including capture-heavy ones. The machine was idle (0–1% load). Times are
 in ms.
 
@@ -128,7 +144,7 @@ An earlier run of the same binary was cut off in its clock case. It was taken wi
 the machine at 55–87% load. Its movetime maxima were 41.0 / 88.2 / 489.4 / 988.0 / 4987.6, with
 0 over; its raw samples were not kept.
 
-Before the release work (d4666f3, Move Overhead 30, 100 samples each), 85–88% of samples were
+Before the release work (6e0723f, Move Overhead 30, 100 samples each), 85–88% of samples were
 over at every movetime. `go movetime 1000` had p50 1002.1 and max 1018.0.
 
 ## What a sample size can resolve

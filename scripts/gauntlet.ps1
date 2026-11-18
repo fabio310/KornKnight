@@ -29,10 +29,12 @@
     Release build in bin/.
 
 .PARAMETER Fastchess
-    Path to fastchess.exe.
+    Path to fastchess.exe. Defaults to $env:KORNKNIGHT_FASTCHESS, and to this machine's
+    install when that is unset.
 
 .PARAMETER Opponents
-    Opponent executables.
+    Opponent executables. Defaults to $env:KORNKNIGHT_OPPONENTS, semicolon-separated, and to the
+    four Blunder versions installed on this machine when that is unset.
 
 .PARAMETER Tc
     Time control in fastchess format, moves/minutes:seconds+increment. Default '2:00+1'.
@@ -63,18 +65,20 @@
 [CmdletBinding()]
 param(
     [string]   $Engine,
-    [string]   $Fastchess        = 'C:\Tools\fastchess-windows-x86-64\fastchess.exe',
+    [string]   $Fastchess        = $(if ($env:KORNKNIGHT_FASTCHESS) { $env:KORNKNIGHT_FASTCHESS }
+                                     else { 'C:\Tools\fastchess-windows-x86-64\fastchess.exe' }),
     # The rating anchor: one engine family at four strengths, spaced ~100 Elo apart on CCRL
     # (7.2.0 ~2425, 7.4.0 ~2532, 7.6.0 ~2631, 8.5.5 ~2700), so KornKnight always has an opponent
     # it scores 25-75% against — the range where a game carries information. Leorik 3.2 (NNUE,
     # ~3300) stays installed as a wall and is not part of the anchor: at a 1% score the
     # interval is unbounded, which is what the 0.5/8 smoke run against it showed.
-    [string[]] $Opponents        = @(
+    [string[]] $Opponents        = $(if ($env:KORNKNIGHT_OPPONENTS) { $env:KORNKNIGHT_OPPONENTS -split ';' }
+                                     else { @(
         'C:\Tools\blunder-7.2.0\blunder-7.2.0\windows\blunder-windows.exe'
         'C:\Tools\blunder-7.4.0\blunder-7.4.0\windows\blunder-windows.exe'
         'C:\Tools\blunder-7.6.0\blunder-7.6.0\windows\blunder-windows.exe'
         'C:\Tools\blunder-8.5.5\windows\blunder-8.5.5-avx2.exe'
-    ),
+                                     ) }),
     [string]   $Tc               = '2:00+1',
     [int]      $GamesPerOpponent = 500,
     [int]      $Hash             = 64,

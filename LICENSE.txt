@@ -1,31 +1,44 @@
-KornKnight Source-Available License v1.0
+KornKnight Source-Available License v1.1
 
 Copyright (c) 2026 Fabio Kornfeld
 
 All rights reserved.
 
-1. Permission
+1. What you may do
 
-You are allowed to view, download, clone, and run this software for personal, educational, and non-commercial purposes only.
+You may view, download, clone, and run this software free of charge.
 
-You are allowed to study the source code to understand how the software works.
+You may study the source code, in whole or in part, for any purpose, including learning from it
+and writing about it.
 
-2. Restrictions
+You may modify the source code and run your modified version, for your own personal,
+educational, or research use. Experimenting with it is expressly encouraged.
 
-You are not allowed to:
+2. What you may not do
 
-- sell, rent, sublicense, or commercially use this software;
-- publish, distribute, or share modified versions of this software;
-- use parts of this software in another public or private project;
-- relicense this software under another license;
-- remove or change copyright notices;
-- claim this software or parts of it as your own work.
+You may not:
+
+- sell, rent, sublicense, or otherwise commercially exploit this software or any modified
+  version of it;
+- publish, distribute, redistribute, or otherwise make available to others this software, any
+  modified version of it, or any substantial part of its source code — including as part of
+  another project, and including a build or binary derived from it;
+- relicense this software or a modified version of it under another license;
+- remove or alter copyright notices;
+- claim this software, or any part of it, as your own work.
+
+In short: study it and change it as much as you like, but do not ship it, and do not make money
+from it. Your modifications are yours to run, not yours to release.
+
+Sharing a patch, a diff, or a code excerpt in order to report a bug, propose a change, or discuss
+the software is permitted, and is not "distribution" under this section.
 
 3. Contributions
 
 Contributions, pull requests, issues, ideas, and suggestions may be submitted to the project.
 
-By submitting a contribution, you grant the project owner a permanent, worldwide, royalty-free right to use, modify, publish, and distribute your contribution as part of this project.
+By submitting a contribution, you grant the project owner a permanent, worldwide, royalty-free
+right to use, modify, publish, and distribute your contribution as part of this project.
 
 You do not receive ownership rights over the project by contributing.
 
@@ -33,16 +46,19 @@ You do not receive ownership rights over the project by contributing.
 
 This software is publicly available, but it remains privately owned by Fabio Kornfeld.
 
-All copyright, ownership, and intellectual property rights remain with the original author unless explicitly stated otherwise in writing.
+All copyright, ownership, and intellectual property rights remain with the original author
+unless explicitly stated otherwise in writing.
 
-5. No Warranty
+5. No warranty
 
 This software is provided "as is", without warranty of any kind.
 
-The author is not responsible for any damage, data loss, incorrect behavior, legal issues, or other problems caused by using this software.
+The author is not responsible for any damage, data loss, incorrect behavior, legal issues, or
+other problems caused by using this software.
 
-6. Permission Requests
+6. Permission requests
 
 Any use not allowed by this license requires written permission from the copyright holder.
+Permission for a specific use will often be given — ask.
 
 For permission requests, contact the project owner through the official repository.
